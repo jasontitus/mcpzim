@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: MIT
+//
+// Streetzim prefix-chunked JSON geocoder. Mirrors the viewer's `_queryPlaces`
+// normalization so lookups return exactly what the on-device UI would.
+
+import Foundation
+
+public struct Place: Equatable, Sendable {
+    public let name: String
+    public let kind: String   // "addr" | "place" | "poi" | ...
+    public let lat: Double
+    public let lon: Double
+    public let subtype: String
+    public let location: String
+
+    public init(name: String, kind: String, lat: Double, lon: Double, subtype: String = "", location: String = "") {
+        self.name = name
+        self.kind = kind
+        self.lat = lat
+        self.lon = lon
+        self.subtype = subtype
+        self.location = location
+    }
+}
+
+public enum Geocoder {
+    /// Normalize a free-text query into the 2-character prefix used to pick a
+    /// `search-data/{prefix}.json` chunk. Matches the JS viewer exactly:
+    /// lowercase, first two codepoints, spaces → `_`, non-alphanumeric → `_`,
+    /// right-padded with `_` if shorter than 2.
+    public static func normalizePrefix(_ query: String) -> String {
+        let lowered = query.lowercased()
+        var prefix = String(lowered.prefix(2))
+        prefix = prefix.replacingOccurrences(of: " ", with: "_")
+        prefix = String(prefix.map { ch -> Character in
+            let ok = (ch == "_") || ch.isASCII && (ch.isLetter || ch.isNumber)
+            return ok ? ch : "_"
+        })
+        while prefix.count < 2 { prefix.append("_") }
+        return prefix
+    }
+
+    /// Filter a decoded `search-data/{prefix}.json` chunk for records whose
+    /// name contains `query` (case-insensitive). Score = earliest match index
+    /// then shortest name, matching the Python implementation.
+    public static func rank(records: [[String: Any]], query: String, limit: Int, kinds: Set<String>? = nil) -> [Place] {
+        let q = query.lowercased()
+        if q.isEmpty { return [] }
+        var scored: [(offset: Int, length: Int, place: Place)] = []
+        for rec in records {
+            guard let name = rec["n"] as? String, !name.isEmpty else { continue }
+            let kind = (rec["t"] as? String) ?? ""
+            if let wanted = kinds, !wanted.contains(kind) { continue }
+            let lower = name.lowercased()
+            guard let range = lower.range(of: q) else { continue }
+            let place = Place(
+                name: name,
+                kind: kind,
+                lat: (rec["a"] as? Double) ?? 0,
+                lon: (rec["o"] as? Double) ?? 0,
+                subtype: (rec["s"] as? String) ?? "",
+                location: (rec["l"] as? String) ?? ""
+            )
+            scored.append((
+                offset: lower.distance(from: lower.startIndex, to: range.lowerBound),
+                length: name.count,
+                place: place
+            ))
+        }
+        scored.sort { a, b in
+            if a.offset != b.offset { return a.offset < b.offset }
+            return a.length < b.length
+        }
+        return scored.prefix(limit).map { $0.place }
+    }
+}

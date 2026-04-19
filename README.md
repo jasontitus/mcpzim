@@ -127,27 +127,29 @@ inside the archive. Out of the box:
 
 ## Mobile
 
-The honest answer: **running native Python + libzim on iOS is painful today**
-because `python-libzim` has no iOS wheels and you'd have to cross-compile the
-C++ libzim yourself. Practical options, in order of effort:
+Concrete paths that actually work, matched to the on-device LLM hosts people
+are shipping in 2026:
 
-1. **LAN bridge (easiest, works now).** Run `mcpzim --transport streamable-http
-   --host 0.0.0.0` on a machine on your network (or a Raspberry Pi). Point your
-   mobile agent at it. The ZIM data stays on the home server; your phone just
-   sees a capability-rich MCP endpoint. This works today with no mobile code.
-2. **Android via Termux.** `pkg install python clang && pip install mcpzim` in
-   Termux builds `libzim` from source. Run on-device, expose via stdio (to a
-   local agent process) or streamable-http on localhost for in-app clients.
-3. **Swift/Kotlin port.** The SZRG v2 routing format and the ZIM access layer
-   are both intentionally straightforward. A Swift MCP module that calls the
-   C++ [libzim](https://github.com/openzim/libzim) through its Swift bindings
-   (as Kiwix iOS already does) could expose the same tool surface as this
-   Python server. That's the best path for an iOS chat app that wants an
-   in-process MCP tool provider.
-4. **Kiwix-serve bridge.** The Kiwix mobile apps already embed a local HTTP
-   server; an alternative mcpzim mode that proxies to `http://localhost:port/`
-   instead of opening ZIMs directly would work wherever Kiwix runs.
-   (Not yet implemented — PRs welcome.)
+| Platform | LLM host | Path | Status |
+| --- | --- | --- | --- |
+| Desktop | Claude Desktop / Code, any MCP client | This Python server via `stdio` or `streamable-http` | **Works today** |
+| Android | [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) (Gemma 4 + LiteRT-LM, Apache 2.0) | Small Kotlin fork — add a `@Tool fun callMcp(...)` that talks JSON-RPC/HTTP to this Python server | **See [`mobile/android/README.md`](mobile/android/README.md)** — ~80 lines of Kotlin + one SKILL.md |
+| Android (fully offline) | same | Run `mcpzim` under Termux on the same device | Works; Termux has to build `libzim` from source (`pkg install python clang cmake`) |
+| iOS | [Swift-Gemma4-Core](https://github.com/yejingyang8963-byte/Swift-gemma4-core) (MIT, iOS 17+) | Link **[`swift/MCPZimKit`](swift/)** — pure-Swift port of the routing graph parser, A*, geocoder + a transport-agnostic MCP tool adapter. Host app supplies a `ZimReader` backed by `CoreKiwix.xcframework` from the Kiwix project. | **See [`swift/README.md`](swift/README.md)** |
+| iOS | Google AI Edge Gallery | Not possible — the iOS app is closed-source. | Waiting on Google |
+
+The short version: on Android the open-source Agent Chat host already knows how
+to call a tool, so a short Kotlin patch makes it speak to this Python server.
+On iOS, the LLM host has no tool-calling layer yet, so the companion Swift
+package ships (a) the same algorithms in pure Swift for in-process use, and (b)
+a transport-agnostic MCP adapter you can plug into the official
+[`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)
+when you want the model to call tools over LAN.
+
+`swift/MCPZimKit`'s SZRG v2 parser, A* router, and prefix geocoder are
+line-for-line ports of the Python implementations; the Python test suite and
+the Swift test suite in `swift/Tests/MCPZimKitTests/` cover the same cases, so
+if both green, you know the two agree.
 
 ## Development
 
