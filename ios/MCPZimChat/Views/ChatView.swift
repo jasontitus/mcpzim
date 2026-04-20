@@ -11,6 +11,7 @@ import UIKit
 struct ChatView: View {
     @Environment(ChatSession.self) private var session
     @State private var draft = ""
+    @State private var showVoiceChat = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -47,6 +48,10 @@ struct ChatView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(session.lastError ?? "")
+        }
+        .sheet(isPresented: $showVoiceChat) {
+            VoiceChatView()
+                .environment(session)
         }
     }
 
@@ -138,6 +143,15 @@ struct ChatView: View {
                 .onChange(of: inputFocused) { _, focused in
                     if focused { session.prewarmSelectedModel() }
                 }
+            Button {
+                showVoiceChat = true
+            } label: {
+                Image(systemName: "mic.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.tint)
+            }
+            .accessibilityLabel("Voice chat")
+            .disabled(session.isGenerating)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))

@@ -24,6 +24,10 @@
 	<string>Needed to read ZIM archives you drop into the app's Documents folder.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Zimfo uses your location for routing and "what's nearby" queries. All lookups stay on-device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

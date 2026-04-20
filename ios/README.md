@@ -100,6 +100,31 @@ The app scans Documents automatically on launch.
 Tool calls show up as collapsible chips under the assistant's message so you
 can see exactly what the model asked and what came back.
 
+## Voice chat
+
+Tap the mic icon in the composer to enter hands-free mode. The loop is
+all on-device:
+
+- **STT** — Apple `SpeechAnalyzer` (iOS 26 / macOS 26+; same engine
+  behind Live Captions and Dictation), with `SFSpeechRecognizer`
+  (`requiresOnDeviceRecognition = true`) as the iOS 17+/macOS 14+
+  fallback. App overhead: ~50–100 MB RSS for the streaming session;
+  weights are owned by the OS.
+- **TTS** — `AVSpeechSynthesizer` (system voices, ~5 MB) by default.
+  For higher-quality neural TTS, drop the `KokoroSwift` SPM package
+  into `project.yml` (see the commented entry under `packages:`),
+  install the Kokoro v1.0 model file (`kokoro-v1_0.safetensors`,
+  ~165 MB fp16) under `Documents/voices/`, and `TTSFactory.makeBest()`
+  will pick it up. Steady-state Kokoro RSS ≈ 220 MB; synth runs
+  ~3.3× real-time on iPhone 13 Pro.
+
+End-to-end memory delta with neural TTS enabled: roughly
+**+250–350 MB** on top of the LLM. Without Kokoro the voice mode adds
+only ~80 MB.
+
+The first time you tap the mic you'll be asked for microphone and
+speech-recognition permission. Both are required.
+
 ## Mock model for UI work
 
 Select **Mock (scripted)** from the model menu to develop layout / tool-call
