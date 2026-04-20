@@ -16,6 +16,7 @@ import CoreKiwix
 
 /// Real reader: opens a ZIM file via libzim and answers `ZimReader` calls.
 public final class LibzimReader: ZimReader, @unchecked Sendable {
+    public static let isLinked = true
     private let archive: ZimArchive   // Obj-C++ wrapper around zim::Archive
     private let url: URL
 
@@ -85,6 +86,7 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
 /// Stub used until you bundle CoreKiwix.xcframework. The chat app falls back
 /// to a user-visible warning instead of failing to build.
 public final class LibzimReader: ZimReader, @unchecked Sendable {
+    public static let isLinked = false
     public let metadata = ZimMetadata()
     public let kind: ZimKind = .generic
     public let hasFullTextIndex = false

@@ -12,14 +12,25 @@ public struct Place: Equatable, Sendable {
     public let lon: Double
     public let subtype: String
     public let location: String
+    /// OSM `wikipedia=` tag (e.g. `"en:Lincoln_Memorial"`). Present on
+    /// streetzims built with generator commit a485ce3 or newer.
+    public let wiki: String?
+    /// OSM `wikidata=` tag (e.g. `"Q162458"`).
+    public let wikidata: String?
 
-    public init(name: String, kind: String, lat: Double, lon: Double, subtype: String = "", location: String = "") {
+    public init(
+        name: String, kind: String, lat: Double, lon: Double,
+        subtype: String = "", location: String = "",
+        wiki: String? = nil, wikidata: String? = nil
+    ) {
         self.name = name
         self.kind = kind
         self.lat = lat
         self.lon = lon
         self.subtype = subtype
         self.location = location
+        self.wiki = wiki
+        self.wikidata = wikidata
     }
 }
 
@@ -59,7 +70,9 @@ public enum Geocoder {
                 lat: (rec["a"] as? Double) ?? 0,
                 lon: (rec["o"] as? Double) ?? 0,
                 subtype: (rec["s"] as? String) ?? "",
-                location: (rec["l"] as? String) ?? ""
+                location: (rec["l"] as? String) ?? "",
+                wiki: rec["w"] as? String,
+                wikidata: rec["q"] as? String
             )
             scored.append((
                 offset: lower.distance(from: lower.startIndex, to: range.lowerBound),

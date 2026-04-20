@@ -62,17 +62,23 @@ public final class MockProvider: ModelProvider, @unchecked Sendable {
     /// sensible. For everything else, echo a plausible-sounding sentence.
     private static func script(for prompt: String) -> String {
         let p = prompt.lowercased()
-        if p.contains("route") && (p.contains("boston") || p.contains("fenway") || p.contains(" to ")) {
-            return """
-            I'll plan that route. <tool_call>{"name":"route_from_places","arguments":{"origin":"Boston Common","destination":"Fenway Park"}}</tool_call>
-            """
+        // If the transcript already contains a tool_response, the tool loop
+        // has already run once — emit a final answer instead of another call
+        // (otherwise the mock would re-fire the same tool every turn and hit
+        // the 4-iteration cap as a pseudo-infinite loop).
+        let awaitingInitialCall = !p.contains("<tool_response>") && !p.contains("<|tool|>")
+        if awaitingInitialCall {
+            if p.contains("route") && (p.contains("boston") || p.contains("fenway") || p.contains(" to ")) {
+                return #"I'll plan that route. <tool_call>{"name":"route_from_places","arguments":{"origin":"Boston Common","destination":"Fenway Park"}}</tool_call>"#
+            }
+            if p.contains("list") && p.contains("librar") {
+                return #"<tool_call>{"name":"list_libraries","arguments":{}}</tool_call>"#
+            }
+            return "Okay — that request reached a mock model. Switch to Gemma 4 in the model picker for a real answer."
         }
-        if p.contains("list") && p.contains("librar") {
-            return """
-            <tool_call>{"name":"list_libraries","arguments":{}}</tool_call>
-            """
-        }
-        return "Okay — that request reached a mock model. Switch to Gemma 4 in the model picker for a real answer."
+        // Second pass: the tool returned; summarise. The real Gemma would
+        // synthesise from the JSON — the mock just acknowledges.
+        return "Here's what the tool came back with (shown in the trace above). Load Gemma 4 for a real summary."
     }
 }
 

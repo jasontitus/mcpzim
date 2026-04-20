@@ -10,17 +10,22 @@ struct RootView: View {
             ChatView()
                 .navigationTitle("MCPZim Chat")
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .navigation) {
                         NavigationLink { LibraryView() } label: {
                             Image(systemName: "books.vertical")
                         }
                         .accessibilityLabel("Library")
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .primaryAction) {
                         ModelPickerView()
                     }
                 }
-                .task { await session.scanDocumentsFolder() }
+                .task {
+                    // Sandbox Documents first, then reopen any ZIMs the user
+                    // previously picked from Downloads/external folders.
+                    await session.scanDocumentsFolder()
+                    await session.restoreExternalBookmarks()
+                }
         }
     }
 }

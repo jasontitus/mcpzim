@@ -7,6 +7,7 @@ options:
   bundleIdPrefix: org.mcpzim
   deploymentTarget:
     iOS: 17.0
+    macOS: 14.0
   createIntermediateGroups: true
 settings:
   base:
@@ -18,15 +19,16 @@ settings:
 packages:
   MCPZimKit:
     path: ../swift
-  # Uncomment once you've vendored Swift-Gemma4-Core into your workspace, or
-  # add it via Xcode's File > Add Packages UI after generating the project.
-  # Gemma4SwiftCore:
-  #   url: https://github.com/yejingyang8963-byte/Swift-gemma4-core.git
-  #   from: 0.1.0
+  Gemma4SwiftCore:
+    url: https://github.com/yejingyang8963-byte/Swift-gemma4-core.git
+    from: 0.1.0
 targets:
   MCPZimChat:
     type: application
     platform: iOS
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
     sources:
       - path: MCPZimChat
         excludes:
@@ -37,20 +39,89 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-        CFBundleDisplayName: MCPZim Chat
+        CFBundleDisplayName: Zimfo
         NSDocumentsFolderUsageDescription: "Needed to read ZIM archives you drop into the app's Documents folder."
+        NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
-      # - package: Gemma4SwiftCore
-      #   product: Gemma4SwiftCore
-      # Vendor CoreKiwix.xcframework (from kiwix-build or a Kiwix release)
-      # into MCPZimChat/Frameworks/ and uncomment:
-      # - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
-      #   embed: true
-      #   codeSign: true
+      - package: Gemma4SwiftCore
+        product: Gemma4SwiftCore
+      - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
+        embed: false
+        codeSign: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChat
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-        INFOPLIST_KEY_CFBundleDisplayName: "MCPZim Chat"
+        INFOPLIST_KEY_CFBundleDisplayName: "Zimfo"
+        # LibzimBridge.h/mm is a no-op until CoreKiwix.xcframework is linked
+        # (both files wrap their contents in `__has_include(<zim/archive.h>)`),
+        # so keeping the bridging header wired up here is safe in either state.
+        SWIFT_OBJC_BRIDGING_HEADER: MCPZimChat/Libzim/LibzimBridge.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_ENABLE_MODULES: "YES"
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+
+  MCPZimChatMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MCPZimChatMacTests
+    dependencies:
+      - target: MCPZimChatMac
+    settings:
+      base:
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MCPZimChatMac.app/Contents/MacOS/MCPZimChatMac"
+        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChatMacTests
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        ENABLE_TESTABILITY: "YES"
+        # Matches the app target: CoreKiwix has C++ headers so the test
+        # module scanner needs libc++ too.
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+    scheme:
+      testTargets:
+        - MCPZimChatMacTests
+
+  MCPZimChatMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: MCPZimChat
+        excludes:
+          - "**/.DS_Store"
+          - "Info.plist"
+    info:
+      path: MCPZimChat/Info-Mac.plist
+      properties:
+        CFBundleDisplayName: Zimfo
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: "Copyright © 2026"
+        NSLocationUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
+        NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
+    dependencies:
+      - package: MCPZimKit
+        product: MCPZimKit
+      - package: Gemma4SwiftCore
+        product: Gemma4SwiftCore
+      - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
+        embed: false
+        codeSign: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChatMac
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_OBJC_BRIDGING_HEADER: MCPZimChat/Libzim/LibzimBridge.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_ENABLE_MODULES: "YES"
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+        CODE_SIGN_ENTITLEMENTS: MCPZimChat/MCPZimChat.entitlements
+    scheme:
+      testTargets: []
+      gatherCoverageData: false

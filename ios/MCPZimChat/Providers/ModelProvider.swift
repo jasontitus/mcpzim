@@ -6,6 +6,7 @@
 // appending it to `ChatSession.availableModels`.
 
 import Foundation
+import MCPZimKit
 
 public struct GenerationParameters: Sendable {
     public var maxTokens: Int
@@ -56,4 +57,26 @@ public protocol ModelProvider: AnyObject, Sendable {
         prompt: String,
         parameters: GenerationParameters
     ) -> AsyncThrowingStream<String, Error>
+
+    /// Render a transcript into the provider's native chat template. The
+    /// returned string is ready to feed into `generate(prompt:…)` and ends
+    /// on the provider's "open model/assistant turn" marker so generation
+    /// continues the current assistant reply.
+    func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String
+}
+
+public extension ModelProvider {
+    /// Generic fallback template — `<|role|>\n…` blocks, ending on an open
+    /// assistant turn. Providers with a native template should override.
+    func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String {
+        var out = ""
+        if !systemPreamble.isEmpty {
+            out += "<|system|>\n\(systemPreamble)\n"
+        }
+        for t in turns {
+            out += "<|\(t.role.rawValue)|>\n\(t.text)\n"
+        }
+        out += "<|assistant|>\n"
+        return out
+    }
 }

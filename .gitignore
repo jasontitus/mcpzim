@@ -10,3 +10,21 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.zim
+
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode build artifacts
+swift/.build/
+swift/.swiftpm/
+ios/.swiftpm/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Vendored binary framework — 207 MB, too big for git.
+# Download from https://github.com/kiwix/kiwix-build/releases
+# (CoreKiwix.xcframework, currently version 14.2.0) and unzip into
+# ios/MCPZimChat/Frameworks/ before building.
+ios/MCPZimChat/Frameworks/CoreKiwix.xcframework/

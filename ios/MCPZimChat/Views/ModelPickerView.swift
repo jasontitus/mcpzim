@@ -17,11 +17,9 @@ struct ModelPickerView: View {
                         .tag(model.id)
                 }
             }
-            Divider()
-            Button("Load model") {
-                Task { await session.loadSelectedModel() }
-            }
-            .disabled(session.modelState == .ready || session.modelState == .loading)
+            // Picking a model auto-loads it via `session.select(...)`,
+            // so no explicit "Load" action here. The ChatView header
+            // still surfaces a retry button when a load fails.
         } label: {
             HStack(spacing: 4) {
                 Text(session.selectedModel.displayName)

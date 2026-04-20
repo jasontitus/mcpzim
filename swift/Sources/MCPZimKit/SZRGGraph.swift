@@ -4,6 +4,12 @@
 // "routing-data/graph.bin" inside the ZIM). Byte layout mirrors the writer in
 // streetzim/create_osm_zim.py and the JS reader in resources/viewer/index.html.
 // All multi-byte integers are little-endian.
+//
+// The parser is zero-copy: it reads everything via `Data.withUnsafeBytes`
+// into raw pointers and offsets, never slicing `Data` itself. The earlier
+// `subdata(in:)`-based implementation allocated a fresh `Data` per polyline
+// segment, which for a country-scale routing graph (millions of segments)
+// blew resident memory up by 100× the input size.
 
 import Foundation
 
@@ -24,20 +30,15 @@ public enum SZRGError: Error, CustomStringConvertible {
 }
 
 public struct SZRGGraph: Sendable {
-    // Nodes in degrees.
     public let lat: [Double]
     public let lon: [Double]
-    // CSR adjacency.
-    public let adjOffsets: [UInt32]      // len == numNodes + 1
-    // Parallel edge arrays.
+    public let adjOffsets: [UInt32]
     public let edgeTargets: [UInt32]
     public let edgeDistMeters: [Double]
     public let edgeSpeedKmh: [UInt8]
-    public let edgeGeomIdx: [Int32]      // -1 when no geometry
-    public let edgeNameIdx: [UInt32]     // 0 for unnamed
-    // String table — index 0 is always "" (the unnamed sentinel).
+    public let edgeGeomIdx: [Int32]
+    public let edgeNameIdx: [UInt32]
     public let names: [String]
-    // Polylines — each a flat array alternating latitude/longitude doubles.
     public let geoms: [[(lat: Double, lon: Double)]]
 
     public var numNodes: Int { lat.count }
@@ -49,105 +50,156 @@ public struct SZRGGraph: Sendable {
         return names[i]
     }
 
-    public static func parse(_ data: Data) throws -> SZRGGraph {
+    /// Parse the binary routing graph. When `decodeGeoms` is `false` the
+    /// per-edge polyline blob is skipped entirely — on a country-scale
+    /// graph (Baltics, 977 MB ZIM) that saves ~600 MB of Swift tuples and
+    /// around 3 s of parse time. Routing still works because A* only needs
+    /// node lat/lon + edge distances; the LLM-facing `polyline` field in
+    /// the route result falls back to node-sequence coordinates.
+    public static func parse(_ data: Data, decodeGeoms: Bool = true) throws -> SZRGGraph {
         guard data.count >= 32 else { throw SZRGError.tooSmall }
-        var cursor = Cursor(data: data)
-        let magic = cursor.readBytes(4)
-        guard magic == [0x53, 0x5A, 0x52, 0x47] else { throw SZRGError.badMagic(magic) }
-        let version: UInt32 = try cursor.readU32()
-        guard version == 2 else { throw SZRGError.unsupportedVersion(version) }
-        let numNodes = Int(try cursor.readU32())
-        let numEdges = Int(try cursor.readU32())
-        let numGeoms = Int(try cursor.readU32())
-        let geomBytes = Int(try cursor.readU32())
-        let numNames = Int(try cursor.readU32())
-        let namesBytes = Int(try cursor.readU32())
+        return try data.withUnsafeBytes { raw -> SZRGGraph in
+            var p = RawCursor(base: raw, count: data.count, pos: 0)
+            try p.expectMagic([0x53, 0x5A, 0x52, 0x47])
+            let version = try p.readU32()
+            // v2: edge = (target_u32, dist_dm_u32_full, (speed<<24|geom24)_u32, name_u32)
+            //     — geom index capped at 2^24 ≈ 16.78 M, which truncates
+            //     continental-scale graphs (Japan, Europe).
+            // v3: edge = (target_u32, (speed<<24|dist_dm24)_u32, geom_u32_full, name_u32)
+            //     — speed/dist are packed instead, geom widened to full u32
+            //     (0xFFFFFFFF = no geom). Everything outside the edge record
+            //     is identical to v2.
+            guard version == 2 || version == 3 else {
+                throw SZRGError.unsupportedVersion(version)
+            }
+            let numNodes = Int(try p.readU32())
+            let numEdges = Int(try p.readU32())
+            let numGeoms = Int(try p.readU32())
+            let geomBytes = Int(try p.readU32())
+            let numNames = Int(try p.readU32())
+            let namesBytes = Int(try p.readU32())
 
-        // Nodes: int32 lat_e7, int32 lon_e7.
-        var lat = [Double](); lat.reserveCapacity(numNodes)
-        var lon = [Double](); lon.reserveCapacity(numNodes)
-        for _ in 0..<numNodes {
-            let latE7 = try cursor.readI32()
-            let lonE7 = try cursor.readI32()
-            lat.append(Double(latE7) / 1e7)
-            lon.append(Double(lonE7) / 1e7)
+            // Nodes — lat/lon in 1e-7 degrees.
+            var lat = [Double](); lat.reserveCapacity(numNodes)
+            var lon = [Double](); lon.reserveCapacity(numNodes)
+            for _ in 0..<numNodes {
+                let latE7 = try p.readI32()
+                let lonE7 = try p.readI32()
+                lat.append(Double(latE7) / 1e7)
+                lon.append(Double(lonE7) / 1e7)
+            }
+
+            var adjOffsets = [UInt32](); adjOffsets.reserveCapacity(numNodes + 1)
+            for _ in 0...numNodes { adjOffsets.append(try p.readU32()) }
+
+            var edgeTargets = [UInt32](); edgeTargets.reserveCapacity(numEdges)
+            var edgeDistMeters = [Double](); edgeDistMeters.reserveCapacity(numEdges)
+            var edgeSpeedKmh = [UInt8](); edgeSpeedKmh.reserveCapacity(numEdges)
+            var edgeGeomIdx = [Int32](); edgeGeomIdx.reserveCapacity(numEdges)
+            var edgeNameIdx = [UInt32](); edgeNameIdx.reserveCapacity(numEdges)
+            for _ in 0..<numEdges {
+                let target = try p.readU32()
+                if version == 2 {
+                    let distDm = try p.readU32()
+                    let speedGeom = try p.readU32()
+                    let nameIdx = try p.readU32()
+                    edgeTargets.append(target)
+                    edgeDistMeters.append(Double(distDm) / 10.0)
+                    edgeSpeedKmh.append(UInt8((speedGeom >> 24) & 0xFF))
+                    let geomIdx24 = speedGeom & 0x00FFFFFF
+                    edgeGeomIdx.append(geomIdx24 == 0xFFFFFF ? -1 : Int32(geomIdx24))
+                    edgeNameIdx.append(nameIdx)
+                } else {
+                    // v3: speed+dist packed together, geom_idx gets a full u32.
+                    let speedDist = try p.readU32()
+                    let geom = try p.readU32()
+                    let nameIdx = try p.readU32()
+                    edgeTargets.append(target)
+                    let distDm24 = speedDist & 0x00FFFFFF
+                    edgeDistMeters.append(Double(distDm24) / 10.0)
+                    edgeSpeedKmh.append(UInt8((speedDist >> 24) & 0xFF))
+                    edgeGeomIdx.append(geom == 0xFFFFFFFF ? -1 : Int32(bitPattern: geom))
+                    edgeNameIdx.append(nameIdx)
+                }
+            }
+
+            // Geometry offsets + blob (blob stays in place; we just track
+            // its start offset and length and decode into `geoms` in one
+            // pass without any `subdata` copies).
+            var geomOffsets = [UInt32](); geomOffsets.reserveCapacity(numGeoms + 1)
+            for _ in 0...numGeoms { geomOffsets.append(try p.readU32()) }
+            let geomBase = p.pos
+            try p.advance(geomBytes)
+
+            // Name offsets + blob.
+            var nameOffsets = [UInt32](); nameOffsets.reserveCapacity(numNames + 1)
+            for _ in 0...numNames { nameOffsets.append(try p.readU32()) }
+            let namesBase = p.pos
+            try p.advance(namesBytes)
+
+            // Decode polylines directly against the unsafe buffer — no copies.
+            // With `decodeGeoms=false` we allocate the outer array as empty
+            // placeholders so indices still line up; each edge's polyline
+            // falls back to its endpoint nodes' lat/lon.
+            var geoms: [[(lat: Double, lon: Double)]] = []
+            if decodeGeoms {
+                geoms.reserveCapacity(numGeoms)
+                for g in 0..<numGeoms {
+                    let start = geomBase + Int(geomOffsets[g])
+                    let end = geomBase + Int(geomOffsets[g + 1])
+                    geoms.append(try Self.decodeGeom(raw, start: start, end: end))
+                }
+            } else {
+                geoms = Array(repeating: [], count: numGeoms)
+            }
+
+            // Decode names — construct a Swift `String` from each bounded
+            // slice. Each string allocates (Swift strings are not zero-copy
+            // over an external buffer), but the *blob itself* never gets
+            // copied.
+            var names: [String] = []
+            names.reserveCapacity(numNames)
+            for n in 0..<numNames {
+                let s = namesBase + Int(nameOffsets[n])
+                let e = namesBase + Int(nameOffsets[n + 1])
+                let bytesPointer = raw.baseAddress!.advanced(by: s).assumingMemoryBound(to: UInt8.self)
+                let length = e - s
+                let buffer = UnsafeBufferPointer(start: bytesPointer, count: length)
+                names.append(String(decoding: buffer, as: UTF8.self))
+            }
+
+            return SZRGGraph(
+                lat: lat,
+                lon: lon,
+                adjOffsets: adjOffsets,
+                edgeTargets: edgeTargets,
+                edgeDistMeters: edgeDistMeters,
+                edgeSpeedKmh: edgeSpeedKmh,
+                edgeGeomIdx: edgeGeomIdx,
+                edgeNameIdx: edgeNameIdx,
+                names: names,
+                geoms: geoms
+            )
         }
-
-        // Adjacency offsets.
-        var adjOffsets = [UInt32](); adjOffsets.reserveCapacity(numNodes + 1)
-        for _ in 0...numNodes { adjOffsets.append(try cursor.readU32()) }
-
-        // Edges.
-        var edgeTargets = [UInt32](); edgeTargets.reserveCapacity(numEdges)
-        var edgeDistMeters = [Double](); edgeDistMeters.reserveCapacity(numEdges)
-        var edgeSpeedKmh = [UInt8](); edgeSpeedKmh.reserveCapacity(numEdges)
-        var edgeGeomIdx = [Int32](); edgeGeomIdx.reserveCapacity(numEdges)
-        var edgeNameIdx = [UInt32](); edgeNameIdx.reserveCapacity(numEdges)
-        for _ in 0..<numEdges {
-            let target = try cursor.readU32()
-            let distDm = try cursor.readU32()
-            let speedGeom = try cursor.readU32()
-            let nameIdx = try cursor.readU32()
-            edgeTargets.append(target)
-            edgeDistMeters.append(Double(distDm) / 10.0)
-            edgeSpeedKmh.append(UInt8((speedGeom >> 24) & 0xFF))
-            let geomIdx24 = speedGeom & 0x00FFFFFF
-            edgeGeomIdx.append(geomIdx24 == 0xFFFFFF ? -1 : Int32(geomIdx24))
-            edgeNameIdx.append(nameIdx)
-        }
-
-        // Geometry offsets + blob.
-        var geomOffsets = [UInt32](); geomOffsets.reserveCapacity(numGeoms + 1)
-        for _ in 0...numGeoms { geomOffsets.append(try cursor.readU32()) }
-        let geomBlob = try cursor.readData(count: geomBytes)
-
-        // Name offsets + blob.
-        var nameOffsets = [UInt32](); nameOffsets.reserveCapacity(numNames + 1)
-        for _ in 0...numNames { nameOffsets.append(try cursor.readU32()) }
-        let namesBlob = try cursor.readData(count: namesBytes)
-
-        // Decode polylines.
-        var geoms: [[(lat: Double, lon: Double)]] = []
-        geoms.reserveCapacity(numGeoms)
-        for g in 0..<numGeoms {
-            let start = Int(geomOffsets[g])
-            let end = Int(geomOffsets[g + 1])
-            geoms.append(try Self.decodeGeom(geomBlob, start: start, end: end))
-        }
-
-        // Decode names.
-        var names: [String] = []
-        names.reserveCapacity(numNames)
-        for n in 0..<numNames {
-            let s = Int(nameOffsets[n])
-            let e = Int(nameOffsets[n + 1])
-            let slice = namesBlob.subdata(in: s..<e)
-            names.append(String(data: slice, encoding: .utf8) ?? "")
-        }
-
-        return SZRGGraph(
-            lat: lat,
-            lon: lon,
-            adjOffsets: adjOffsets,
-            edgeTargets: edgeTargets,
-            edgeDistMeters: edgeDistMeters,
-            edgeSpeedKmh: edgeSpeedKmh,
-            edgeGeomIdx: edgeGeomIdx,
-            edgeNameIdx: edgeNameIdx,
-            names: names,
-            geoms: geoms
-        )
     }
 
-    static func decodeGeom(_ blob: Data, start: Int, end: Int) throws -> [(lat: Double, lon: Double)] {
+    /// Decode one delta-encoded polyline from raw bytes. `start` and `end`
+    /// are byte offsets into `raw`; no allocation happens here beyond the
+    /// returned `[(lat, lon)]` array.
+    static func decodeGeom(
+        _ raw: UnsafeRawBufferPointer,
+        start: Int,
+        end: Int
+    ) throws -> [(lat: Double, lon: Double)] {
         if end <= start { return [] }
-        var cursor = Cursor(data: blob.subdata(in: start..<end))
+        var cursor = RawCursor(base: raw, count: end, pos: start)
         let lon0 = try cursor.readI32()
         let lat0 = try cursor.readI32()
         var points: [(lat: Double, lon: Double)] = [(Double(lat0) / 1e7, Double(lon0) / 1e7)]
+        points.reserveCapacity(8) // small buckets amortize; arrays grow as needed.
         var lonE7 = lon0
         var latE7 = lat0
-        while !cursor.atEnd {
+        while cursor.pos < end {
             let dlon = Self.zigzagDecode(try cursor.readVarint())
             let dlat = Self.zigzagDecode(try cursor.readVarint())
             lonE7 &+= Int32(dlon)
@@ -175,38 +227,39 @@ public struct SZRGGraph: Sendable {
     }
 }
 
-// MARK: - Byte cursor
+// MARK: - Raw cursor over UnsafeRawBufferPointer
 
-private struct Cursor {
-    let data: Data
-    private(set) var pos: Int = 0
+private struct RawCursor {
+    let base: UnsafeRawBufferPointer
+    let count: Int
+    var pos: Int
 
-    var atEnd: Bool { pos >= data.count }
-
-    mutating func readBytes(_ count: Int) -> [UInt8] {
-        let end = pos + count
-        let slice = Array(data[pos..<end])
-        pos = end
-        return slice
+    mutating func expectMagic(_ expected: [UInt8]) throws {
+        guard pos + expected.count <= count else { throw SZRGError.truncated("magic") }
+        for i in 0..<expected.count {
+            if base[pos + i] != expected[i] {
+                let actual = Array(base[pos..<pos + expected.count])
+                throw SZRGError.badMagic(actual)
+            }
+        }
+        pos += expected.count
     }
 
-    mutating func readData(count: Int) throws -> Data {
-        let end = pos + count
-        guard end <= data.count else { throw SZRGError.truncated("blob") }
-        let slice = data.subdata(in: pos..<end)
-        pos = end
-        return slice
+    mutating func advance(_ n: Int) throws {
+        guard pos + n <= count else { throw SZRGError.truncated("advance") }
+        pos += n
     }
 
     mutating func readU32() throws -> UInt32 {
         let end = pos + 4
-        guard end <= data.count else { throw SZRGError.truncated("u32") }
-        var v: UInt32 = 0
-        withUnsafeMutableBytes(of: &v) { buf in
-            data.copyBytes(to: buf, from: pos..<end)
-        }
+        guard end <= count else { throw SZRGError.truncated("u32") }
+        // Little-endian: base[0] is LSB.
+        let v = UInt32(base[pos])
+            | UInt32(base[pos + 1]) << 8
+            | UInt32(base[pos + 2]) << 16
+            | UInt32(base[pos + 3]) << 24
         pos = end
-        return UInt32(littleEndian: v)
+        return v
     }
 
     mutating func readI32() throws -> Int32 {
@@ -217,8 +270,9 @@ private struct Cursor {
         var shift: UInt64 = 0
         var result: UInt64 = 0
         while true {
-            guard pos < data.count else { throw SZRGError.truncated("varint") }
-            let b = data[pos]; pos += 1
+            guard pos < count else { throw SZRGError.truncated("varint") }
+            let b = base[pos]
+            pos += 1
             result |= UInt64(b & 0x7F) << shift
             if (b & 0x80) == 0 { return result }
             shift += 7

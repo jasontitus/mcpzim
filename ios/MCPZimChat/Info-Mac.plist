@@ -20,16 +20,13 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>NSDocumentsFolderUsageDescription</key>
-	<string>Needed to read ZIM archives you drop into the app's Documents folder.</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Zimfo uses your location for routing and "what's nearby" queries. All lookups stay on-device.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Zimfo uses your location for routing and "what's nearby" queries. All lookups stay on-device.</string>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-	</dict>
-	<key>UILaunchScreen</key>
-	<dict/>
 </dict>
 </plist>
