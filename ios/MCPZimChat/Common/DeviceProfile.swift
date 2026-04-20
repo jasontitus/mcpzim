@@ -66,12 +66,17 @@ public extension DeviceProfile {
     )
     /// 8 GB Pro iPhones & M-series iPads.
     static let balanced = DeviceProfile(
-        articleCapKB: 16, maxReplyTokens: 512, mlxCacheLimitMB: 512,
+        articleCapKB: 16, maxReplyTokens: 320, mlxCacheLimitMB: 384,
         label: "balanced (≈8 GB)"
     )
-    /// 12 GB+ iPhones / iPads.
+    /// 12 GB+ iPhones / iPads. On iPhone 17 Pro Max the *process* cap
+    /// with `increased-memory-limit` is only 6144 MB regardless of how
+    /// much physical RAM the device ships with, so the cache cap here
+    /// is only slightly larger than `balanced`. Reply tokens kept
+    /// short — a 500-token reply takes ~60 s for Kokoro to speak,
+    /// which kills the voice-chat flow.
     static let generous = DeviceProfile(
-        articleCapKB: 24, maxReplyTokens: 512, mlxCacheLimitMB: 640,
+        articleCapKB: 24, maxReplyTokens: 320, mlxCacheLimitMB: 448,
         label: "generous (≈12 GB)"
     )
     /// Development machines — not trying to avoid jetsam on macOS;

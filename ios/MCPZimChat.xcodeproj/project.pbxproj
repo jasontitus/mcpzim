@@ -42,6 +42,7 @@
 		6D7C51E18886D0389EA31EA2 /* FoundationModelsNativeTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */; };
 		6DDC0A1A00428E2129F5DCF6 /* ConversationalEvalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5814FC5C00DC7003BA980822 /* ConversationalEvalTests.swift */; };
 		6EE940AF26ADE1C9F6E1E48C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68BDA1E10556B87C57B41BFB /* RootView.swift */; };
+		74DAC895C6ED5C745E46FDE8 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		75F3449BD67167AE2D95E62B /* VoiceChatController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */; };
 		7C80D1F8333B3BEEE7348FC0 /* KokoroAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */; };
 		7DB08BA62F598A060EB40F39 /* DebugPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 267EDFBA28517128DC5EB6E5 /* DebugPane.swift */; };
@@ -54,7 +55,9 @@
 		991D9CAB46EC9BE2B190C2BB /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */; };
 		9944BC51FF63E1E8ED7317B1 /* MCPZimKit in Frameworks */ = {isa = PBXBuildFile; productRef = 23FEAB22262304C043EBF45F /* MCPZimKit */; };
 		99782EFCA850E4FE60B60189 /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
+		A1A1F46F888E8A38EA6941AE /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A332602332894F8A97B72609 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
+		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		A3F8DDA8CE492A709D73CDBC /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
 		A54A973CBA0A78BA50B9F26F /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
 		AF2A0E2D772718AFC1B1AF20 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
@@ -68,6 +71,7 @@
 		C9AFDA297646DDAD66FEE56A /* ZimfoRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */; };
 		CA3F5AF9BEB7381081B9895B /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		CE739BBD78E30B102A53F8C8 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79130F0C1B723177E34B9AD0 /* TTSService.swift */; };
+		CF4C4D6916DCD55F90003229 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 627D27FCFC19D35BACEC4DB2 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
 		DC31AA377E56FEC379F716AE /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
@@ -92,10 +96,36 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		43DD99D349A12282AE6FF844 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				CF4C4D6916DCD55F90003229 /* KokoroSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B751DDC264A6BCD0ED7C9472 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A1A1F46F888E8A38EA6941AE /* KokoroSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		0775822A936033CF0B59DD4C /* MockProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockProvider.swift; sourceTree = "<group>"; };
 		0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroAssets.swift; sourceTree = "<group>"; };
 		106C21CFBBAE9B3D4B8D84C3 /* kokoro-ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "kokoro-ios"; path = "LocalPackages/kokoro-ios"; sourceTree = SOURCE_ROOT; };
+		119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeroMediaView.swift; sourceTree = "<group>"; };
 		149DA9870C0F015A888DD308 /* DeviceProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceProfile.swift; sourceTree = "<group>"; };
 		197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoIntentsTests.swift; sourceTree = "<group>"; };
 		2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoRunner.swift; sourceTree = "<group>"; };
@@ -130,6 +160,7 @@
 		B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatView.swift; sourceTree = "<group>"; };
 		C4495544D6591F69F7CC0A24 /* LibzimBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LibzimBridge.h; sourceTree = "<group>"; };
 		C51F39432F92BDC2873FF548 /* ZimfoContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoContext.swift; sourceTree = "<group>"; };
+		C7B765A66EE5E37E25348E19 /* MCPZimChat-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "MCPZimChat-iOS.entitlements"; sourceTree = "<group>"; };
 		E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gemma4Provider.swift; sourceTree = "<group>"; };
 		E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroDownloader.swift; sourceTree = "<group>"; };
 		ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = LibzimBridge.mm; sourceTree = "<group>"; };
@@ -227,6 +258,7 @@
 			children = (
 				5F116399360AD2DE54223FA7 /* ChatView.swift */,
 				267EDFBA28517128DC5EB6E5 /* DebugPane.swift */,
+				119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */,
 				94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */,
 				5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */,
 				68BDA1E10556B87C57B41BFB /* RootView.swift */,
@@ -300,6 +332,7 @@
 			children = (
 				9FF024DDEF1F8B898451BF3B /* Info-Mac.plist */,
 				71F26EEF012F57C0CF856CC2 /* Info.plist */,
+				C7B765A66EE5E37E25348E19 /* MCPZimChat-iOS.entitlements */,
 				A40AEB06E04009CEEFC835C1 /* MCPZimChat.entitlements */,
 				A8877084208EB4DD69423919 /* App */,
 				44D1AAB9A218CD7D23EB5B21 /* AppIntents */,
@@ -335,6 +368,7 @@
 				8104C0CB83AA8A28F4AEFEE2 /* Sources */,
 				01EEEAA6B3C68DDE25F1F5C1 /* Resources */,
 				4D85992F876A838769219640 /* Frameworks */,
+				43DD99D349A12282AE6FF844 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -358,6 +392,7 @@
 				F6C5C294DCDB17326DB014EB /* Sources */,
 				35E18A386CBA397202E35157 /* Resources */,
 				8B8CE7A33C3AB47BE0DC0261 /* Frameworks */,
+				B751DDC264A6BCD0ED7C9472 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -483,6 +518,7 @@
 				C76A8ECC4E114DFA06290F3F /* FoundationModelsNativeTools.swift in Sources */,
 				DF65D0F49519D238DE60C1E5 /* FoundationModelsProvider.swift in Sources */,
 				1552DF61BEE685667DC21E18 /* Gemma4Provider.swift in Sources */,
+				74DAC895C6ED5C745E46FDE8 /* HeroMediaView.swift in Sources */,
 				7C80D1F8333B3BEEE7348FC0 /* KokoroAssets.swift in Sources */,
 				0CFAA697E603F3DA76F850D1 /* KokoroDownloader.swift in Sources */,
 				991D9CAB46EC9BE2B190C2BB /* LibraryView.swift in Sources */,
@@ -519,6 +555,7 @@
 				6D7C51E18886D0389EA31EA2 /* FoundationModelsNativeTools.swift in Sources */,
 				3E5CBB6DF865493628BCFBEC /* FoundationModelsProvider.swift in Sources */,
 				92A825DC132CF07CA068D76E /* Gemma4Provider.swift in Sources */,
+				A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */,
 				E18395D889A1ACFD60C1F226 /* KokoroAssets.swift in Sources */,
 				AF2A0E2D772718AFC1B1AF20 /* KokoroDownloader.swift in Sources */,
 				38C77B4EF968848BB9665767 /* LibraryView.swift in Sources */,
@@ -562,6 +599,7 @@
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "MCPZimChat/MCPZimChat-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -736,6 +774,7 @@
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "MCPZimChat/MCPZimChat-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",

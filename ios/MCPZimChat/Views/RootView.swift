@@ -8,16 +8,23 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             ChatView()
-                .navigationTitle("MCPZim Chat")
+                .navigationTitle("Zimfo")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
-                        NavigationLink { LibraryView() } label: {
-                            Image(systemName: "books.vertical")
+                        Button {
+                            session.resetConversation()
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
                         }
-                        .accessibilityLabel("Library")
+                        .accessibilityLabel("New conversation")
+                        .disabled(session.messages.isEmpty || session.isGenerating)
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        ModelPickerView()
+                        NavigationLink { LibraryView() } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .accessibilityLabel("Settings")
                     }
                 }
                 .task {
@@ -25,6 +32,14 @@ struct RootView: View {
                     // previously picked from Downloads/external folders.
                     await session.scanDocumentsFolder()
                     await session.restoreExternalBookmarks()
+                    // Prime location permission + snapshot early so the
+                    // very first "directions to X" query has `currentLocation`
+                    // baked into the system preamble.
+                    LocationFetcher.requestAuthorizationIfNeeded()
+                    session.refreshLocationIfStale()
+                    // Warm the routing graph + rerank model so the first
+                    // real query doesn't pay their ~1.2–3 s load costs.
+                    session.prewarmBackgroundCaches()
                 }
         }
     }

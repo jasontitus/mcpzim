@@ -70,6 +70,8 @@ targets:
         product: Gemma4SwiftCore
       - package: KokoroSwift
         product: KokoroSwift
+        embed: true
+        codeSign: true
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
@@ -80,6 +82,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChat
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_CFBundleDisplayName: "Zimfo"
+        CODE_SIGN_ENTITLEMENTS: MCPZimChat/MCPZimChat-iOS.entitlements
         # LibzimBridge.h/mm is a no-op until CoreKiwix.xcframework is linked
         # (both files wrap their contents in `__has_include(<zim/archive.h>)`),
         # so keeping the bridging header wired up here is safe in either state.
@@ -138,6 +141,8 @@ targets:
         product: Gemma4SwiftCore
       - package: KokoroSwift
         product: KokoroSwift
+        embed: true
+        codeSign: true
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework

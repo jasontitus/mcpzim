@@ -63,8 +63,17 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
         haversineMeters(graph.lat[node], graph.lon[node], goalLat, goalLon) / speedCeilingMps
     }
 
-    var gScore: [Int: Double] = [origin: 0]
-    var cameFrom: [Int: (Int, Int)] = [:]  // node -> (prev, edgeIndex)
+    // Node-indexed arrays instead of `[Int: …]` dictionaries. For a
+    // 200K-node visit (cross-metro route) this drops ~80 MB of hash-
+    // table overhead and keeps cache locality while still letting us
+    // use `Double.infinity` / `-1` as the "unvisited" sentinel.
+    // .infinity pre-fills a contiguous Float64 array — cheap on modern
+    // ARM and lets the inner loop avoid dictionary hashing entirely.
+    let n = graph.numNodes
+    var gScore = [Double](repeating: .infinity, count: n)
+    var cameFromPrev = [Int32](repeating: -1, count: n)
+    var cameFromEdge = [Int32](repeating: -1, count: n)
+    gScore[origin] = 0
     var open = MinHeap<QueueItem>()
     var counter = 0
     open.push(QueueItem(f: heuristic(origin), tiebreaker: counter, node: origin))
@@ -72,9 +81,12 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
 
     while let current = open.pop() {
         if current.node == goal {
-            return reconstructRoute(graph: graph, origin: origin, goal: goal, cameFrom: cameFrom)
+            return reconstructRoute(
+                graph: graph, origin: origin, goal: goal,
+                cameFromPrev: cameFromPrev, cameFromEdge: cameFromEdge
+            )
         }
-        let curG = gScore[current.node] ?? .infinity
+        let curG = gScore[current.node]
         // Guard against stale entries left in the heap after a better path was found.
         if curG < current.f - heuristic(current.node) - 1e-9 { continue }
 
@@ -86,9 +98,10 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
             let speed = max(1.0, Double(graph.edgeSpeedKmh[e]))
             let edgeCost = dist * 3.6 / speed
             let tentative = curG + edgeCost
-            if tentative < (gScore[target] ?? .infinity) {
+            if tentative < gScore[target] {
                 gScore[target] = tentative
-                cameFrom[target] = (current.node, e)
+                cameFromPrev[target] = Int32(current.node)
+                cameFromEdge[target] = Int32(e)
                 open.push(QueueItem(f: tentative + heuristic(target), tiebreaker: counter, node: target))
                 counter += 1
             }
@@ -101,14 +114,17 @@ private func reconstructRoute(
     graph: SZRGGraph,
     origin: Int,
     goal: Int,
-    cameFrom: [Int: (Int, Int)]
+    cameFromPrev: [Int32],
+    cameFromEdge: [Int32]
 ) -> Route {
     var reversed: [(prev: Int, edge: Int, this: Int)] = []
     var node = goal
     while node != origin {
-        guard let link = cameFrom[node] else { break }
-        reversed.append((prev: link.0, edge: link.1, this: node))
-        node = link.0
+        let prev = Int(cameFromPrev[node])
+        let edge = Int(cameFromEdge[node])
+        guard prev >= 0, edge >= 0 else { break }
+        reversed.append((prev: prev, edge: edge, this: node))
+        node = prev
     }
     reversed.reverse()
 

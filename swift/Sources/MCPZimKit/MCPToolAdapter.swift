@@ -184,6 +184,16 @@ public actor MCPToolAdapter {
                         + "wrapper over geocode + plan_driving_route.",
                     inputSchemaJSON: Self.routeFromPlacesSchema
                 ),
+                MCPTool(
+                    name: "show_map",
+                    description:
+                        "Show an interactive map centred on a free-text place name "
+                        + "(\"show me a map of Palo Alto\"). Use for questions that "
+                        + "only ask to see a location — no route, no nearby list. "
+                        + "Returns the resolved place name + coordinates; the host "
+                        + "renders the streetzim viewer at those coordinates.",
+                    inputSchemaJSON: Self.showMapSchema
+                ),
             ])
             // Raw-coordinate tools: powerful for programmatic callers but
             // a footgun for LLMs (model passes text where coords go, or
@@ -235,6 +245,23 @@ public actor MCPToolAdapter {
                 ? requestedLimit
                 : max(requestedLimit * 2, 20)
             var hits = try await service.search(query: query, limit: fetchLimit, kind: kind)
+            // Auto-fallback when a `kind` filter returns nothing (or
+            // only a trickle) — small models routinely set
+            // `kind="mdwiki"` on unrelated queries because the system
+            // preamble mentioned mdwiki for medical questions. Don't
+            // punish the user for that guess.
+            if kind != nil, hits.count < 3 {
+                let wider = try await service.search(query: query, limit: fetchLimit, kind: nil)
+                var merged = hits
+                var seen = Set(hits.map { "\($0.zim)\t\($0.path)" })
+                for h in wider {
+                    let key = "\(h.zim)\t\(h.path)"
+                    if seen.contains(key) { continue }
+                    seen.insert(key)
+                    merged.append(h)
+                }
+                hits = merged
+            }
             if let rerank = hitReranker {
                 hits = await rerank(query, hits)
             }
@@ -302,6 +329,36 @@ public actor MCPToolAdapter {
                 kinds: args["kinds"] as? [String]
             )
             return ["count": places.count, "results": places.map(Self.encodePlace)]
+        case "show_map":
+            let place = (args["place"] as? String) ?? ""
+            let zim = args["zim"] as? String
+            // Prefer place-kinds (city/town/village/POI) over addr
+            // (which tends to match a bare "Burbank" to a Silicon
+            // Valley street called "Burbank Drive"). Fall back to an
+            // all-kinds search if the first pass comes up empty.
+            var hits = try await service.geocode(
+                query: place, limit: 1, zim: zim,
+                kinds: ["place", "poi"]
+            )
+            if hits.isEmpty {
+                hits = try await service.geocode(
+                    query: place, limit: 1, zim: zim, kinds: nil
+                )
+            }
+            guard let hit = hits.first else { throw ZimServiceError.noMatch(place) }
+            // Return a single-point "polyline" so the existing
+            // streetzim-viewer wiring in the host app renders a map
+            // centred at `(lat, lon)` with our blue dot overlay. No
+            // route line, no turns — just a map of the place. The
+            // host falls back to whichever streetzim is enabled if
+            // `zim` is blank.
+            return [
+                "zim": zim ?? "",
+                "place": hit.name,
+                "lat": hit.lat,
+                "lon": hit.lon,
+                "polyline": [[hit.lat, hit.lon]],
+            ] as [String: Any]
         case "near_named_place":
             let place = (args["place"] as? String) ?? ""
             let radius = (args["radius_km"] as? Double) ?? 1.0
@@ -663,6 +720,13 @@ public actor MCPToolAdapter {
         "origin":{"type":"string"},
         "destination":{"type":"string"},
         "zim":{"type":"string"}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let showMapSchema: Data = #"""
+    {"type":"object","required":["place"],"properties":{
+        "place":{"type":"string","description":"Free-text place name to center the map on."},
+        "zim":{"type":"string","description":"Optional streetzim filename to geocode against."}
     }}
     """#.data(using: .utf8)!
 }

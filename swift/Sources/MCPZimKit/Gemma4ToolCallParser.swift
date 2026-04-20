@@ -32,14 +32,67 @@ public enum Gemma4ToolCallParser {
     }
 
     public static func firstCall(in buffer: String) -> Match? {
-        guard let openMarker = buffer.range(of: "<|tool_call>"),
-              let closeMarker = buffer.range(of: "<tool_call|>", range: openMarker.upperBound..<buffer.endIndex)
-        else { return nil }
-        let body = String(buffer[openMarker.upperBound..<closeMarker.lowerBound])
-        guard let parsed = parseCallBody(body) else { return nil }
-        return Match(range: openMarker.lowerBound..<closeMarker.upperBound,
-                     name: parsed.name,
-                     arguments: parsed.arguments)
+        guard let openMarker = buffer.range(of: "<|tool_call>") else { return nil }
+        // Canonical: explicit `<tool_call|>` close.
+        if let closeMarker = buffer.range(
+            of: "<tool_call|>", range: openMarker.upperBound..<buffer.endIndex)
+        {
+            let body = String(buffer[openMarker.upperBound..<closeMarker.lowerBound])
+            if let parsed = parseCallBody(body) {
+                return Match(range: openMarker.lowerBound..<closeMarker.upperBound,
+                             name: parsed.name, arguments: parsed.arguments)
+            }
+        }
+        // Fallback: small models occasionally forget the closing sentinel
+        // and emit `<|tool_call>call:NAME{…balanced…}` only. Scan for the
+        // matching `}` that closes the outermost `{…}` object after
+        // `call:NAME` and treat that as the end of the call.
+        if let impliedEnd = impliedBodyEnd(in: buffer, openUpper: openMarker.upperBound) {
+            let body = String(buffer[openMarker.upperBound..<impliedEnd])
+            if let parsed = parseCallBody(body) {
+                return Match(range: openMarker.lowerBound..<impliedEnd,
+                             name: parsed.name, arguments: parsed.arguments)
+            }
+        }
+        return nil
+    }
+
+    /// Find the index one past the matching `}` that closes the `call:NAME{…}`
+    /// body when the model omitted the `<tool_call|>` marker. Returns nil if
+    /// the body's braces are unbalanced (still being streamed).
+    private static func impliedBodyEnd(in buffer: String, openUpper: String.Index)
+        -> String.Index?
+    {
+        var idx = openUpper
+        // Advance to the first `{` — body must start with `call:NAME{`.
+        while idx < buffer.endIndex, buffer[idx] != "{" { idx = buffer.index(after: idx) }
+        guard idx < buffer.endIndex else { return nil }
+        var depth = 0
+        var inString = false
+        while idx < buffer.endIndex {
+            let ch = buffer[idx]
+            // Gemma string literals are `<|"|>…<|"|>` — track them so a `{`
+            // or `}` inside a string doesn't confuse the depth counter.
+            if !inString, buffer[idx..<buffer.endIndex].hasPrefix("<|\"|>") {
+                inString = true
+                idx = buffer.index(idx, offsetBy: 5)
+                continue
+            }
+            if inString, buffer[idx..<buffer.endIndex].hasPrefix("<|\"|>") {
+                inString = false
+                idx = buffer.index(idx, offsetBy: 5)
+                continue
+            }
+            if !inString {
+                if ch == "{" { depth += 1 }
+                else if ch == "}" {
+                    depth -= 1
+                    if depth == 0 { return buffer.index(after: idx) }
+                }
+            }
+            idx = buffer.index(after: idx)
+        }
+        return nil
     }
 
     // MARK: - Body parsing

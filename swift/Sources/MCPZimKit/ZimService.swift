@@ -131,6 +131,19 @@ public actor DefaultZimService: ZimService {
         self.logger = logger
     }
 
+    /// Pre-load the routing graph + search manifest for every loaded
+    /// streetzim, off the hot path. The first "directions to X" query
+    /// otherwise pays a ~1.2 s graph.bin read+parse — call this at
+    /// app start so that cost lands while the user is still reading
+    /// the empty-state. Safe to call multiple times; each graph load
+    /// is cached after the first hit.
+    public func prewarmStreetzims() async {
+        for pair in streetzimReaders {
+            _ = try? loadManifest(pair: pair)
+            _ = try? loadGraph(pair: pair)
+        }
+    }
+
     private func log(_ msg: String) {
         logger?(msg)
     }
@@ -174,29 +187,132 @@ public actor DefaultZimService: ZimService {
     }
 
     public func search(query: String, limit: Int, kind: ZimKind?) async throws -> [SearchHitResult] {
+        // Natural-language queries ("origin of pizza", "why is plasma
+        // important") score poorly on libzim's bare BM25 — we see
+        // `Pizza Hut` and Wikipedia admin pages at the top instead of
+        // `History of pizza` / `Plasma (physics)`. Fix by running
+        // several passes and merging:
+        //   1. Title-suggest on the keyword core.
+        //   2. FTS on each query variant (reformulated phrasings).
+        // Title hits go first so the semantic reranker (applied
+        // downstream in ChatSession) has better candidates to pick
+        // from. Wikipedia-namespace noise pages are filtered out.
+        let variants = Self.queryVariants(of: query)
+        let keywordQuery = Self.keywordCore(of: query)
         var results: [SearchHitResult] = []
+        var seen = Set<String>()
+        let overfetch = max(limit * 2, 10)
         for pair in readers {
             if let wanted = kind, pair.reader.kind != wanted { continue }
-            let hits = (try? pair.reader.search(query: query, limit: limit)) ?? []
-            for h in hits {
-                // Pull the first ~220 chars of the article's lead as
-                // a snippet so the model can judge topical relevance
-                // without a second tool call. Without this, BM25's
-                // keyword overlap can put a tangential hit at the
-                // top (e.g. "Crypto-shredding" for "quantum
-                // computing's effect on encryption") and the model
-                // has no signal to look past it.
+            let titleHits = (try? pair.reader.searchTitles(
+                query: keywordQuery, limit: overfetch)) ?? []
+            for h in titleHits {
+                if Self.isNoisePath(h.path) { continue }
+                let key = "\(pair.name)\t\(h.path)"
+                if seen.contains(key) { continue }
+                seen.insert(key)
                 let snippet = leadSnippet(from: pair.reader, path: h.path, maxChars: 220)
                 results.append(SearchHitResult(
-                    zim: pair.name,
-                    kind: pair.reader.kind,
-                    path: h.path,
-                    title: h.title,
-                    snippet: snippet
+                    zim: pair.name, kind: pair.reader.kind,
+                    path: h.path, title: h.title, snippet: snippet
                 ))
+                if results.count >= limit { break }
+            }
+            for variant in variants {
+                if results.count >= limit { break }
+                let ftsHits = (try? pair.reader.search(query: variant, limit: overfetch)) ?? []
+                for h in ftsHits {
+                    if results.count >= limit { break }
+                    if Self.isNoisePath(h.path) { continue }
+                    let key = "\(pair.name)\t\(h.path)"
+                    if seen.contains(key) { continue }
+                    seen.insert(key)
+                    let snippet = leadSnippet(from: pair.reader, path: h.path, maxChars: 220)
+                    results.append(SearchHitResult(
+                        zim: pair.name, kind: pair.reader.kind,
+                        path: h.path, title: h.title, snippet: snippet
+                    ))
+                }
             }
         }
         return results
+    }
+
+    /// Generate a couple of reformulated variants for natural-language
+    /// queries so we can union the BM25 result sets. Empirically:
+    ///   "origin of pizza" → ["origin of pizza", "pizza history", "pizza"]
+    ///   "why is plasma important" → ["why is plasma important", "plasma", "plasma physics"]
+    /// Keep the original first so the reranker still has the raw
+    /// keyword signal.
+    private static func queryVariants(of q: String) -> [String] {
+        var out: [String] = [q]
+        let lower = q.lowercased()
+        func push(_ s: String) {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty, !out.contains(t) { out.append(t) }
+        }
+        // "origin(s) of X" / "history of X" → "X history"
+        if let m = lower.range(of: #"^(?:origin|origins|history)\s+of\s+(?:the\s+)?(.+)$"#,
+                               options: .regularExpression) {
+            let tail = String(lower[m]).replacingOccurrences(
+                of: #"^(?:origin|origins|history)\s+of\s+(?:the\s+)?"#,
+                with: "", options: .regularExpression
+            )
+            push(tail + " history")
+            push(tail)
+        }
+        // "why is X (important|useful|significant)" / "how does X work" / "what is X"
+        if let m = lower.range(of: #"^(?:why\s+is|how\s+does|what\s+is)\s+(.+?)(?:\s+(?:important|useful|significant|work|used\s+for))?$"#,
+                               options: .regularExpression) {
+            let inner = String(lower[m])
+                .replacingOccurrences(of: #"^(?:why\s+is|how\s+does|what\s+is)\s+"#,
+                                      with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\s+(?:important|useful|significant|work|used\s+for)$"#,
+                                      with: "", options: .regularExpression)
+            push(inner)
+        }
+        // Always include a bare keyword-core fallback.
+        let core = Self.keywordCore(of: q)
+        if core != q { push(core) }
+        return out
+    }
+
+    /// Strip Wikipedia's namespace pages (AfD, reference desk, etc.)
+    /// — the search index happily returns them and they push real
+    /// encyclopedic articles off the top.
+    private static func isNoisePath(_ path: String) -> Bool {
+        if path.hasPrefix("Wikipedia:") { return true }
+        if path.hasPrefix("Wikipedia%3A") { return true }
+        if path.hasPrefix("User:") { return true }
+        if path.hasPrefix("Talk:") { return true }
+        if path.hasPrefix("Help:") { return true }
+        if path.hasPrefix("Portal:") { return true }
+        if path.hasPrefix("Category:") { return true }
+        if path.hasPrefix("Template:") { return true }
+        if path.hasPrefix("File:") { return true }
+        if path.hasPrefix("Special:") { return true }
+        return false
+    }
+
+    /// Strip stopwords + common question prefixes so natural-language
+    /// queries survive the title index. "origin of pizza" → "pizza
+    /// origin"; "why is plasma important" → "plasma important"; "what
+    /// is aspirin used for" → "aspirin used". Order-preserving.
+    private static func keywordCore(of q: String) -> String {
+        let stop: Set<String> = [
+            "the", "a", "an", "and", "or", "of", "is", "are", "was",
+            "were", "be", "been", "to", "for", "in", "on", "at",
+            "with", "about", "why", "what", "how", "when", "where",
+            "which", "who", "does", "do", "did", "can", "could",
+            "would", "should", "me", "my", "i", "you", "your",
+            "its", "it", "as", "by", "this", "that", "these", "those",
+            "tell", "give", "show",
+        ]
+        let lowered = q.lowercased()
+        let tokens = lowered.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let kept = tokens.filter { !stop.contains(String($0)) }
+        let core = kept.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return core.isEmpty ? q : core
     }
 
     /// Grab the opening of an article body and collapse it to a
@@ -309,16 +425,51 @@ public actor DefaultZimService: ZimService {
         }
         guard !candidates.isEmpty else { throw ZimServiceError.noStreetzim }
 
-        let prefix = Geocoder.normalizePrefix(query)
+        // Try progressively looser variants of the query. Models often
+        // add a city/state disambiguator ("Union Square, San Francisco")
+        // that the streetzim's prefix index doesn't carry, but the
+        // primary name ("Union Square") resolves cleanly.
         let filterSet = kinds.map(Set.init)
-        for pair in candidates {
-            let manifest = try loadManifest(pair: pair)
-            if !manifest.isEmpty && manifest[prefix] == nil { continue }
-            let records = try loadChunk(pair: pair, prefix: prefix)
-            let ranked = Geocoder.rank(records: records, query: query, limit: limit, kinds: filterSet)
-            if !ranked.isEmpty { return ranked.map { ($0, pair.name) } }
+        for attempt in Self.geocodeVariants(of: query) {
+            let prefix = Geocoder.normalizePrefix(attempt)
+            for pair in candidates {
+                let manifest = try loadManifest(pair: pair)
+                if !manifest.isEmpty && manifest[prefix] == nil { continue }
+                let records = try loadChunk(pair: pair, prefix: prefix)
+                let ranked = Geocoder.rank(records: records, query: attempt,
+                                           limit: limit, kinds: filterSet)
+                if !ranked.isEmpty {
+                    if attempt != query {
+                        log("geocode fallback: '\(query)' → '\(attempt)' matched in \(pair.name)")
+                    }
+                    return ranked.map { ($0, pair.name) }
+                }
+            }
         }
         return []
+    }
+
+    /// Ordered set of geocoder queries to try — full query first, then
+    /// progressively-stripped versions. Splits on "," (typical city /
+    /// state suffix) and " in " (natural-language phrasings from TTS
+    /// like "Union Square in San Francisco"). Keeps the left-most
+    /// fragment only, since that's almost always the venue name.
+    private static func geocodeVariants(of query: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        func push(_ s: String) {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty || seen.contains(t) { return }
+            seen.insert(t); out.append(t)
+        }
+        push(query)
+        if let c = query.range(of: ",") {
+            push(String(query[..<c.lowerBound]))
+        }
+        if let c = query.range(of: " in ", options: [.caseInsensitive]) {
+            push(String(query[..<c.lowerBound]))
+        }
+        return out
     }
 
     /// Find places within `radiusKm` of `(lat, lon)`. Scans the streetzim's

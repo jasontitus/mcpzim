@@ -16,8 +16,13 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            modelBanner
-            Divider()
+            // Only show the status banner when there's something to
+            // report (loading, error, not-yet-loaded). Once the model
+            // is ready the chat gets the full vertical space.
+            if needsStatusBanner {
+                modelBanner
+                Divider()
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -35,7 +40,7 @@ struct ChatView: View {
                     }
                 }
             }
-            composer
+            if !showVoiceChat { composer }
             DebugPaneView()
         }
         .alert(
@@ -52,6 +57,12 @@ struct ChatView: View {
         .sheet(isPresented: $showVoiceChat) {
             VoiceChatView()
                 .environment(session)
+                // Bottom panel — leaves the chat + map visible so the
+                // user can watch the response render (and the route
+                // webview with its map) while Kokoro reads it aloud.
+                .presentationDetents([.height(72), .fraction(0.4), .large])
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.4)))
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -90,6 +101,13 @@ struct ChatView: View {
         switch session.modelState {
         case .notLoaded, .failed: return true
         case .downloading, .loading, .ready: return false
+        }
+    }
+
+    private var needsStatusBanner: Bool {
+        switch session.modelState {
+        case .ready: return false
+        default: return true
         }
     }
 
@@ -172,7 +190,22 @@ struct ChatView: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    @Environment(ChatSession.self) private var session
     @State private var justCopied = false
+
+    /// Inline "Sources used" panel is a debug affordance; surface it
+    /// only when the debug pane is visible too.
+    private var sourcesVisible: Bool { session.showDebugPane }
+
+    /// Article-fetching tool traces that should feed `HeroMediaView`.
+    /// Any of these implies the article is load-bearing for the reply,
+    /// so surfacing its hero image is useful context.
+    static func traceHasArticle(_ trace: ToolCallTrace) -> Bool {
+        let names: Set<String> = [
+            "get_article", "get_article_section", "list_article_sections",
+        ]
+        return trace.succeeded && names.contains(trace.name)
+    }
 
     var body: some View {
         switch message.role {
@@ -183,6 +216,21 @@ private struct MessageRow: View {
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 6) {
+                // Map first — feels natural for routing answers, and
+                // the streaming text grows downward below it instead
+                // of pushing the map around as new sentences arrive.
+                ForEach(message.toolCalls) { trace in
+                    if traceHasRoute(trace) {
+                        RouteWebView(trace: trace)
+                    } else if Self.traceHasArticle(trace) {
+                        // Any tool call that named a specific
+                        // article — full fetch, section pull, or
+                        // section list — is a signal that the
+                        // article is load-bearing for the reply.
+                        // Surface its hero image / video.
+                        HeroMediaView(trace: trace)
+                    }
+                }
                 ZStack(alignment: .topTrailing) {
                     bubble(fill: Color.gray.opacity(0.15))
                     if !message.text.isEmpty {
@@ -190,21 +238,19 @@ private struct MessageRow: View {
                             .padding(6)
                     }
                 }
-                if !message.toolCalls.isEmpty {
+                if !message.toolCalls.isEmpty, sourcesVisible {
                     SourcesSection(traces: message.toolCalls)
-                }
-                ForEach(message.toolCalls) { trace in
-                    if traceHasRoute(trace) {
-                        // Offline streetzim viewer (tiles/JS/CSS served from
-                        // the ZIM via `zim://`). MapKit used to render here
-                        // as a sanity check but it pulls Apple Maps tiles
-                        // over the network, which defeats the offline story.
-                        RouteWebView(trace: trace)
-                    }
                 }
             }
         case .tool:
-            bubble(fill: Color.orange.opacity(0.10))
+            // Raw tool-result JSON is part of the debug surface; hide
+            // unless the user has asked for it. The model's own reply
+            // summarizes the result for the user.
+            if sourcesVisible {
+                bubble(fill: Color.orange.opacity(0.10))
+            } else {
+                EmptyView()
+            }
         case .system:
             EmptyView()
         }
@@ -212,11 +258,48 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private func bubble(fill: Color) -> some View {
-        Text(message.text)
+        Text(Self.displayText(message.text, role: message.role))
             .textSelection(.enabled)
             .padding(10)
             .background(fill, in: RoundedRectangle(cornerRadius: 12))
             .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    /// Strip leftover tool-call markup from the assistant's visible
+    /// prose. The parser catches well-formed blocks, but during
+    /// streaming we briefly see the half-emitted opener (e.g.
+    /// `<|tool_call>call:search{query:<|"|>pizza`) before the closing
+    /// sentinel arrives. Nuke anything from the first opener to the
+    /// end of the string so the chat never flashes raw template text.
+    private static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
+        guard role == .assistant else { return raw }
+        var t = raw
+        // Closed blocks (all the canonical spellings).
+        let closedPatterns = [
+            #"<\|tool_call\|?>[\s\S]*?<tool_call\|>"#,
+            #"<tool_call>[\s\S]*?</tool_call>"#,
+            #"<\|tool_response\|?>[\s\S]*?<tool_response\|>"#,
+        ]
+        for pat in closedPatterns {
+            t = t.replacingOccurrences(of: pat, with: "", options: .regularExpression)
+        }
+        // Any stray opener — drop from there to end of string. During
+        // streaming this hides the partially-arrived tool-call until
+        // the parser finishes; after parse the opener shouldn't remain,
+        // but if the model went off-format we still don't show raw
+        // template text. Use a broad prefix so a 4-byte token like
+        // "<|to" or "<|tool_c" in-flight also gets masked.
+        if let r = t.range(of: #"<\|?tool[_a-z]*"#, options: .regularExpression) {
+            t = String(t[..<r.lowerBound])
+        }
+        if let r = t.range(of: #"<tool[_a-z]*"#, options: .regularExpression) {
+            t = String(t[..<r.lowerBound])
+        }
+        // Drop any lingering sentinel scraps.
+        for lit in ["<tool_call|>", "<tool_response|>", "<|\"|>", "<|\""] {
+            t = t.replacingOccurrences(of: lit, with: "")
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// One-click copy of the assistant reply. Turns into a check-mark for

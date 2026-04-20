@@ -14,6 +14,12 @@ struct LibraryView: View {
 
     var body: some View {
         List {
+            Section("Model") {
+                ModelPickerView()
+                Text(modelStateDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 if session.library.isEmpty {
                     Text("No ZIMs loaded. Drop `.zim` files into this app's Documents folder (via Finder while the device is mounted, or via Files.app), then tap Refresh.")
@@ -91,6 +97,16 @@ struct LibraryView: View {
 
             VoiceModelSection()
 
+            Section("Debug") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.showDebugPane) {
+                    Text("Show debug pane")
+                }
+                Text("When on, a log strip appears below the chat showing tool dispatches, per-turn memory, and model timing. Turn off for a clean UI.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Aggregate capabilities") {
                 let caps = session.adapter == nil ? [] : registryCapabilities()
                 if caps.isEmpty {
@@ -144,6 +160,16 @@ struct LibraryView: View {
             Text(entry.isInSandboxDocuments
                  ? "The file will be in the Trash and can be restored from there."
                  : "The file stays where it is; this app just forgets the bookmark.")
+        }
+    }
+
+    private var modelStateDescription: String {
+        switch session.modelState {
+        case .notLoaded:          return "Not loaded. Pick a model above."
+        case .loading:            return "Loading weights…"
+        case .downloading(let p): return "Downloading weights… \(Int(p * 100))%"
+        case .ready:              return "Ready."
+        case .failed(let m):      return "Failed: \(m)"
         }
     }
 

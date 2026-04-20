@@ -31,6 +31,10 @@ actor SemanticReranker {
     /// keep for the app's lifetime.
     private var cache: [String: [Double]] = [:]
 
+    /// Optional logging sink — wired up from ChatSession so reranker
+    /// activity shows up in the debug pane ("reranked 10 → [#3 first]").
+    nonisolated(unsafe) static var log: (@Sendable (String) -> Void)?
+
     private init() {}
 
     /// Ensure the embedding model is loaded. If the framework needs
@@ -40,25 +44,24 @@ actor SemanticReranker {
         if loadAttempted { return }
         loadAttempted = true
         guard let candidate = NLContextualEmbedding(language: .english) else {
+            Self.log?("NLContextualEmbedding(.english) returned nil — reranker disabled")
             return
         }
         if !candidate.hasAvailableAssets {
-            // Fire the instance-level `requestAssets()` helper —
-            // returns an `NLContextualEmbedding.AssetsResult` that
-            // we don't need; we just need the side-effect of the
-            // download.
+            Self.log?("requesting NLContextualEmbedding assets…")
             do {
                 _ = try await candidate.requestAssets()
             } catch {
+                Self.log?("NLContextualEmbedding asset download failed: \(error)")
                 return
             }
         }
         do {
             try candidate.load()
             self.embedding = candidate
+            Self.log?("NLContextualEmbedding ready")
         } catch {
-            // Load failed — reranker stays disabled, caller gets
-            // BM25 order back unchanged.
+            Self.log?("NLContextualEmbedding.load() failed: \(error)")
         }
     }
 
@@ -66,8 +69,14 @@ actor SemanticReranker {
     /// hits unchanged when the embedding model isn't available.
     func rerank(query: String, hits: [SearchHitResult]) async -> [SearchHitResult] {
         await loadIfNeeded()
-        guard let embedding else { return hits }
-        guard let queryVec = embed(query, with: embedding) else { return hits }
+        guard let embedding else {
+            Self.log?("rerank skipped (embedding unavailable) for \"\(query)\"")
+            return hits
+        }
+        guard let queryVec = embed(query, with: embedding) else {
+            Self.log?("rerank skipped (could not embed query) for \"\(query)\"")
+            return hits
+        }
         struct Scored { let hit: SearchHitResult; let score: Double }
         var scored: [Scored] = []
         for hit in hits {
@@ -97,6 +106,13 @@ actor SemanticReranker {
             if a.element.score != b.element.score { return a.element.score > b.element.score }
             return a.offset < b.offset
         }
+        // Figure out how the new order differs from the BM25 order so
+        // the debug log is actually useful.
+        let before = hits.prefix(3).map { $0.title.isEmpty ? $0.path : $0.title }
+        let after = ranked.prefix(3).map {
+            $0.element.hit.title.isEmpty ? $0.element.hit.path : $0.element.hit.title
+        }
+        Self.log?("rerank \"\(query)\": BM25 top3=\(before) → semantic top3=\(after)")
         return ranked.map { $0.element.hit }
     }
 

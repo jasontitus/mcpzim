@@ -17,6 +17,19 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     /// `once()` talks to CoreLocation normally.
     nonisolated(unsafe) static var overrideForTesting: (@Sendable () async throws -> CLLocationCoordinate2D)?
 
+    /// Trigger the `WhenInUse` permission prompt if we haven't yet,
+    /// without waiting for a location fix. Call this at app launch so
+    /// the dialog shows up while the user is looking, not later when
+    /// they've already asked for directions.
+    static func requestAuthorizationIfNeeded() {
+        DispatchQueue.main.async {
+            let mgr = CLLocationManager()
+            if mgr.authorizationStatus == .notDetermined {
+                mgr.requestWhenInUseAuthorization()
+            }
+        }
+    }
+
     static func once(timeout: TimeInterval = 8) async throws -> CLLocationCoordinate2D {
         if let override = overrideForTesting {
             return try await override()

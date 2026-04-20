@@ -49,7 +49,7 @@ enum KokoroAssets {
         let base = (try? fm.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
-        )) ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        )) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let dir = base
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent("kokoro_mlx", isDirectory: true)

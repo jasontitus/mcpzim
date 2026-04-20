@@ -147,7 +147,7 @@ public enum ArticleSections {
     /// see in Kiwix Wikipedia output. Intentionally not a full HTML
     /// parser — the ZIM output is regular enough that this covers
     /// >99% of articles and is ~30× faster than pulling in SwiftSoup.
-    static func stripHTML(_ html: String) -> String {
+    public static func stripHTML(_ html: String) -> String {
         var out = html
         // Drop known-noisy blocks whole, before tag-stripping, so
         // their inner text doesn't pollute prose.
@@ -156,6 +156,12 @@ public enum ArticleSections {
         out = removeBlock(out, tag: "table")   // infoboxes + nav tables
         out = removeBlock(out, tag: "figure")  // pictures + captions
         out = removeBlock(out, tag: "nav")
+        // mdwiki embeds short instructional clips via `<video>` tags
+        // with nested `<source>` / `<track>` elements. Drop the whole
+        // block so a path like `audio/foo.mp3` doesn't end up in the
+        // prose the model reads aloud.
+        out = removeBlock(out, tag: "video")
+        out = removeBlock(out, tag: "audio")
         // Turn paragraph/list breaks into real whitespace so prose
         // doesn't mash together.
         let blockBreaks = ["</p>", "</li>", "</h2>", "</h3>", "</h4>", "</div>", "<br>", "<br/>", "<br />"]

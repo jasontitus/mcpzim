@@ -68,7 +68,7 @@ public final class ChatSession {
         public let message: String
     }
     public var debugEntries: [DebugEntry] = []
-    public var showDebugPane = true
+    public var showDebugPane = false
     /// Debug-pane cap. Tuned for interactive use; tests that want to
     /// scan the full log can bump this before a long scenario.
     public var maxDebugEntries = 500
@@ -87,6 +87,69 @@ public final class ChatSession {
     }
 
     @ObservationIgnored private var stateObservationTask: Task<Void, Never>?
+
+    /// Last known current location, if the user has granted permission.
+    /// Injected into the system preamble so "directions to X" can
+    /// default to "from here" without the user having to name an
+    /// origin. Refreshed lazily on each new turn.
+    public var currentLocation: (lat: Double, lon: Double)? = nil
+    @ObservationIgnored private var lastLocationFetch: Date = .distantPast
+
+    /// Warm the expensive start-up caches off the user's hot path.
+    /// Called from `RootView` at launch. Intentionally concurrent —
+    /// streetzim graph parse, reranker asset load, and location fix
+    /// are all independent, so there's no point serialising them.
+    public func prewarmBackgroundCaches() {
+        Task { [weak self] in
+            guard let self else { return }
+            let started = Date()
+            await self.service?.prewarmStreetzims()
+            let dt = Date().timeIntervalSince(started)
+            await MainActor.run {
+                self.debug(String(format: "prewarmed streetzims in %.2fs", dt),
+                           category: "ZimSvc")
+            }
+        }
+        Task { [weak self] in
+            // Poke the semantic reranker so `NLContextualEmbedding`
+            // loads before the first search instead of blocking the
+            // first tool_call round-trip.
+            let started = Date()
+            _ = await SemanticReranker.shared.rerank(query: "warmup", hits: [])
+            let dt = Date().timeIntervalSince(started)
+            await MainActor.run {
+                self?.debug(String(format: "prewarmed reranker in %.2fs", dt),
+                            category: "Rerank")
+            }
+        }
+    }
+
+    /// Kick off a location fetch if we haven't had a fresh fix in the
+    /// last two minutes. Non-blocking — the preamble uses whatever we
+    /// last saw, so a first-query user's reply doesn't stall on GPS.
+    /// The first launch also triggers the `WhenInUse` permission
+    /// prompt via `CLLocationManager`, so use a generous timeout so
+    /// the user has time to tap Allow.
+    public func refreshLocationIfStale() {
+        #if canImport(UIKit)
+        guard Date().timeIntervalSince(lastLocationFetch) > 120 else { return }
+        lastLocationFetch = Date()
+        Task { [weak self] in
+            do {
+                let here = try await LocationFetcher.once(timeout: 20)
+                await MainActor.run {
+                    self?.currentLocation = (here.latitude, here.longitude)
+                    self?.debug("location fixed: (\(here.latitude), \(here.longitude))",
+                                category: "Voice")
+                }
+            } catch {
+                await MainActor.run {
+                    self?.debug("location unavailable: \(error)", category: "Voice")
+                }
+            }
+        }
+        #endif
+    }
 
     /// - Parameter autoLoadOnInit: when true (the default, used by the
     ///   app), kicks off an immediate `loadSelectedModel()` so users
@@ -315,6 +378,11 @@ public final class ChatSession {
         // otherwise. Reordering happens inside the `search` tool
         // dispatch so the model always sees the semantically-best
         // candidates first.
+        SemanticReranker.log = { [weak self] msg in
+            Task { @MainActor [weak self] in
+                self?.debug(msg, category: "Rerank")
+            }
+        }
         await adapter.installHitReranker { query, hits in
             await SemanticReranker.shared.rerank(query: query, hits: hits)
         }
@@ -438,6 +506,10 @@ public final class ChatSession {
     public private(set) var lastQueryComplexity: QueryComplexity = .topical
 
     public func send(_ text: String) {
+        // Refresh GPS if our last fix is stale — the preamble built in
+        // `runGenerationLoop` injects `currentLocation`, so a recent
+        // snapshot means "directions to X" queries Just Work.
+        refreshLocationIfStale()
         debug(text, category: "User")
         // Phase 2a classification → stashed for Phase 2b retrieval
         // routing in `runGenerationLoop`. Logged to the debug pane
@@ -519,8 +591,16 @@ public final class ChatSession {
                 The user's current turn looks TOPICAL ("tell me about X" / \
                 "what is X"). Fixed chain you MUST follow before writing a \
                 reply: \
-                1. `search` (one call). \
-                2. `list_article_sections` on the best hit. \
+                1. `search` (one call). The search result's top hits include \
+                   a `preview` field (first ~400 chars of the article's \
+                   lead). READ every preview and pick the hit whose \
+                   preview actually matches what the user asked — do NOT \
+                   default to `hits[0]`. For "origin of pizza", skip \
+                   "Chicago-style pizza" (a regional variant) and choose \
+                   the general "Pizza" article. For "plasma", pick the \
+                   physics article over "plasma actuators" or "blood \
+                   plasma" unless the user specifically asked about those.
+                2. `list_article_sections` on the chosen hit. \
                 3. `get_article_section(section: "lead")`. \
                 4. `get_article_section` on AT LEAST ONE more section \
                    whose title bears on the user's question (history, \
@@ -549,21 +629,56 @@ public final class ChatSession {
                 """
             }
         }()
+        let locationLine: String
+        if let here = currentLocation {
+            locationLine = """
+
+            The user's current location is approximately \
+            (lat: \(String(format: "%.5f", here.lat)), \
+            lon: \(String(format: "%.5f", here.lon))). \
+            When they ask for directions WITHOUT naming an origin \
+            (e.g. "directions to San Francisco", "how do I get to the \
+            hospital"), call `plan_driving_route` with that origin \
+            already filled in — do NOT ask them where they are.
+            """
+        } else {
+            locationLine = ""
+        }
         let systemMessage = """
         You are a helpful assistant with access to tools over locally-loaded \
         ZIM archives. Call tools immediately whenever they can answer the \
         user's question — do NOT ask the user to confirm, and do NOT ask \
-        which ZIM to use (if there is a streetzim, use it for routing; if \
-        there is a wikipedia, use it for general knowledge). Pick sensible \
-        defaults for optional arguments. Only respond in prose after you have \
-        the tool result.
+        which ZIM to use (if there is a streetzim, use it for routing; \
+        if there is a wikipedia, use it for general knowledge; if there \
+        is an mdwiki, use it for medical questions). Pick sensible \
+        defaults for optional arguments. Only respond in prose after \
+        you have the tool result.\(locationLine)
 
-        For routing questions, your reply MUST include:
+        Medical questions are in-scope: this app ships with WikiMed \
+        (the mdwiki ZIM), an open encyclopedia of medical articles \
+        written for clinicians and patients. For clearly clinical \
+        queries (conditions, drugs, dosages, first aid), search it \
+        for better-calibrated answers and relay what the article \
+        says. Do NOT refuse with "I'm not a doctor" boilerplate — the \
+        user is asking for the mdwiki's content, not your opinion.
+
+        IMPORTANT: do NOT set `kind: "mdwiki"` (or any `kind` filter) \
+        unless the user's question is unambiguously medical. Setting \
+        `kind="mdwiki"` on a general query like "plasma physics" or \
+        "Billy Crystal" blinds the search to Wikipedia and returns \
+        nonsense. Default behaviour: OMIT `kind` entirely and let the \
+        unified search pick the best ZIM for you.
+
+        For routing questions, keep the reply SHORT — the user also \
+        sees the map and the full list on-screen, and a spoken reply of \
+        30+ turns is unusable. Your reply MUST include:
         1) total distance and duration from the tool result,
-        2) a numbered turn-by-turn list using the `turn_by_turn` strings \
-           from the tool result, verbatim, in order. If the list was \
-           truncated (a `turn_by_turn_total` field is present) say so \
-           after the visible steps.
+        2) a single-sentence summary of the major roads involved \
+           (name the one or two freeways / arterials from the \
+           `turn_by_turn` list that cover most of the distance),
+        3) at most the FIRST 3–4 turns from `turn_by_turn`, then stop. \
+           If `turn_by_turn_total` is present just say "about N steps \
+           total" — do NOT enumerate the rest.
 
         For "what's nearby" style questions, lead your reply with the \
         `by_category` breakdown from the tool response. Only names from \
@@ -578,8 +693,11 @@ public final class ChatSession {
            sections that actually answer the question (skip "See also", \
            "References", etc. which the tool already strips).
         3. `get_article_section` once per chosen section.
-        4. Answer from the sections you read, citing section titles in \
-           prose ("per the 'Causes' section…") when it aids clarity.
+        4. Answer from the sections you read. Write in natural prose — \
+           DO NOT open with "per the 'lead' section" or "according to \
+           the article"; the user already knows the answer is grounded. \
+           Only name a section when it genuinely clarifies (e.g. \
+           contrasting two sections of the same article).
 
         When the question is a short factoid, one `get_article_section` \
         on `lead` is usually enough. When it's broader ("tell me about \
@@ -747,7 +865,11 @@ public final class ChatSession {
                 // ~30 000 tokens of context, which is expensive and useless
                 // to the model (it can't navigate by lat/lons anyway). Trim
                 // to a summary before re-prompting.
-                let result = Self.trimForModel(toolName: call.name, result: fullResult, articleCapKB: self.articleCapKB)
+                var preTrim = fullResult
+                if call.name == "search" {
+                    preTrim = self.enrichSearchHits(preTrim)
+                }
+                let result = Self.trimForModel(toolName: call.name, result: preTrim, articleCapKB: self.articleCapKB)
                 let resultData = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
                 let resultStr = String(data: resultData, encoding: .utf8) ?? "{}"
                 // Also serialize the UNTRIMMED result so UI extras (like the
@@ -972,9 +1094,11 @@ public final class ChatSession {
         \(summaries.joined(separator: "\n\n"))
 
         Write a clear, thorough answer to the user's question, grounded \
-        only in the notes above. When introducing a specific claim, cite \
-        the source inline (e.g. "per 'Article' § Causes…"). Do NOT add \
-        facts that aren't in the notes.
+        only in the notes above. Use natural prose — DO NOT open with \
+        "per the 'lead' section…" or "according to the article…". Cite \
+        a specific source only when the user would genuinely benefit \
+        (e.g. contrasting two sources). Do NOT add facts that aren't \
+        in the notes.
         """
         let preamble = "You are a helpful, grounded writer."
         let turns = [ChatTurn(role: .user, text: reduceUserTurn)]
@@ -1084,6 +1208,41 @@ public final class ChatSession {
         }
     }
 
+    /// Pull the lead paragraph for the top-3 search hits and add it
+    /// as a `preview` field so the model can judge relevance from
+    /// real article content, not the ~200-char BM25 snippet that
+    /// Wikipedia/mdwiki full-text search returns. Makes a huge
+    /// difference on disambiguation-prone queries (pizza → "origin"
+    /// vs "Chicago-style"; plasma → "plasma actuators" vs
+    /// "plasma (physics)").
+    private func enrichSearchHits(_ result: [String: Any]) -> [String: Any] {
+        guard var hits = result["hits"] as? [[String: Any]], !hits.isEmpty else { return result }
+        let limit = min(hits.count, 3)
+        for i in 0..<limit {
+            guard let zim = hits[i]["zim"] as? String,
+                  let path = hits[i]["path"] as? String,
+                  let entry = library.first(where: {
+                      $0.url.lastPathComponent == zim && $0.isEnabled
+                  }),
+                  let data = try? entry.reader.read(path: path)?.content,
+                  let html = String(data: data, encoding: .utf8)
+            else { continue }
+            let stripped = ArticleSections.stripHTML(html)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // First ~400 chars of the cleaned lead is enough signal
+            // for the model to disambiguate without blowing the prompt.
+            let preview = String(stripped.prefix(400))
+            var updated = hits[i]
+            if !preview.isEmpty {
+                updated["preview"] = preview
+            }
+            hits[i] = updated
+        }
+        var out = result
+        out["hits"] = hits
+        return out
+    }
+
     private func recordToolTrace(_ trace: ToolCallTrace) {
         if messages.last?.role == .assistant {
             messages[messages.count - 1].toolCalls.append(trace)
@@ -1130,16 +1289,21 @@ public final class ChatSession {
                 let last = poly.last ?? []
                 out["polyline"] = ["points": poly.count, "first": first, "last": last]
             }
-            // Turn-by-turn: keep the first 20 instructions and note the
-            // total. 99 % of the useful summary is in the top of the list.
-            if let turns = out["turn_by_turn"] as? [String], turns.count > 20 {
+            // Turn-by-turn: keep only the first 8 instructions. On a
+            // cross-metro route the model will otherwise dutifully
+            // enumerate 30+ turns, which drives a 40 s generation that
+            // grows Gemma's KV cache into jetsam territory on iPhone
+            // and leaves the user listening to 2 minutes of street
+            // names. 8 is enough for the "freeway summary + last few"
+            // flavor the voice assistant should produce.
+            if let turns = out["turn_by_turn"] as? [String], turns.count > 8 {
                 out["turn_by_turn_total"] = turns.count
-                out["turn_by_turn"] = Array(turns.prefix(20)) + ["… (\(turns.count - 20) more)"]
+                out["turn_by_turn"] = Array(turns.prefix(8)) + ["… (\(turns.count - 8) more)"]
             }
-            // Roads: same idea — cap at 20.
-            if let roads = out["roads"] as? [[String: Any]], roads.count > 20 {
+            // Roads: same idea — cap at 8.
+            if let roads = out["roads"] as? [[String: Any]], roads.count > 8 {
                 out["roads_total"] = roads.count
-                out["roads"] = Array(roads.prefix(20)) + [["name": "… (\(roads.count - 20) more)"]]
+                out["roads"] = Array(roads.prefix(8)) + [["name": "… (\(roads.count - 8) more)"]]
             }
             return out
         case "search":
@@ -1185,11 +1349,16 @@ public final class ChatSession {
     /// Imperial (US, UK, Myanmar, Liberia) → miles. Metric elsewhere.
     /// Rounded to 1 decimal — the model's gonna echo this string verbatim.
     private static func formatDistance(km: Double) -> String {
+        // Use the full word ("miles" / "kilometres") rather than the
+        // abbreviation — the small Gemma E2B sometimes drops the number
+        // when trying to expand "mi" to "miles" in prose, producing
+        // "traveling ___ miles". Whole words are pronounced cleanly by
+        // Kokoro TTS too, which otherwise botches bare "mi" / "km".
         if Self.useImperialDistance {
             let miles = km * 0.621371
-            return "\(Self.round1(miles)) mi"
+            return "\(Self.round1(miles)) miles"
         } else {
-            return "\(Self.round1(km)) km"
+            return "\(Self.round1(km)) kilometres"
         }
     }
 

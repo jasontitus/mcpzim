@@ -24,6 +24,17 @@ struct DebugPaneView: View {
     }
 
     var body: some View {
+        // When the master toggle is off we want the chat to reach all
+        // the way to the bottom — collapse to EmptyView rather than
+        // keeping the header strip visible.
+        if !session.showDebugPane {
+            EmptyView()
+        } else {
+            visibleBody
+        }
+    }
+
+    private var visibleBody: some View {
         VStack(spacing: 0) {
             header
             if session.showDebugPane {

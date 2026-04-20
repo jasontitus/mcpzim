@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
-// Sheet that hosts the hands-free voice loop. The view itself is
-// thin — all the orchestration lives in `VoiceChatController`.
+// Compact voice-chat UI. Renders as a single-row bar at the bottom of
+// the chat — left: state icon (mic / ellipsis / speaker / error),
+// middle: live transcript or status, right: End button. All
+// orchestration lives in `VoiceChatController`.
 
 import SwiftUI
 
@@ -11,19 +13,19 @@ struct VoiceChatView: View {
     @State private var controller: VoiceChatController?
 
     var body: some View {
-        VStack(spacing: 24) {
-            header
-            Spacer()
-            orb
-            statusLabel
-            transcriptPreview
-            Spacer()
-            controls
+        HStack(alignment: .center, spacing: 10) {
+            stateIcon
+            Text(previewText)
+                .font(.footnote)
+                .lineLimit(2)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            endButton
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
         .task {
-            // Build the controller lazily so it inherits the session
-            // we got from the environment, then auto-start the loop.
             if controller == nil {
                 let c = VoiceChatController(session: session)
                 controller = c
@@ -35,98 +37,35 @@ struct VoiceChatView: View {
         }
     }
 
-    private var header: some View {
-        HStack {
-            Text("Voice Chat")
-                .font(.headline)
-            Spacer()
-            Button {
-                controller?.stop()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close voice chat")
-        }
-    }
+    // MARK: - Subviews
 
     @ViewBuilder
-    private var orb: some View {
-        let level = CGFloat(controller?.inputLevel ?? 0)
-        let scale = 1.0 + (isListening ? 0.6 * level : 0)
-        ZStack {
-            Circle()
-                .fill(orbColor.opacity(0.15))
-                .frame(width: 220, height: 220)
-                .scaleEffect(scale)
-                .animation(.easeOut(duration: 0.1), value: level)
-            Circle()
-                .fill(orbColor.opacity(0.35))
-                .frame(width: 140, height: 140)
-                .scaleEffect(isThinking ? 0.85 + 0.15 * thinkingPulse : 1.0)
-                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: thinkingPulse)
-            Image(systemName: orbIcon)
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundStyle(orbColor)
+    private var stateIcon: some View {
+        // Tiny colored dot-sized icon — blue/yellow/green/red flags
+        // the state without taking vertical space.
+        Image(systemName: iconName)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(iconColor)
+            .frame(width: 20, height: 20)
+            .symbolEffect(.pulse, options: .repeating, value: isThinking)
+    }
+
+    private var endButton: some View {
+        Button {
+            controller?.stop()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.secondary)
         }
-        .onAppear { thinkingPulse = 1 }
+        .buttonStyle(.plain)
+        .accessibilityLabel("End voice chat")
     }
 
-    @State private var thinkingPulse: Double = 0
+    // MARK: - Derived state
 
-    private var statusLabel: some View {
-        Text(statusText)
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-    }
-
-    private var transcriptPreview: some View {
-        Group {
-            if let live = controller?.liveTranscript, !live.isEmpty {
-                Text(live)
-                    .font(.title3)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                    .lineLimit(3)
-            } else {
-                Text(" ").font(.title3)
-            }
-        }
-        .frame(minHeight: 60)
-    }
-
-    private var controls: some View {
-        HStack(spacing: 16) {
-            Button {
-                controller?.stop()
-                dismiss()
-            } label: {
-                Label("End", systemImage: "phone.down.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .tint(.red)
-            Button {
-                controller?.toggle()
-            } label: {
-                Label(toggleLabel, systemImage: toggleIcon)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-        }
-    }
-
-    // MARK: - Derived UI state
-
-    private var state: VoiceChatController.State {
-        controller?.state ?? .idle
-    }
+    private var state: VoiceChatController.State { controller?.state ?? .idle }
 
     private var isListening: Bool {
         if case .listening = state { return true } else { return false }
@@ -135,7 +74,7 @@ struct VoiceChatView: View {
         if case .thinking = state { return true } else { return false }
     }
 
-    private var orbIcon: String {
+    private var iconName: String {
         switch state {
         case .listening: return "waveform"
         case .thinking:  return "ellipsis"
@@ -145,7 +84,7 @@ struct VoiceChatView: View {
         }
     }
 
-    private var orbColor: Color {
+    private var iconColor: Color {
         switch state {
         case .listening: return .accentColor
         case .thinking:  return .yellow
@@ -157,26 +96,26 @@ struct VoiceChatView: View {
 
     private var statusText: String {
         switch state {
-        case .idle:           return "Tap the mic to start."
-        case .listening:      return "Listening… pause when you're done."
-        case .thinking:       return "Thinking…"
-        case .speaking:       return "Speaking…"
-        case .error(let msg): return msg
+        case .idle:           return "IDLE"
+        case .listening:      return "LISTENING"
+        case .thinking:       return "THINKING"
+        case .speaking:       return "SPEAKING"
+        case .error:          return "ERROR"
         }
     }
 
-    private var toggleLabel: String {
-        switch state {
-        case .idle, .error: return "Start"
-        default:            return "Pause"
+    /// What to show in the big text field next to the icon. During
+    /// listening we echo the recognized partial; in other states we
+    /// show a short status or the last error.
+    private var previewText: String {
+        if case .error(let msg) = state { return msg }
+        let live = controller?.liveTranscript ?? ""
+        if isListening {
+            return live.isEmpty ? "Pause when you're done." : live
         }
-    }
-
-    private var toggleIcon: String {
-        switch state {
-        case .idle, .error: return "mic.fill"
-        default:            return "pause.fill"
-        }
+        if isThinking { return live.isEmpty ? "…" : live }
+        if case .speaking = state { return "Playing reply…" }
+        return "Tap to start."
     }
 }
 

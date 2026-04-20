@@ -137,6 +137,13 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                 do {
                     self.debug("generate() prompt=\(prompt.count) chars, maxTokens=\(parameters.maxTokens)")
                     log.notice("generate() prompt=\(prompt.count) chars, maxTokens=\(parameters.maxTokens)")
+                    // Start from a clean Metal baseline — anything the
+                    // previous turn (or Kokoro TTS) left behind would
+                    // stack with this generate's prefill spike and can
+                    // push past the 6144 MB per-process cap on a long
+                    // route reply.
+                    Stream.defaultStream(.gpu).synchronize()
+                    MLX.GPU.clearCache()
                     let t0 = Date()
                     // Tokenize the caller-supplied prompt verbatim — ChatSession
                     // has already applied Gemma-4's `<start_of_turn>…<end_of_turn>`
@@ -158,12 +165,19 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // Gemma4SwiftCore teaches its attention layer about
                     // `updateQuantized`. See ios/OPTIMIZATIONS.md for
                     // the watch-list entry.
+                    // `prefillStepSize` caps how many prompt tokens MLX
+                    // activations hold at once during prefill. The default
+                    // (512) drives a ~3 GB transient spike on Gemma 4B
+                    // which pushes past the 6144 MB `increased-memory-limit`
+                    // cap on iPhone 17 Pro Max. 128 keeps the spike under
+                    // ~1 GB while only costing a few % in prefill throughput.
                     let stream = try await container.generate(
                         input: input,
                         parameters: GenerateParameters(
                             maxTokens: parameters.maxTokens,
                             temperature: Float(parameters.temperature),
-                            topP: Float(parameters.topP)
+                            topP: Float(parameters.topP),
+                            prefillStepSize: 128
                         )
                     )
                     self.debug(String(format: "stream opened in %.2fs — awaiting first token…", Date().timeIntervalSince(tStream)))
@@ -210,6 +224,19 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         }
                     }
                     if !pending.isEmpty { continuation.yield(pending) }
+                    // Across multi-turn sessions the Metal buffer pool
+                    // creeps well past the DeviceProfile cache cap even
+                    // with prefillStepSize=128, and a long-form turn
+                    // eventually crosses the 6144 MB jetsam highwater.
+                    // Force completion of any pending Metal work before
+                    // dropping the pool — this closes the race that tripped
+                    // `check_error` in the 23:32 crash: the completion
+                    // handler runs on MLX's own queue and reads
+                    // `commandBuffer.error`, so we just need to make sure
+                    // no command buffers are still in-flight when we
+                    // signal the pool to release.
+                    Stream.defaultStream(.gpu).synchronize()
+                    MLX.GPU.clearCache()
                     self.debug(String(format: "generate() finished — %d chunks, %.2fs total", chunkIdx, Date().timeIntervalSince(t0)))
                     log.notice("generate() finished")
                     continuation.finish()
