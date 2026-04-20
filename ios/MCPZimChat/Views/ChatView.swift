@@ -176,8 +176,10 @@ private struct MessageRow: View {
                             .padding(6)
                     }
                 }
+                if !message.toolCalls.isEmpty {
+                    SourcesSection(traces: message.toolCalls)
+                }
                 ForEach(message.toolCalls) { trace in
-                    ToolCallRow(trace: trace)
                     if traceHasRoute(trace) {
                         // Offline streetzim viewer (tiles/JS/CSS served from
                         // the ZIM via `zim://`). MapKit used to render here
@@ -284,6 +286,26 @@ private struct ToolCallRow: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.red)
                             .textSelection(.enabled)
+                    } else if let prose = articleProse(from: trace) {
+                        // For article-body tools (get_article,
+                        // get_article_section) the most useful thing
+                        // to show is the actual text the model saw —
+                        // rendered as real prose, not JSON. This is
+                        // what makes "did it come from Wikipedia?"
+                        // answerable at a glance.
+                        HStack(alignment: .top) {
+                            Text(prose)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            copyChip(label: justCopiedResult ? "✓" : "copy") {
+                                copyMessage(prose)
+                                justCopiedResult = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    justCopiedResult = false
+                                }
+                            }
+                        }
                     } else {
                         HStack(alignment: .top) {
                             Text(trace.result)
@@ -304,6 +326,32 @@ private struct ToolCallRow: View {
         }
         .padding(8)
         .background(Color.gray.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Extract readable article prose from an article-returning
+    /// tool's result JSON. Returns nil for other tools (so the
+    /// caller falls back to raw monospace JSON).
+    private func articleProse(from trace: ToolCallTrace) -> String? {
+        guard trace.name == "get_article" || trace.name == "get_article_section" else {
+            return nil
+        }
+        guard let data = trace.result.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = obj["text"] as? String
+        else { return nil }
+        // Prepend a header line so the user has article / section
+        // context without hunting through metadata.
+        var header: [String] = []
+        if let title = obj["title"] as? String, !title.isEmpty {
+            header.append(title)
+        }
+        if let section = obj["section"] as? String, !section.isEmpty, section.lowercased() != "lead" {
+            header.append("§ \(section)")
+        } else if trace.name == "get_article_section" {
+            header.append("§ lead")
+        }
+        let prefix = header.isEmpty ? "" : header.joined(separator: " ") + "\n\n"
+        return prefix + text
     }
 
     /// A compact name/args/result/error dump suitable for pasting into a bug
@@ -327,6 +375,74 @@ private struct ToolCallRow: View {
                 .background(Color.gray.opacity(0.15), in: Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Per-assistant-turn "Sources used" audit trail. Groups every
+/// tool call that ran during this turn under one expandable header
+/// so the user can verify what the model actually had access to
+/// vs. what might have come from training priors. Defaults to
+/// expanded when sources exist — the whole point is visibility.
+private struct SourcesSection: View {
+    let traces: [ToolCallTrace]
+    @State private var expanded = true
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(traces) { trace in
+                    ToolCallRow(trace: trace)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.caption)
+                Text("Sources used (\(traces.count))")
+                    .font(.caption.weight(.semibold))
+                if let hint = briefSummary {
+                    Text("— \(hint)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// One-line summary of which article(s) / tool(s) were consulted,
+    /// rendered next to the collapsible header so the user doesn't
+    /// have to expand to know the gist.
+    private var briefSummary: String? {
+        let articleTools = traces.filter {
+            ["get_article", "get_article_section"].contains($0.name)
+        }
+        if !articleTools.isEmpty {
+            let paths = articleTools.compactMap { extractJSONField("path", from: $0.arguments) }
+            let uniq = Array(Set(paths)).sorted()
+            if !uniq.isEmpty {
+                return uniq.prefix(2).joined(separator: ", ")
+                    + (uniq.count > 2 ? ", …" : "")
+            }
+        }
+        let names = Array(Set(traces.map(\.name))).sorted()
+        return names.prefix(3).joined(separator: ", ")
+    }
+
+    /// Cheap extractor — the args payload is small JSON, not worth
+    /// pulling in JSONDecoder for.
+    private static func extractJSONField(_ field: String, from json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj[field] as? String
+    }
+    private func extractJSONField(_ field: String, from json: String) -> String? {
+        Self.extractJSONField(field, from: json)
     }
 }
 

@@ -309,7 +309,16 @@ public final class ChatSession {
             }
         }
         self.service = svc
-        self.adapter = await MCPToolAdapter.from(service: svc, surface: .conversational)
+        let adapter = await MCPToolAdapter.from(service: svc, surface: .conversational)
+        // Phase 3: semantic reranker on top of BM25. Uses Apple's
+        // `NLContextualEmbedding` when available — graceful no-op
+        // otherwise. Reordering happens inside the `search` tool
+        // dispatch so the model always sees the semantically-best
+        // candidates first.
+        await adapter.installHitReranker { query, hits in
+            await SemanticReranker.shared.rerank(query: query, hits: hits)
+        }
+        self.adapter = adapter
         // Wire the native-tools Apple-FM variant to the freshly-built
         // service so its Tool conformances dispatch to the same
         // backend the text-loop path uses. No-op when the framework
@@ -423,14 +432,44 @@ public final class ChatSession {
         debug("conversation reset", category: "Chat")
     }
 
+    /// Classification of the most recent user turn. Set in `send()`
+    /// and read by the generation loop so the system message can
+    /// carry category-specific guidance (Phase 2b).
+    public private(set) var lastQueryComplexity: QueryComplexity = .topical
+
     public func send(_ text: String) {
         debug(text, category: "User")
+        // Phase 2a classification → stashed for Phase 2b retrieval
+        // routing in `runGenerationLoop`. Logged to the debug pane
+        // either way so we can keep calibrating keyword rules
+        // against real usage.
+        let complexity = QueryComplexity.classify(text)
+        lastQueryComplexity = complexity
+        debug("query complexity: \(complexity.rawValue)", category: "Router")
         debug("model=\(selectedModel.displayName), state=\(modelState)", category: "Chat")
         let user = ChatMessage(role: .user, text: text)
         messages.append(user)
         messages.append(ChatMessage(role: .assistant, text: ""))
         isGenerating = true
-        Task { await runGenerationLoop() }
+        Task {
+            await runGenerationLoop()
+            // Phase 2c: for explanatory turns, if the model pulled
+            // >=2 sections, run a stateless map-reduce synthesis
+            // over those sections to ground the final answer. Peak
+            // memory stays flat (one section in prompt at a time).
+            // The model's first-pass synthesis is discarded and
+            // replaced with the reduced output — yes, that's a
+            // wasted generation; worth it for the quality lift on
+            // multi-source questions.
+            if complexity == .explanatory {
+                // `runGenerationLoop` already flipped isGenerating
+                // false via its defer; keep the UI disabled while
+                // the extra phase runs.
+                isGenerating = true
+                await maybeMapReduceExplanatory(userQuery: text)
+                isGenerating = false
+            }
+        }
     }
 
     /// Core tool-aware generation loop.
@@ -451,6 +490,65 @@ public final class ChatSession {
 
         let registry = await adapter.registry
         let toolDecls = self.toolDeclarations(registry: registry)
+        let complexity = self.lastQueryComplexity
+        let categoryHint: String = {
+            switch complexity {
+            case .navigational:
+                return """
+                The user's current turn looks NAVIGATIONAL (routing / "what's \
+                around" / nearest-X). Use streetzim tools (`near_named_place`, \
+                `route_from_places`). Do NOT call `search` or read Wikipedia \
+                articles for this turn — that's a different surface.
+                """
+            case .factoid:
+                return """
+                The user's current turn looks FACTOID (short, single-fact \
+                lookup). You MUST ground the answer in a tool-result — \
+                never answer a factual claim from prior knowledge alone. \
+                Either: \
+                (a) call `search` → `get_article_section(section: "lead")` \
+                and cite the article, OR \
+                (b) if this is a follow-up (short question with pronouns \
+                like "that"/"those"/"it"/"them"), reuse an article from \
+                an earlier turn in THIS conversation and cite that \
+                specific article + section. If you genuinely can't find \
+                the fact in the loaded ZIMs, say so — don't guess.
+                """
+            case .topical:
+                return """
+                The user's current turn looks TOPICAL ("tell me about X" / \
+                "what is X"). Fixed chain you MUST follow before writing a \
+                reply: \
+                1. `search` (one call). \
+                2. `list_article_sections` on the best hit. \
+                3. `get_article_section(section: "lead")`. \
+                4. `get_article_section` on AT LEAST ONE more section \
+                   whose title bears on the user's question (history, \
+                   applications, current status, impact, mechanism, …). \
+                5. Only then write the answer. \
+                Skipping step 4 leaves the user with a lead-only summary \
+                and that's what the model was asked NOT to do.
+                """
+            case .explanatory:
+                return """
+                The user's current turn looks EXPLANATORY ("explain how X \
+                works" / "why did X happen" / "compare X and Y"). This is \
+                a SYNTHESIS question. Fixed chain you MUST follow: \
+                1. `search`. \
+                2. `list_article_sections` on the best hit. \
+                3. `get_article_section` on the lead + at least ONE \
+                   content section (mechanism / causes / effects / …). \
+                4. For compare/contrast questions, or when the first \
+                   article alone can't answer the question, do a second \
+                   `search`/`list_article_sections`/`get_article_section` \
+                   cycle on a second article. \
+                5. Only after steps 1–4 write the user-facing reply. \
+                Total minimum `get_article_section` calls this turn: 2. \
+                Answering after just one section or from snippets alone \
+                is a failure — do not do it.
+                """
+            }
+        }()
         let systemMessage = """
         You are a helpful assistant with access to tools over locally-loaded \
         ZIM archives. Call tools immediately whenever they can answer the \
@@ -489,6 +587,22 @@ public final class ChatSession {
         need the whole article (rare) fall back to `get_article`. \
         NEVER stop after `search` to ask "would you like me to fetch \
         it?" — just proceed through the chain.
+
+        === This turn's classification ===
+        \(categoryHint)
+
+        === Grounding policy ===
+        This app's value to the user is that answers are grounded in \
+        the loaded ZIM archives — not in your training priors. So: \
+        * Every factual claim in your reply should trace to a tool result \
+          you have seen this turn OR an earlier turn in this conversation. \
+        * If the user asks a follow-up that refers back to a prior topic \
+          ("when was that?", "tell me more about it"), reuse the article(s) \
+          already retrieved — don't answer from memory. \
+        * Cite section / article names inline (e.g. "per 'Article' § \
+          Causes…") whenever a claim isn't obviously common knowledge. \
+        * If the loaded ZIMs genuinely don't cover the question, say that \
+          — do not guess.
         """
         // Apple Foundation Models native-tools path: short-circuit
         // the text tool loop entirely. The framework owns the
@@ -738,6 +852,172 @@ public final class ChatSession {
                 debug(trimmed, category: "Assistant")
             }
         }
+    }
+
+    // MARK: - Map-reduce synthesis for explanatory turns
+
+    /// Guard + extract: only run map-reduce if the last assistant
+    /// turn pulled multiple `get_article_section` sources. One source
+    /// is better served by the direct-answer path.
+    private func maybeMapReduceExplanatory(userQuery: String) async {
+        guard let lastIdx = messages.lastIndex(where: { $0.role == .assistant })
+        else { return }
+        let sectionTraces = messages[lastIdx].toolCalls
+            .filter { $0.name == "get_article_section" && $0.succeeded }
+        guard sectionTraces.count >= 2 else {
+            debug("explanatory: only \(sectionTraces.count) section source(s), skipping map-reduce",
+                  category: "MapReduce")
+            return
+        }
+        await runMapReduce(userQuery: userQuery, sectionTraces: sectionTraces)
+    }
+
+    /// Decode a `get_article_section` result JSON into its human
+    /// fields. Returns nil for malformed / non-article traces.
+    private struct MapReduceSection {
+        let article: String
+        let section: String
+        let body: String
+    }
+
+    private func decodeSectionTrace(_ trace: ToolCallTrace) -> MapReduceSection? {
+        guard let data = trace.result.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = obj["text"] as? String, !text.isEmpty
+        else { return nil }
+        let article = (obj["title"] as? String)
+            ?? (obj["path"] as? String)
+            ?? "(unknown)"
+        let section = (obj["section"] as? String) ?? "lead"
+        return MapReduceSection(article: article, section: section, body: text)
+    }
+
+    /// Stateless map-reduce over the sections the model fetched:
+    ///   • Map — for each section, generate a short, section-only
+    ///     digest of points that answer the user's question. Each
+    ///     call runs in its own generation with a minimal prompt
+    ///     (one section body at a time), so peak MLX KV-cache
+    ///     reservation is bounded by the largest single section
+    ///     rather than the sum.
+    ///   • Reduce — feed the digests back as notes and stream one
+    ///     final answer to the UI, replacing the first-pass text.
+    private func runMapReduce(userQuery: String, sectionTraces: [ToolCallTrace]) async {
+        let sections = sectionTraces.compactMap(decodeSectionTrace)
+        guard sections.count >= 2 else { return }
+
+        debug("map-reduce: \(sections.count) sections → per-section digests",
+              category: "MapReduce")
+
+        // ===== Map phase =====
+        var summaries: [String] = []
+        let mapParams = GenerationParameters(maxTokens: 256, temperature: 0.2, topP: 0.9)
+        for (i, sec) in sections.enumerated() {
+            let mapUserTurn = """
+            User's question: \(userQuery)
+
+            Text from the article "\(sec.article)" (section: \(sec.section)):
+
+            \(sec.body)
+
+            List 3–6 concise bullet points from THIS TEXT that help answer \
+            the user's question. Only include facts explicitly present in \
+            the text above. No outside knowledge, no invention.
+            """
+            let preamble = "You are a careful note-taker."
+            let turns = [ChatTurn(role: .user, text: mapUserTurn)]
+            let prompt: String
+            if selectedModel is Gemma4Provider {
+                prompt = Gemma4PromptTemplate.render(
+                    systemMessage: preamble, tools: [], turns: turns
+                )
+            } else {
+                prompt = selectedModel.formatTranscript(
+                    systemPreamble: preamble, turns: turns
+                )
+            }
+            debug("map \(i + 1)/\(sections.count): \(sec.article) § \(sec.section) · \(sec.body.count) chars",
+                  category: "MapReduce")
+            var buf = ""
+            do {
+                for try await chunk in selectedModel.generate(
+                    prompt: prompt, parameters: mapParams
+                ) {
+                    buf += chunk
+                }
+            } catch {
+                debug("map \(i + 1) failed: \(error)", category: "MapReduce")
+                continue
+            }
+            let trimmed = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                summaries.append(
+                    "### From \"\(sec.article)\" § \(sec.section)\n\(trimmed)"
+                )
+            }
+        }
+        guard !summaries.isEmpty else {
+            debug("map-reduce: no non-empty digests, keeping first-pass answer",
+                  category: "MapReduce")
+            return
+        }
+
+        // ===== Reduce phase =====
+        debug("reduce: synthesising from \(summaries.count) digest(s)",
+              category: "MapReduce")
+        let reduceUserTurn = """
+        User's question: \(userQuery)
+
+        Notes I gathered from the available articles:
+
+        \(summaries.joined(separator: "\n\n"))
+
+        Write a clear, thorough answer to the user's question, grounded \
+        only in the notes above. When introducing a specific claim, cite \
+        the source inline (e.g. "per 'Article' § Causes…"). Do NOT add \
+        facts that aren't in the notes.
+        """
+        let preamble = "You are a helpful, grounded writer."
+        let turns = [ChatTurn(role: .user, text: reduceUserTurn)]
+        let prompt: String
+        if selectedModel is Gemma4Provider {
+            prompt = Gemma4PromptTemplate.render(
+                systemMessage: preamble, tools: [], turns: turns
+            )
+        } else {
+            prompt = selectedModel.formatTranscript(
+                systemPreamble: preamble, turns: turns
+            )
+        }
+
+        // Replace first-pass text with a visible placeholder so the
+        // user sees the phase transition.
+        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+            messages[idx].text = "_Synthesising from \(summaries.count) grounded sources…_\n\n"
+        }
+
+        var buffer = ""
+        let reduceParams = GenerationParameters(
+            maxTokens: DeviceProfile.current.maxReplyTokens,
+            temperature: 0.3, topP: 0.9
+        )
+        var lastUIPush = Date.distantPast
+        do {
+            for try await chunk in selectedModel.generate(
+                prompt: prompt, parameters: reduceParams
+            ) {
+                buffer += chunk
+                let now = Date()
+                if now.timeIntervalSince(lastUIPush) >= 0.1 {
+                    appendToAssistant(buffer)
+                    lastUIPush = now
+                }
+            }
+            appendToAssistant(buffer)
+        } catch {
+            debug("reduce failed: \(error)", category: "MapReduce")
+            return
+        }
+        debug("map-reduce complete: \(buffer.count) chars", category: "MapReduce")
     }
 
     /// Single-turn dispatch for Apple Foundation Models native-tools.

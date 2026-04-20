@@ -179,16 +179,40 @@ public actor DefaultZimService: ZimService {
             if let wanted = kind, pair.reader.kind != wanted { continue }
             let hits = (try? pair.reader.search(query: query, limit: limit)) ?? []
             for h in hits {
+                // Pull the first ~220 chars of the article's lead as
+                // a snippet so the model can judge topical relevance
+                // without a second tool call. Without this, BM25's
+                // keyword overlap can put a tangential hit at the
+                // top (e.g. "Crypto-shredding" for "quantum
+                // computing's effect on encryption") and the model
+                // has no signal to look past it.
+                let snippet = leadSnippet(from: pair.reader, path: h.path, maxChars: 220)
                 results.append(SearchHitResult(
                     zim: pair.name,
                     kind: pair.reader.kind,
                     path: h.path,
                     title: h.title,
-                    snippet: "" // host-side HTML→text is optional; omitted here.
+                    snippet: snippet
                 ))
             }
         }
         return results
+    }
+
+    /// Grab the opening of an article body and collapse it to a
+    /// single plain-text line. Used to populate search snippets —
+    /// keeps the model from picking a tangentially-named hit.
+    private func leadSnippet(from reader: ZimReader, path: String, maxChars: Int) -> String {
+        guard let entry = try? reader.read(path: path),
+              let html = String(data: entry.content, encoding: .utf8)
+        else { return "" }
+        let lead = ArticleSections.parse(html: html).first?.text ?? ""
+        if lead.isEmpty { return "" }
+        let singleLine = lead
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+        if singleLine.count <= maxChars { return singleLine }
+        return String(singleLine.prefix(maxChars)) + "…"
     }
 
     public func article(path: String, zim: String?) async throws -> ArticleResult {

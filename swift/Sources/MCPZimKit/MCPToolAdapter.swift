@@ -41,6 +41,14 @@ public enum ToolSurface: Sendable {
     case full
 }
 
+/// Optional post-processor for `search` tool hits. Takes the user's
+/// query text + the BM25-ranked hit list and returns a possibly-
+/// reordered (and possibly-shortened) list. Hosted outside MCPZimKit
+/// so downstream callers can plug in platform-specific rerankers
+/// (e.g. `NLContextualEmbedding` on Apple platforms) without pulling
+/// those dependencies into this package.
+public typealias HitReranker = @Sendable (_ query: String, _ hits: [SearchHitResult]) async -> [SearchHitResult]
+
 public actor MCPToolAdapter {
     private let service: any ZimService
     private let hasStreetzim: Bool
@@ -50,11 +58,23 @@ public actor MCPToolAdapter {
     /// MCP clients see the exact OSM vocabulary their data supports.
     private let categoryVocabulary: [String]
 
+    /// Installed by the host if a semantic reranker is available. When
+    /// set, we over-fetch BM25 candidates and let the reranker choose
+    /// the top K — the model then sees the semantically-closest hits
+    /// first, not just the keyword-densest.
+    private var hitReranker: HitReranker?
+
     public init(service: any ZimService, hasStreetzim: Bool, surface: ToolSurface = .full, categoryVocabulary: [String] = []) {
         self.service = service
         self.hasStreetzim = hasStreetzim
         self.surface = surface
         self.categoryVocabulary = categoryVocabulary
+    }
+
+    /// Install (or clear) a semantic reranker. Passing `nil` drops
+    /// back to plain BM25 order.
+    public func installHitReranker(_ reranker: HitReranker?) {
+        self.hitReranker = reranker
     }
 
     public static func from(service: any ZimService, surface: ToolSurface = .full) async -> MCPToolAdapter {
@@ -90,8 +110,15 @@ public actor MCPToolAdapter {
                     + "For LOCATION questions (\"what's in X\", \"near X\", "
                     + "\"around X\") prefer `near_named_place` instead — it "
                     + "returns coordinates and a category breakdown. Returns "
-                    + "paths, titles, and snippets — pick the best match and "
-                    + "call `get_article` on its path to read the body.",
+                    + "paths, titles, AND a ~200-char snippet from each hit's "
+                    + "lead paragraph. READ THE SNIPPETS before picking — the "
+                    + "top BM25 match isn't always the topically-closest one "
+                    + "(e.g. a query about quantum computing's impact on "
+                    + "encryption will surface \"Crypto-shredding\" because "
+                    + "of keyword overlap, but the snippet makes clear it's "
+                    + "about key destruction, not quantum threats). Prefer "
+                    + "a lower-ranked hit if its snippet is a better topic "
+                    + "match for the user's question.",
                 inputSchemaJSON: Self.searchSchema
             ),
             MCPTool(
@@ -199,11 +226,20 @@ public actor MCPToolAdapter {
             return Self.encodeInventory(inv)
         case "search":
             let query = (args["query"] as? String) ?? ""
-            let limit = (args["limit"] as? Int) ?? 10
+            let requestedLimit = (args["limit"] as? Int) ?? 10
             let kindString = args["kind"] as? String
             let kind = kindString.flatMap { ZimKind(rawValue: $0) }
-            let hits = try await service.search(query: query, limit: limit, kind: kind)
-            return ["query": query, "count": hits.count, "hits": hits.map(Self.encodeHit)]
+            // Over-fetch BM25 candidates when a reranker is wired up
+            // so it has a broader pool to re-order.
+            let fetchLimit = (hitReranker == nil)
+                ? requestedLimit
+                : max(requestedLimit * 2, 20)
+            var hits = try await service.search(query: query, limit: fetchLimit, kind: kind)
+            if let rerank = hitReranker {
+                hits = await rerank(query, hits)
+            }
+            let top = Array(hits.prefix(requestedLimit))
+            return ["query": query, "count": top.count, "hits": top.map(Self.encodeHit)]
         case "get_article":
             let path = (args["path"] as? String) ?? ""
             let zim = args["zim"] as? String

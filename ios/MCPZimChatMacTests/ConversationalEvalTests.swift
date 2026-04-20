@@ -31,6 +31,11 @@ final class ConversationalEvalTests: XCTestCase {
         /// Tools that MUST NOT be called this turn (e.g. raw-coord
         /// tools on the conversational surface).
         var toolsNotCalled: [String] = []
+        /// Per-tool minimum call counts — asserts the tool appears at
+        /// least N times in this turn. Used to catch "model called
+        /// get_article_section once and stopped" on explanatory turns
+        /// where we want multi-section grounding.
+        var minimumToolCallCounts: [String: Int] = [:]
         /// Substrings all required (case-insensitive).
         var allOf: [String] = []
         /// Any one of these required (case-insensitive).
@@ -303,6 +308,66 @@ final class ConversationalEvalTests: XCTestCase {
                 )
             )]
         ),
+
+        // --- Regression: explanatory wiki question MUST ground in
+        //     sections, not just search snippets. First pass on this
+        //     scenario caught the model answering from prior
+        //     knowledge + snippets, never calling
+        //     `get_article_section`. The fix was tightening the
+        //     explanatory system-prompt hint to a fixed 5-step
+        //     chain with an explicit minimum of 2
+        //     `get_article_section` calls.
+        .init(
+            name: "quantum_encryption_must_ground_in_sections",
+            turns: [(
+                user: "how does quantum computing affect encryption?",
+                expect: TurnExpect(
+                    toolsCalledAny: ["search", "get_article_section"],
+                    minimumToolCallCounts: ["get_article_section": 2],
+                    anyOf: ["quantum", "shor", "post-quantum",
+                            "cryptography", "rsa", "lattice",
+                            "mceliece"],
+                    noneOf: ["i do not have", "i don't have specific",
+                             "training data"],
+                    mustCallTool: true
+                )
+            )]
+        ),
+
+        // --- Regression: explanatory turn + factoid follow-up. The
+        //     follow-up uses a pronoun ("that") and must either
+        //     (a) call a tool to ground its answer, or (b) cite
+        //     an article from the prior turn. Before the grounding-
+        //     policy change, the model answered "1957" from memory
+        //     with no citation — which is right, but the app can't
+        //     distinguish that from hallucination. This test
+        //     enforces EITHER a fresh tool call OR a citation
+        //     string, AND the correct year.
+        .init(
+            name: "sputnik_explanatory_then_year_followup",
+            turns: [
+                (user: "how did the russian sputnik program affect american politics about space?",
+                 expect: TurnExpect(
+                     toolsCalledAny: ["search", "get_article_section"],
+                     minimumToolCallCounts: ["get_article_section": 2],
+                     anyOf: ["cold war", "space race", "nasa",
+                             "satellite", "soviet", "1957",
+                             "eisenhower"],
+                     mustCallTool: true
+                 )),
+                (user: "what year was that?",
+                 expect: TurnExpect(
+                     allOf: ["1957"],
+                     // If no fresh tool call, the answer must at
+                     // least cite a prior article — rules out
+                     // pure-memory fallbacks.
+                     anyOf: ["per ", "according to", "article",
+                             "sputnik 1", "list_article_sections",
+                             "get_article_section"],
+                     noneOf: ["i do not have", "i don't have specific"]
+                 )),
+            ]
+        ),
     ]
 
     // MARK: - Harness
@@ -376,14 +441,14 @@ final class ConversationalEvalTests: XCTestCase {
                        "turn did not complete within 120s: \(text)")
     }
 
-    private func toolsCalled(in session: ChatSession, since index: Int) -> Set<String> {
-        var called: Set<String> = []
+    private func toolsCalled(in session: ChatSession, since index: Int) -> [String] {
+        var called: [String] = []
         for entry in session.debugEntries.dropFirst(index) where entry.category == "Tool" {
             let msg = entry.message
             guard msg.hasPrefix("dispatching ") else { continue }
             let rest = msg.dropFirst("dispatching ".count)
             let name = rest.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
-            if !name.isEmpty { called.insert(String(name)) }
+            if !name.isEmpty { called.append(String(name)) }
         }
         return called
     }
@@ -391,22 +456,31 @@ final class ConversationalEvalTests: XCTestCase {
     private func assertTurn(
         _ expect: TurnExpect,
         assistantText: String,
-        toolsCalled: Set<String>,
+        toolsCalled: [String],
         scenario: String, turn: Int,
         file: StaticString = #filePath, line: UInt = #line
     ) {
         let lower = assistantText.lowercased()
+        let uniqueTools = Set(toolsCalled)
         for needed in expect.toolsCalledAny {
             XCTAssertTrue(
-                toolsCalled.contains(needed),
-                "[\(scenario)#\(turn)] expected tool '\(needed)'. Called: \(toolsCalled.sorted()). Reply: \(assistantText.prefix(400))",
+                uniqueTools.contains(needed),
+                "[\(scenario)#\(turn)] expected tool '\(needed)'. Called: \(toolsCalled). Reply: \(assistantText.prefix(400))",
                 file: file, line: line
             )
         }
         for banned in expect.toolsNotCalled {
             XCTAssertFalse(
-                toolsCalled.contains(banned),
-                "[\(scenario)#\(turn)] tool '\(banned)' should NOT have been called. Called: \(toolsCalled.sorted())",
+                uniqueTools.contains(banned),
+                "[\(scenario)#\(turn)] tool '\(banned)' should NOT have been called. Called: \(toolsCalled)",
+                file: file, line: line
+            )
+        }
+        for (tool, minCount) in expect.minimumToolCallCounts {
+            let actual = toolsCalled.filter { $0 == tool }.count
+            XCTAssertGreaterThanOrEqual(
+                actual, minCount,
+                "[\(scenario)#\(turn)] expected '\(tool)' called ≥\(minCount) time(s); got \(actual). Called: \(toolsCalled)",
                 file: file, line: line
             )
         }
@@ -450,7 +524,7 @@ final class ConversationalEvalTests: XCTestCase {
             let tools = toolsCalled(in: session, since: mark)
             let assistantText = (session.messages.last { $0.role == .assistant }?.text) ?? ""
             print("  turn \(idx) «\(turn.user)»")
-            print("    tools=\(tools.sorted())")
+            print("    tools=\(tools)")   // ordered list, with repeats — repeats matter
             print("    reply=«\(assistantText.prefix(220))…»")
             assertTurn(turn.expect,
                        assistantText: assistantText,
@@ -479,4 +553,6 @@ final class ConversationalEvalTests: XCTestCase {
     func test_15_ambiguous_here_needs_clarification() async throws { try await runScenario(Self.scenarios[15]) }
     func test_16_neighborhood_stories_via_wikipedia() async throws { try await runScenario(Self.scenarios[16]) }
     func test_17_wiki_what_is_aspirin() async throws { try await runScenario(Self.scenarios[17]) }
+    func test_18_quantum_encryption_must_ground_in_sections() async throws { try await runScenario(Self.scenarios[18]) }
+    func test_19_sputnik_explanatory_then_year_followup() async throws { try await runScenario(Self.scenarios[19]) }
 }
