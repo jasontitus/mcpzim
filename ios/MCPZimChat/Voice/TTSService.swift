@@ -39,26 +39,18 @@ public protocol TTSService: AnyObject, Sendable {
 }
 
 public enum TTSFactory {
-    /// Prefer Kokoro when it's both linked and ready (model files
-    /// present in `Documents/voices/`); fall back to the system
-    /// synthesizer otherwise.
-    public static func makeBest(voicesDirectory: URL? = nil, voice: String = "af_heart") -> TTSService {
+    /// Prefer Kokoro when its assets are downloaded; fall back to
+    /// `AVSpeechSynthesizer` otherwise. The model+voices live at
+    /// `Application Support/models/kokoro_mlx/` — see
+    /// `KokoroAssets.swift` for layout + download URLs.
+    public static func makeBest(voice: String = "af_heart") -> TTSService {
         #if canImport(KokoroSwift)
-        if let dir = voicesDirectory ?? defaultVoicesDir(),
-           KokoroTTSService.modelExists(in: dir),
-           let kokoro = try? KokoroTTSService(voicesDirectory: dir, voice: voice) {
+        if KokoroAssets.isDownloaded,
+           let kokoro = try? KokoroTTSService(voice: voice) {
             return kokoro
         }
         #endif
         return SystemTTSService()
-    }
-
-    static func defaultVoicesDir() -> URL? {
-        guard let docs = try? FileManager.default.url(
-            for: .documentDirectory, in: .userDomainMask,
-            appropriateFor: nil, create: false
-        ) else { return nil }
-        return docs.appendingPathComponent("voices", isDirectory: true)
     }
 }
 
@@ -118,41 +110,65 @@ extension SystemTTSService: AVSpeechSynthesizerDelegate {
 
 #if canImport(KokoroSwift)
 import KokoroSwift
+import MLX
+import MLXUtilsLibrary
 
-/// Lightweight wrapper around the upstream `KokoroTTS` engine. The
-/// upstream API expects a model path and a G2P implementation
-/// (`MisakiSwift` is the default, English) and returns 24 kHz mono
-/// PCM that we play through an `AVAudioEngine` chain.
+/// Wraps the upstream `KokoroTTS` engine (MLX, on-device). Model
+/// weights + voice-embedding pack live at the paths defined in
+/// `KokoroAssets`. API shape mirrors the working CastCircle port
+/// (https://github.com/jasontitus/CastCircle) — call
+/// `KokoroTTS.generateAudio(voice:language:text:speed:)` with a
+/// specific voice embedding (MLXArray pulled from `voices.npz`)
+/// and feed the resulting Float32 PCM through `AVAudioEngine`.
 public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     public let displayName = "Kokoro v1.0 (MLX, on-device)"
-    /// Steady-state with the 82M-param model held fp16. The KV/MLX
-    /// caches grow during synthesis; the upstream README suggests
-    /// adding ~50 MB of headroom for warm-up buffers.
-    public let approximateMemoryMB = 220
+    /// Steady-state with the bf16 82M-param model held + MLX cache.
+    /// Synthesis allocates more during generation (~70 MB extra);
+    /// we `Memory.clearCache()` after each utterance to keep
+    /// steady-state bounded.
+    public let approximateMemoryMB = 360
     public private(set) var isSpeaking: Bool = false
 
-    /// Filename the user needs to place under `Documents/voices/`.
-    /// Matches the canonical Kokoro v1.0 release.
-    public static let expectedModelFile = "kokoro-v1_0.safetensors"
+    /// Fifty-four voices ship in `voices.npz`. Exposed for the UI
+    /// picker; `voiceName` selects the current one.
+    public static let availableVoices: [String] = [
+        "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
+        "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+        "am_michael", "am_onyx", "am_puck",
+        "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    ]
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let kokoro: KokoroTTS
-    private let voiceName: String
+    private let voices: [String: MLXArray]
+    public let voiceName: String
     private var stopFlag = false
 
-    public static func modelExists(in directory: URL) -> Bool {
-        FileManager.default.fileExists(atPath: directory.appendingPathComponent(expectedModelFile).path)
-    }
-
-    public init(voicesDirectory: URL, voice: String) throws {
-        let modelURL = voicesDirectory.appendingPathComponent(Self.expectedModelFile)
+    public init(voice: String = "af_heart") throws {
+        let modelURL = KokoroAssets.localURL(
+            for: KokoroAssets.downloads.first { $0.filename == "kokoro-v1_0.safetensors" }!
+        )
+        let voicesURL = KokoroAssets.localURL(
+            for: KokoroAssets.downloads.first { $0.filename == "voices.npz" }!
+        )
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw TTSError.modelMissing("Place \(Self.expectedModelFile) under Documents/voices/.")
+            throw TTSError.modelMissing("kokoro-v1_0.safetensors missing; download the Kokoro voice first.")
         }
-        // The upstream initializer signature is `KokoroTTS(modelPath:
-        // g2p:)` (current 1.x). G2P defaults to MisakiSwift for enUS.
-        self.kokoro = try KokoroTTS(modelPath: modelURL.path, g2p: .misakiSwift(.enUS))
+        guard FileManager.default.fileExists(atPath: voicesURL.path) else {
+            throw TTSError.modelMissing("voices.npz missing; download the Kokoro voice first.")
+        }
+        self.kokoro = KokoroTTS(modelPath: modelURL)
+        // `isPacked: true` matches the format of the voices.npz we
+        // download from the KokoroTestApp repo — MLXUtilsLibrary's
+        // newer NpyzReader signature requires it be explicit.
+        guard let loadedVoices = NpyzReader.read(fileFromPath: voicesURL, isPacked: true),
+              !loadedVoices.isEmpty else {
+            throw TTSError.synthesisFailed("voices.npz could not be parsed.")
+        }
+        self.voices = loadedVoices
         self.voiceName = voice
         super.init()
         engine.attach(player)
@@ -164,11 +180,22 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         stopFlag = false
-        // Generate the waveform (Float32, 24 kHz mono). Upstream
-        // returns `[Float]` along with a sample rate; we convert into
-        // an `AVAudioPCMBuffer` and schedule on the player node.
-        let samples = try kokoro.generateAudio(text: trimmed, voice: voiceName)
+        // `voices.npz` keys each voice with an `.npy` suffix, matching
+        // the on-disk archive layout.
+        guard let embedding = voices[voiceName + ".npy"] else {
+            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
+        }
+        // American voices are `a*`, British are `b*`. KokoroTTS uses
+        // the language hint to pick a G2P rule set.
+        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+        let (samples, _) = try kokoro.generateAudio(
+            voice: embedding, language: language, text: trimmed, speed: 1.0
+        )
+        // Free MLX intermediate buffers — steady-state would keep
+        // creeping without this on successive utterances.
+        Memory.clearCache()
         guard !samples.isEmpty else { return }
+
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                    sampleRate: 24_000, channels: 1, interleaved: false)!
         guard let buf = AVAudioPCMBuffer(pcmFormat: format,
@@ -193,8 +220,6 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
             player.play()
         }
         if stopFlag {
-            // `stop()` was called mid-utterance; tear the player down so
-            // the next call schedules cleanly.
             player.stop()
         }
     }

@@ -89,6 +89,8 @@ struct LibraryView: View {
                 Text("Generation")
             }
 
+            VoiceModelSection()
+
             Section("Aggregate capabilities") {
                 let caps = session.adapter == nil ? [] : registryCapabilities()
                 if caps.isEmpty {
@@ -200,6 +202,114 @@ private struct LibraryRow: View {
         case .streetzim: return "map"
         case .generic: return "doc"
         }
+    }
+}
+
+/// Kokoro voice asset + picker. Shows current backend, disk
+/// footprint, a one-click downloader for the ~360 MB assets, and a
+/// voice picker. When the assets aren't downloaded, voice chat
+/// still works — it just uses `AVSpeechSynthesizer` (system voice)
+/// until Kokoro is ready.
+private struct VoiceModelSection: View {
+    @State private var downloader = KokoroDownloader()
+    @State private var selectedVoice: String = KokoroVoicePreference.current
+    @State private var isDownloaded: Bool = KokoroAssets.isDownloaded
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("Backend")
+                Spacer()
+                Text(isDownloaded ? "Kokoro v1.0 (neural, on-device)" : "System voice (AVSpeechSynthesizer)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            HStack {
+                Text("Size on disk")
+                Spacer()
+                Text(formatBytes(KokoroAssets.currentBytesOnDisk)
+                     + " / " + formatBytes(KokoroAssets.totalExpectedBytes))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            switch downloader.state {
+            case .idle, .finished, .failed:
+                if isDownloaded {
+                    Picker("Voice", selection: $selectedVoice) {
+                        ForEach(KokoroVoicePreference.available, id: \.self) { v in
+                            Text(v).tag(v)
+                        }
+                    }
+                    .onChange(of: selectedVoice) { _, new in
+                        KokoroVoicePreference.current = new
+                    }
+                    Button(role: .destructive) {
+                        try? KokoroAssets.deleteAll()
+                        isDownloaded = KokoroAssets.isDownloaded
+                    } label: {
+                        Label("Remove Kokoro voice", systemImage: "trash")
+                    }
+                } else {
+                    Button {
+                        Task {
+                            await downloader.downloadIfNeeded()
+                            isDownloaded = KokoroAssets.isDownloaded
+                        }
+                    } label: {
+                        Label("Download Kokoro voice (~\(formatBytes(KokoroAssets.totalExpectedBytes)))",
+                              systemImage: "arrow.down.circle")
+                    }
+                    if case .failed(let msg) = downloader.state {
+                        Text("Last attempt failed: \(msg)")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            case .downloading(let name, let written, let total, let overall):
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: overall)
+                    Text("Downloading \(name) — \(formatBytes(written)) / \(formatBytes(total))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Button(role: .destructive) {
+                    downloader.cancel()
+                } label: {
+                    Label("Cancel download", systemImage: "xmark.circle")
+                }
+            }
+            Text("Kokoro v1.0 is an 82M-param neural TTS running on Apple MLX. Without it, voice chat uses your system voice — always available, lower quality. Model from `mlx-community/Kokoro-82M-bf16`; voices from the KokoroTestApp pack. Apache-2.0 licensed.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Voice chat")
+        }
+    }
+
+    private func formatBytes(_ b: Int64) -> String {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: b)
+    }
+}
+
+/// Persisted voice-name preference. `TTSFactory.makeBest` reads
+/// this on each build of the voice chat.
+public enum KokoroVoicePreference {
+    private static let key = "kokoro.voice"
+    static let available: [String] = [
+        "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
+        "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+        "am_michael", "am_onyx", "am_puck",
+        "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    ]
+    public static var current: String {
+        get { UserDefaults.standard.string(forKey: key) ?? "af_heart" }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
     }
 }
 

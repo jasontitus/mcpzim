@@ -71,7 +71,7 @@ public final class VoiceChatController {
 
     public init(session: ChatSession,
                 stt: SpeechRecognizerService = SpeechRecognizerFactory.makeBest(),
-                tts: TTSService = TTSFactory.makeBest()) {
+                tts: TTSService = TTSFactory.makeBest(voice: KokoroVoicePreference.current)) {
         self.session = session
         self.stt = stt
         self.tts = tts
