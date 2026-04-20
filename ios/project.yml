@@ -22,6 +22,14 @@ packages:
   Gemma4SwiftCore:
     url: https://github.com/yejingyang8963-byte/Swift-gemma4-core.git
     from: 0.1.0
+  # Optional: high-quality on-device TTS (Kokoro v1.0 via MLX). Add the
+  # SPM dep, drop the model file (`kokoro-v1_0.safetensors`, ~165 MB
+  # fp16) into the app's Documents/voices/ directory, and `TTSFactory`
+  # will pick it up automatically. Without this package, voice chat
+  # falls back to AVSpeechSynthesizer (compact system voices).
+  # KokoroSwift:
+  #   url: https://github.com/mlalma/kokoro-ios.git
+  #   from: 1.0.0
 targets:
   MCPZimChat:
     type: application
@@ -42,11 +50,17 @@ targets:
         CFBundleDisplayName: Zimfo
         NSDocumentsFolderUsageDescription: "Needed to read ZIM archives you drop into the app's Documents folder."
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
+        NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
+        NSSpeechRecognitionUsageDescription: "Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server."
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
       - package: Gemma4SwiftCore
         product: Gemma4SwiftCore
+      # Uncomment alongside the KokoroSwift package entry above to enable
+      # neural TTS. The voice loop works without it (system voices).
+      # - package: KokoroSwift
+      #   product: KokoroSwift
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
@@ -104,11 +118,15 @@ targets:
         NSHumanReadableCopyright: "Copyright © 2026"
         NSLocationUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
+        NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
+        NSSpeechRecognitionUsageDescription: "Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server."
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
       - package: Gemma4SwiftCore
         product: Gemma4SwiftCore
+      # - package: KokoroSwift
+      #   product: KokoroSwift
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
