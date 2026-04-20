@@ -28,3 +28,4 @@ DerivedData/
 # (CoreKiwix.xcframework, currently version 14.2.0) and unzip into
 # ios/MCPZimChat/Frameworks/ before building.
 ios/MCPZimChat/Frameworks/CoreKiwix.xcframework/
+tools/gemma-smoke/.build/

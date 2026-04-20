@@ -212,15 +212,150 @@ drops `<script>` / `<style>` / `<table>` / `<figure>` / `<nav>`
 blocks before text extraction and decodes the handful of HTML
 entities Kiwix emits.
 
-## Next (Phase 2 + 3)
+## Phase 2 — complexity router + category-aware retrieval + map-reduce
 
-Phase 2: query-complexity router (heuristic on query shape) +
-map-reduce synthesis mode so "explain X" can pull from 2–3
-articles without blowing context.
+`QueryComplexity.classify(_:)` is a keyword-heuristic classifier
+in MCPZimKit that buckets each user turn into one of four
+categories:
 
-Phase 3: `NLContextualEmbedding` reranker on top of libzim's
-Xapian BM25 top-20; persistent embedding cache keyed by article
-path.
+- `navigational` — routing / "what's around" / "near me" queries.
+  Handled by streetzim tools.
+- `factoid` — short, single-fact lookup. Lead section is usually
+  enough.
+- `topical` — "tell me about X". Fixed chain: `search` →
+  `list_article_sections` → lead + at least one content section.
+- `explanatory` — "explain X" / "why did X happen" / "compare X
+  and Y". Fixed chain: minimum 2 `get_article_section` calls
+  across one or two articles, then synthesise. Map-reduce
+  post-pass kicks in when ≥2 sources were pulled.
 
-See conversation history for rationale; implementation notes to
-follow once the phases land.
+Every turn logs its classification to the `[Router]` debug pane
+category and the system prompt gets a per-turn "This turn's
+classification: …" block with the category-specific chain. Unit
+tests in `QueryComplexityTests.swift` cover the signals.
+
+### 2c — map-reduce synthesis for explanatory turns
+
+After `runGenerationLoop()` finishes, if the classification was
+`.explanatory` and the model fetched ≥2 `get_article_section`
+sources, `runMapReduce(userQuery:sectionTraces:)` kicks in:
+
+- **Map** — each section body goes through its own stateless
+  `generate()` call with a tight prompt ("list 3–6 bullet points
+  from this text that answer the user's question, no outside
+  knowledge"). `maxTokens: 256`. Peak KV-cache reservation is
+  bounded by the largest single section, not the sum of all
+  sections.
+- **Reduce** — the digests are concatenated into one prompt
+  asking for a grounded, cite-inline synthesis. Streamed to the
+  UI, replacing the first-pass text.
+
+The first-pass synthesis is "wasted" (we discard and redo) —
+chosen over a bigger refactor that would intercept the normal
+loop before its final prose step. Worth the quality lift on
+multi-source questions. `[MapReduce]` debug category traces the
+phases.
+
+## Phase 3 — semantic reranker on BM25 top-20
+
+Reason: libzim's Xapian BM25 alone puts "Crypto-shredding" at #1
+for "quantum computing's effect on encryption" (dense keyword
+overlap), while "Post-quantum cryptography" is actually the
+correct article. A sentence-embedding cosine rerank moves the
+right article up.
+
+- `SemanticReranker` (actor singleton, iOS/macOS only) wraps
+  `NLContextualEmbedding(language: .english)`. ANE-accelerated,
+  ~100 MB model that ships with the OS.
+- `MCPToolAdapter` grows an optional `HitReranker` callback. The
+  cross-platform MCPZimKit stays free of `NaturalLanguage`
+  imports.
+- When installed, `search` over-fetches the top 20 BM25
+  candidates, reranks by cosine on `(title + snippet)` vs query
+  embedding, returns the requested top-K.
+- Per-article embedding cache keyed by `zim:path` in memory
+  (cheap, survives for the process lifetime).
+- Graceful passthrough if the framework can't load (stays BM25).
+
+Related quick win: `ZimService.search` now populates each hit's
+`snippet` field with the first ~220 chars of the article's lead
+paragraph (via `ArticleSections.parse(html:)`). The model can
+read snippets to judge topical relevance even without the
+reranker — which is what caught the Crypto-shredding misfire
+interactively before Phase 3 landed.
+
+## Sources-used audit trail
+
+Every assistant reply that made tool calls now renders a
+**"Sources used (N)"** DisclosureGroup at the top of its bubble.
+Expanded by default. Shows each tool call's args + result;
+article-returning tools (`get_article`, `get_article_section`)
+render the `text` field as readable prose with a `Title §
+Section` header instead of raw JSON. Directly answers "did the
+model use Wikipedia or its training priors?"
+
+Grounding policy in the system prompt pairs with this: every
+factual claim must trace to a tool result (this turn or an
+earlier turn), follow-ups reuse prior articles, cite inline, and
+say "I don't have that" when the ZIMs don't cover the question.
+
+## Voice chat (both platforms)
+
+`Views/VoiceChatView.swift` + `Voice/*` host a hands-free loop
+that's one sheet away from the composer's 🎤 button:
+
+- `SpeechRecognizerService` — Apple's on-device Speech framework
+  (best-on-device mode).
+- `VoiceChatController` — mic tap → silence VAD → fires
+  `ChatSession.send(_:)` → watches the assistant stream → hands
+  the final reply to `TTSService` → back to listening.
+- `TTSService` — `AVSpeechSynthesizer` by default, optional
+  Kokoro backend (`#if canImport(KokoroSwift)`).
+- Works on macOS unchanged; Info-Mac.plist has the mic +
+  speech-recognition strings and the app entitlement carries
+  `com.apple.security.device.audio-input`.
+
+Because voice goes through `ChatSession.send`, voice queries get
+the full Phase 2/3 tooling — router, section chunking, rerank,
+map-reduce.
+
+## Eval harness (Phase 2/3 additions)
+
+`ConversationalEvalTests.swift` gained:
+
+- `TurnExpect.minimumToolCallCounts: [String: Int]` — asserts a
+  tool was called at least N times in a turn. Catches "model
+  called `get_article_section` once and stopped" regressions.
+- `test_18_quantum_encryption_must_ground_in_sections` — pins
+  the "≥2 sections before synthesis" rule.
+- `test_19_sputnik_explanatory_then_year_followup` — covers the
+  explanatory → factoid-pronoun arc and the "1957 from memory"
+  anti-pattern (reply must include "1957" AND a citation / tool
+  call — rules out pure training-knowledge fallback).
+
+Score at the time of writing: 14/20 pass. The failing two new
+regressions (18, 19) are the motivation for Phase 2d below.
+
+## Next (Phase 2d)
+
+Programmatic enforcement for the minimum-section rule. The
+tightened prompt helps but Gemma-4 2B still cheats on multi-
+section explanatory turns. After `runGenerationLoop()`, if
+`lastQueryComplexity` is `.explanatory` / `.topical` and fewer
+than the required `get_article_section` calls happened, re-enter
+the tool loop with a synthetic user turn "you've only fetched N
+sections — call `list_article_sections` then
+`get_article_section` on one more before answering." Structural,
+not aspirational.
+
+Also open for Phase 3+:
+
+- Persist embedding cache to disk (Application Support) so
+  second launches hit it warm.
+- Rerank section-level (not article-level) for drill-in queries
+  to pick the best section without forcing `list_article_sections`.
+- Apple-FM native-tool surface: add a `Tool` conformance for
+  `list_article_sections` / `get_article_section` so the native-
+  tools path doesn't regress to single-section synthesis.
+
+See conversation history for rationale on any of the above.
