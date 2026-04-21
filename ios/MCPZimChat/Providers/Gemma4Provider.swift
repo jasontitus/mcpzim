@@ -16,11 +16,13 @@ import OSLog
 
 private let log = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "Gemma4")
 
-#if canImport(Gemma4SwiftCore) && canImport(MLXLMCommon)
-import Gemma4SwiftCore
+#if canImport(MLXLLM) && canImport(MLXLMCommon)
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXHuggingFace
+import HuggingFace
+import Tokenizers
 
 public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     public let id = "gemma4-4b-it-4bit"
@@ -28,12 +30,13 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     /// Resident weights ~2.6 GB once the 4-bit safetensors decompress.
     /// Displayed in the model picker so the user sees the real footprint
     /// before committing to a load. Generation itself adds KV cache
-    /// (~125 MB with 4-bit KV quant, ~500 MB FP16 on long prompts) plus
-    /// MLX's Metal pool (~400 MB default).
+    /// (~500 MB FP16 on long prompts; 4-bit quant halved that but is
+    /// currently disabled pending an upstream attention patch — see
+    /// `KV_CACHE_COMPRESSION.md`) plus MLX's Metal pool (~400 MB).
     public let approximateMemoryMB = 2600
     public let supportsToolCalls = true
 
-    private let modelId = Gemma4SwiftCore.verifiedModelId
+    private let modelConfiguration = LLMRegistry.gemma4_e2b_it_4bit
     private var container: ModelContainer?
     private var state: ModelLoadState = .notLoaded
     private var continuations: [AsyncStream<ModelLoadState>.Continuation] = []
@@ -189,10 +192,10 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     }
 
     public init() {
-        // Register Gemma-4's model/tokenizer handler with MLXLMCommon. The
-        // returned Task resolves once registration is idempotent-complete.
-        Task { await Gemma4Registration.registerIfNeeded().value }
-
+        // `gemma4_text` is pre-registered in upstream `LLMRegistry.shared`
+        // (see `mlx-swift-lm/Libraries/MLXLLM/LLMModelFactory.swift`), so
+        // no sidecar registration is needed any more.
+        //
         // MLX's Metal buffer pool defaults its cache limit to the system
         // memory limit (~128 GB on an M1 Ultra) — which means it happily
         // hoards tens of GB of intermediate tensors from past generations
@@ -231,8 +234,8 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
             debug("load() no-op (container already ready)")
             return
         }
-        debug("load() start; modelId=\(modelId)")
-        log.notice("load() start; modelId=\(self.modelId, privacy: .public)")
+        debug("load() start; modelId=\(modelConfiguration.name)")
+        log.notice("load() start; modelId=\(self.modelConfiguration.name, privacy: .public)")
         #if targetEnvironment(simulator)
         // MLX aborts in `mlx::core::metal::Device::Device()` inside the iOS
         // Simulator because the simulator's Metal driver (`MTLSimDriver`) lacks
@@ -244,13 +247,22 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         #else
         set(.downloading(0))
         do {
-            // mlx-swift-lm's Hub client accepts a `progressHandler` we can
-            // surface as UI state; it also logs to `log` so a tail shows the
-            // per-file download rate.
+            // mlx-swift-lm 3.x no longer bakes a hub downloader + tokenizer
+            // loader into `LLMModelFactory.shared.loadContainer`. The
+            // composite `#huggingFaceLoadModelContainer` macro fails to
+            // type-check when invoked from inside our async/`do` context
+            // (internal macro diagnostic about an `@Sendable () async
+            // throws -> String?` closure signature), so we call the two
+            // underlying macros inline and invoke `loadContainer(from:
+            // using: configuration:progressHandler:)` directly — same
+            // effect, but Swift can typecheck the smaller fragments.
+            let modelConfiguration = self.modelConfiguration
             debug("downloading weights from HF Hub…")
             log.notice("loadContainer: downloading Gemma-4 weights from HF hub")
             let container = try await LLMModelFactory.shared.loadContainer(
-                configuration: ModelConfiguration(id: modelId),
+                from: #hubDownloader(),
+                using: #huggingFaceTokenizerLoader(),
+                configuration: modelConfiguration,
                 progressHandler: { [weak self] progress in
                     let pct = progress.fractionCompleted
                     self?.set(.downloading(pct))
@@ -278,7 +290,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     }
 
     public func generate(prompt: String, parameters: GenerationParameters) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        AsyncThrowingStream<String, Error> { (continuation: AsyncThrowingStream<String, Error>.Continuation) in
             guard let container else {
                 continuation.finish(throwing: ModelError.notLoaded)
                 return
@@ -299,28 +311,27 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     let tokens32 = tokens.map { Int32($0) }
                     self.debug(String(format: "encoded %d tokens in %.2fs", tokens.count, Date().timeIntervalSince(t0)))
 
-                    // KV-cache quantization knobs, wired via
-                    // `DeviceProfile.useQuantizedKVCache`. `maybeQuantizeKVCache`
-                    // inside MLXLMCommon.TokenIterator swaps every
-                    // `KVCacheSimple` (full-attention) layer to a
-                    // `QuantizedKVCache` once `offset > quantizedKVStart`.
-                    // The vendored Gemma4-Core fork's attention forward
-                    // branches on `QuantizedKVCacheProtocol` and runs
+                    // KV-cache quantization, wired via the vendored
+                    // mlx-swift-lm fork's patched `Gemma4Attention`.
+                    // `maybeQuantizeKVCache` inside `TokenIterator`
+                    // swaps every `KVCacheSimple` (full-attention)
+                    // layer to `QuantizedKVCache` once
+                    // `offset > quantizedKVStart`. Our patch branches
+                    // on `QuantizedKVCacheProtocol` and routes through
                     // `quantizedScaledDotProductAttention` against the
                     // 4-bit groupwise state. Sliding (RotatingKVCache)
-                    // layers stay FP16 — upstream MLX doesn't yet
-                    // support rotating-quantized. That's fine: the
-                    // full-attention layers are the ones that grow
-                    // unboundedly with prompt length, and those are
-                    // what dominate KV memory on long prompts.
+                    // layers stay FP16 — upstream MLX doesn't support
+                    // rotating-quantized yet.
                     //
-                    // quantizedKVStart=0: swap immediately after the
-                    // first step. Prefill itself stays FP16 (the model's
-                    // `prepare(...)` does chunked prefill without
-                    // quantizing between chunks) so the peak prefill
-                    // spike is unchanged — but the steady-state cache
-                    // (what lingers during and after generation) is
-                    // ~4× smaller.
+                    // `quantizedKVStart: 0`: swap immediately after the
+                    // first step. Prefill itself stays FP16 because
+                    // `model.prepare(...)` does chunked prefill without
+                    // calling `maybeQuantizeKVCache` between chunks,
+                    // so the peak-prefill spike is unchanged — but the
+                    // steady-state cache (what lingers during and
+                    // after generation) is ~4× smaller. Gated on
+                    // `DeviceProfile.useQuantizedKVCache` (Mac stays
+                    // FP16 — the memory win doesn't matter there).
                     let useQuant = DeviceProfile.current.useQuantizedKVCache
                     let genParams = GenerateParameters(
                         maxTokens: parameters.maxTokens,
@@ -436,7 +447,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     chunkLoop: for await event in tokenStream {
                         guard case .token(let id) = event else { continue }
                         tokenIDs.append(Int32(id))
-                        let fullDecoded = tokenizer.decode(tokens: tokenIDs.map { Int($0) })
+                        let fullDecoded = tokenizer.decode(
+                            tokenIds: tokenIDs.map { Int($0) },
+                            skipSpecialTokens: false)
                         let newText: String
                         if fullDecoded.hasPrefix(decodedSoFar) {
                             newText = String(fullDecoded.dropFirst(decodedSoFar.count))
@@ -560,11 +573,17 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
 /// can detokenise incrementally outside the actor isolation. The
 /// model container ensures the tokenizer isn't concurrently mutated
 /// while generation is in flight.
-import Tokenizers
+///
+/// In mlx-swift-lm 3.x the `Tokenizer` protocol lives in
+/// `MLXLMCommon` directly (no longer imported from `Tokenizers`),
+/// so the module import at the top of this file is enough.
 
 private struct SendableTokenizer: @unchecked Sendable {
-    let wrapped: any Tokenizer
-    init(_ t: any Tokenizer) { self.wrapped = t }
+    // Both `MLXLMCommon` and `Tokenizers` (swift-transformers) declare
+    // a `Tokenizer` protocol; we want MLX's narrower one so the shim
+    // matches `context.tokenizer`'s type.
+    let wrapped: any MLXLMCommon.Tokenizer
+    init(_ t: any MLXLMCommon.Tokenizer) { self.wrapped = t }
 }
 
 #else

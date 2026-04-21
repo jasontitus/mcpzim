@@ -37,13 +37,23 @@ Device UUIDs:
 
 List all attached devices: `xcrun devicectl list devices`.
 
-## Vendored Gemma4 fork (KV-cache quantization)
+## Vendored mlx-swift-lm fork (KV-cache quantization)
 
-`ios/project.yml` pins `Gemma4SwiftCore` to `path: LocalPackages/Swift-gemma4-core`. This is a fork of https://github.com/yejingyang8963-byte/Swift-gemma4-core.git with a single patch: `Sources/Gemma4SwiftCore/Layers/Gemma4TextAttention+Forward.swift` branches on `QuantizedKVCacheProtocol` so MLX's 4-bit groupwise `QuantizedKVCache` runs end-to-end. Without the fork, MLX asserts at `cache.update` on phones.
+`ios/project.yml` pins `mlx-swift-lm` to `path: LocalPackages/mlx-swift-lm`. This is a copy of `mlx-swift-lm` 3.31.3 with a single-file patch: `Libraries/MLXLLM/Models/Gemma4Text.swift::Gemma4Attention.callAsFunction` branches on `QuantizedKVCacheProtocol` before `cache.update(...)` so MLX's 4-bit groupwise `QuantizedKVCache` runs end-to-end. Without the patch MLX asserts at `cache.update` on phones. The attention forward also dequantizes the post-update K/V on its way out so KV-shared layers still see full history.
 
-Gate: `DeviceProfile.useQuantizedKVCache` (true on iPhone/iPad tiers, false on Mac). Wired into `Gemma4Provider.generate()` via `kvBits: 4, kvGroupSize: 64, quantizedKVStart: 0`. Full-attention layers swap after prefill; sliding (`RotatingKVCache`) layers stay FP16 because MLX doesn't yet support rotating-quantized.
+Gate: `DeviceProfile.useQuantizedKVCache` (true on iPhone/iPad tiers, false on Mac). `Gemma4Provider.generate()` passes `kvBits: 4, kvGroupSize: 64, quantizedKVStart: 0`. Full-attention layers swap on the first post-prefill step; sliding (`RotatingKVCache`) layers stay FP16 because upstream MLX doesn't support rotating-quantized yet.
 
-If you bump the upstream version: `rm -rf ios/LocalPackages/Swift-gemma4-core && git clone https://github.com/yejingyang8963-byte/Swift-gemma4-core.git ios/LocalPackages/Swift-gemma4-core && rm -rf ios/LocalPackages/Swift-gemma4-core/.git`, then re-apply the attention-forward patch (see `KV_CACHE_COMPRESSION.md` Option 1 for the diff shape).
+Historical note: before 2026-04-21 the patch lived in a separate `Swift-gemma4-core` fork. `mlx-swift-lm` 3.x landed native Gemma 4 support, so we retired that fork and moved the patch into `mlx-swift-lm` instead. `KV_CACHE_COMPRESSION.md` "Status as of 2026-04-21" has the full migration notes.
+
+If you bump the upstream version:
+
+```sh
+rm -rf ios/LocalPackages/mlx-swift-lm
+rsync -a --exclude ".build" --exclude ".git" --exclude ".swiftpm" \
+  ios/build/SourcePackages/checkouts/mlx-swift-lm/ \
+  ios/LocalPackages/mlx-swift-lm/
+# then re-apply the Gemma4Text.swift patch (same shape as KV_CACHE_COMPRESSION.md Option 1)
+```
 
 After bumping, force SPM to re-resolve against the vendored path:
 
@@ -53,7 +63,9 @@ rm -rf ios/build/SourcePackages && \
   -derivedDataPath ios/build -resolvePackageDependencies
 ```
 
-`tools/gemma-smoke/Package.swift` still uses the upstream URL (the harness only tests FP16 paths — LCP + tokenizer — so the fork patch isn't needed there).
+Build with `-skipMacroValidation` — `MLXHuggingFace` exposes Swift macros and Xcode wants explicit approval by default. Add that flag to any scripted `xcodebuild` invocation that touches the iOS target.
+
+`tools/gemma-smoke/Package.swift` still uses the retired `Swift-gemma4-core` URL (the harness is FP16-only — LCP + tokenizer tests — so hasn't been migrated to the upstream stack yet).
 
 ## Device syslog (no more copy-paste from the in-window debug pane)
 

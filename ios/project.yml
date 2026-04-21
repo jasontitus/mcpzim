@@ -19,14 +19,29 @@ settings:
 packages:
   MCPZimKit:
     path: ../swift
-  Gemma4SwiftCore:
-    # Vendored fork of https://github.com/yejingyang8963-byte/Swift-gemma4-core.
-    # Local patch adds a `QuantizedKVCacheProtocol` branch to
-    # `Gemma4TextAttention+Forward.swift` so MLX's 4-bit groupwise
-    # KV cache works end-to-end (~500 MB → ~125 MB on a 2500-token
-    # prompt). See `KV_CACHE_COMPRESSION.md` Option 1 for the
-    # rationale and upstream-PR plan.
-    path: LocalPackages/Swift-gemma4-core
+  # Vendored fork of https://github.com/ml-explore/mlx-swift-lm (pin 3.31.3).
+  # Local patch inserts a `QuantizedKVCacheProtocol` branch into
+  # `Libraries/MLXLLM/Models/Gemma4Text.swift::Gemma4Attention.callAsFunction`
+  # so MLX's 4-bit groupwise `QuantizedKVCache` runs end-to-end —
+  # upstream calls `cache.update(...)` unconditionally and MLX's
+  # quantized cache rejects that with a runtime assertion. The patch
+  # also dequantizes the full-history K/V on the way out so
+  # downstream KV-shared layers (Gemma 4's layers 15..34 donating
+  # from 0..14) still see full history. See `KV_CACHE_COMPRESSION.md`
+  # Option 1 for the rationale and upstream-PR plan.
+  mlx-swift-lm:
+    path: LocalPackages/mlx-swift-lm
+  # `#huggingFaceLoadModelContainer` / `#hubDownloader` /
+  # `#huggingFaceTokenizerLoader` macros live here. Expansions
+  # reference `HuggingFace.HubClient` (from swift-huggingface) and
+  # `Tokenizers.AutoTokenizer` (from swift-transformers), so those
+  # two deps have to be resolvable from the app module too.
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers.git
+    from: 1.3.0
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface.git
+    from: 0.9.0
   # High-quality on-device TTS (Kokoro v1.0 via MLX). Vendored as a
   # local path because upstream kokoro-ios pins `mlx-swift` to exact
   # 0.30.2 which conflicts with Swift-gemma4-core's 0.31+ requirement.
@@ -71,8 +86,16 @@ targets:
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
-      - package: Gemma4SwiftCore
-        product: Gemma4SwiftCore
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-huggingface
+        product: HuggingFace
       - package: KokoroSwift
         product: KokoroSwift
         embed: true
@@ -142,8 +165,16 @@ targets:
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
-      - package: Gemma4SwiftCore
-        product: Gemma4SwiftCore
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-huggingface
+        product: HuggingFace
       - package: KokoroSwift
         product: KokoroSwift
         embed: true

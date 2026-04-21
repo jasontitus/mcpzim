@@ -1,8 +1,0 @@
-version: 1
-builder:
-  configs:
-    - documentation_targets: [Gemma4SwiftCore]
-      platform: macos-spm
-      swift_version: "5.9"
-    - platform: ios
-      swift_version: "5.9"

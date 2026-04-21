@@ -209,42 +209,67 @@ Revisit TurboQuant when **either**:
    "Lightning quants".
 4. **Hold off on TurboQuant** until one of the triggers above fires.
 
-## Status as of 2026-04-21
+## Status as of 2026-04-21 (KV quant live again)
 
-Option 1 is **wired but disabled by default** on iOS:
+Option 1 is **wired and on by default** on iOS after a full migration
+to upstream `MLXLLM.Gemma4TextModel`:
 
-- `DeviceProfile.useQuantizedKVCache` is `false` on every iOS/iPadOS
-  tier (was `true` briefly). `Gemma4Provider.generate(...)` still reads
-  the flag and only passes `kvBits: 4` to MLX when it flips to `true`.
-- `ios/LocalPackages/Swift-gemma4-core/Sources/Gemma4SwiftCore/Layers/Gemma4TextAttention+Forward.swift`
-  retains the `QuantizedKVCacheProtocol` branch + donor-dequantize
-  bridge so the path is testable when we re-enable it.
+- **Vendored fork moved**: the `Swift-gemma4-core` fork (Option 1's
+  original home) is retired; `mlx-swift-lm` 3.31.3 ships native Gemma 4
+  support, so we vendor it instead at
+  `ios/LocalPackages/mlx-swift-lm/` and patch
+  `Libraries/MLXLLM/Models/Gemma4Text.swift::Gemma4Attention.callAsFunction`.
+  The patch is the same shape as the old one — a
+  `QuantizedKVCacheProtocol` branch before `cache.update(...)`, routing
+  through `quantizedScaledDotProductAttention`, plus a `dequantized(...)`
+  bridge so the donor K/V tuple returned to KV-shared layers still
+  carries full history.
+- **Flag flipped back on**: `DeviceProfile.useQuantizedKVCache` is
+  `true` on every iOS/iPadOS tier. Mac stays `false` — memory isn't
+  the binding constraint and FP16 is cheaper to reason about.
+- **`Gemma4Provider.generate(...)`** passes `kvBits: 4, kvGroupSize: 64,
+  quantizedKVStart: 0` into `GenerateParameters`. Prefill stays FP16
+  (chunked prefill doesn't call `maybeQuantizeKVCache`); the swap
+  happens on the first post-prefill `step()`, and steady-state KV is
+  ~4× smaller from that point on.
 
-The flip to `false` was a defensive rollback after a jetsam kill on an
-iPhone 17 Pro Max on the first post-install launch:
+### Why the earlier rollback didn't stick
 
-- Prewarm `primeCache` prefill peak: **~4916 MB** (vs ~4264 MB on the
-  pre-quant build, a **+652 MB regression** we can't yet attribute to
-  anything on the code path — `primeCache` doesn't pass `kvBits`).
-- Jetsam event `freeze_skip_reason: out-of-slots`, RSS 4987 MB at kill.
-- Rollback restored the pre-quant generate path; separately we moved
-  the composer prewarm trigger from "focus gained" to "first keystroke"
-  so a cold launch no longer fires `primeCache` automatically.
+The 2026-04-20 jetsam was triggered by `primeCache` prewarm on cold
+launch hitting ~4916 MB. `primeCache` doesn't use `kvBits`, so the
+memory ballooning wasn't caused by quantization. The actual fix for
+that incident lives in the prewarm trigger, not the quant flag:
 
-### Before re-enabling
+- The composer prewarm used to fire on `.onChange(of: inputFocused)`,
+  meaning auto-focus on launch kicked `primeCache` before the app had
+  settled. We moved it to `.onChange(of: draft)` on the empty →
+  non-empty transition (first-keystroke gate). A cold launch no longer
+  prewarms anything.
 
-1. Reproduce the +652 MB prewarm regression on an untouched `kvBits=nil`
-   build. If it disappears when we toggle just the DeviceProfile flag,
-   the flag's presence is triggering something (MLX session-wide state?
-   Swift optimizer inlining?) that primeCache indirectly feels.
-2. If it reproduces regardless of the flag: SPM / build-artifact side
-   effect — compare `project.pbxproj` / `Package.resolved` deltas from
-   commit `8ec0fb3` more carefully.
-3. Write the donor-quantized attention path (see comment in
-   `Gemma4TextAttention+Forward.swift`) so we stop dequantizing the
-   full history back to FP16 on every forward pass for donor layers.
-   Only needed once the 1 above is cleared — donor dequant is
-   orthogonal to prewarm.
+With that gate in place, re-enabling quant has no new jetsam surface
+to worry about — steady-state KV during a real generate is ~4× smaller
+than FP16, not larger.
+
+### Before-and-after expectations
+
+- Prefill peak: unchanged (still FP16 during chunked prefill).
+- First post-prefill step: transient spike as the swap creates 4-bit
+  buffers alongside the FP16 originals, then FP16 drops.
+- Steady-state KV during and after generation: **~500 MB → ~125 MB**
+  on a 2500-token prompt (Gemma 4 E2B, 5 full-attention layers @ 4941
+  tokens × 4 KV heads × 512 head-dim).
+
+### Remaining work / re-visit triggers
+
+- Land the attention patch upstream (mlx-swift-lm PR) so we can retire
+  the second vendored fork. Same ~25-line insertion.
+- Instrument the first-post-prefill swap peak — if it regresses on
+  newer iPhones or with `Longer replies` on, may need
+  `quantizedKVStart: 256` to keep the first 256 tokens FP16 and smooth
+  the transition.
+- If a tool-call regression eval shows parse reliability dropping at
+  4-bit, try `kvBits: 5` or bump back to FP16 on the tier where it
+  matters.
 
 ## References
 
