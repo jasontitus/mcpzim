@@ -90,6 +90,36 @@ idevicecrashreport -e -k -f MCPZim ./crashes
 
 **Always pass `-f MCPZim`.** Without the filter it copies thousands of system `.ips` files.
 
+## mcp-crashes.sh — crash triage helper
+
+`ios/scripts/mcp-crashes.sh` wraps the `idevicecrashreport` + `.ips` parsing loop we used to do by hand. Assumes one device attached; override with `MCPZIM_DEVICE_UUID=... mcp-crashes.sh ...` if there are several.
+
+```sh
+# Default: pull MCPZim + Jetsam, list newest 5 of each, summarise the top one.
+ios/scripts/mcp-crashes.sh            # == `scan`
+
+# Pull fresh (drops new .ips into /tmp/mcpzim-crash + /tmp/mcpzim-jetsam).
+# Add --all to also sweep the unfiltered crash queue into /tmp/mcpzim-crash-all.
+ios/scripts/mcp-crashes.sh pull
+ios/scripts/mcp-crashes.sh pull --all
+
+# List.
+ios/scripts/mcp-crashes.sh mcpzim [N]     # app crashes, newest first
+ios/scripts/mcp-crashes.sh jetsam [N]     # JetsamEvent-*.ips, newest first
+ios/scripts/mcp-crashes.sh today          # just today
+
+# Parse one .ips (captureTime, exception, faulting stack, jetsam RSS / peak).
+ios/scripts/mcp-crashes.sh summary /tmp/mcpzim-jetsam/JetsamEvent-...ips
+
+# Memory trajectory from the syslog buffer — requires mcp-logs.sh to be running.
+ios/scripts/mcp-crashes.sh mem            # n/min/max/avg + last 15 samples
+ios/scripts/mcp-crashes.sh peaks [N]      # top N peak mem readings (default 20)
+```
+
+The jetsam-summary line is the one to read first. A healthy MCPZim sample on an iPhone 17 Pro Max sits around RSS ≤ 5 GB; `rss=6[0-9]{3} MB` with `freeze_skip_reason: out-of-slots` means we crossed the hard 6144 MB process cap and iOS jetsammed us. `largestProcess: MCPZimChat` names us as the culprit; `largestProcess: Oura` (or similar third-party app) means we weren't the killer — the event is incidental system pressure, MCPZim may not have been killed at all.
+
+If `mem` / `peaks` complain about no syslog buffer, check `mcp-logs.sh status` and restart the streamer (the `idevicesyslog` USB transport drops silently after a device disconnect — the script's `running` flag is stale; only `bytes` growing over time confirms forwarding).
+
 ## gemma-smoke (headless macOS CLI)
 
 A standalone CLI harness at `tools/gemma-smoke/` for iterating on the Gemma-4 + MCPZim prompt stack on Mac. Does NOT run via `swift run` — MLX can't find its `.metallib` because `swift build` skips the Metal compile step that Xcode's build system runs. Build with xcodebuild and run the produced binary directly:

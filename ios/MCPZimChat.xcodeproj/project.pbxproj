@@ -15,6 +15,7 @@
 		0D3DFA7E4D37B077303CA421 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		10FF797EA9AC81D9E7AB7A85 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C05D5166643856E4261880 /* Message.swift */; };
+		1333E4C1DAA2F8B84EB6D92C /* MultiModelEvalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */; };
 		1552DF61BEE685667DC21E18 /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
 		1AF01DC71F41BFA84E20663D /* RouteWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */; };
 		1AFD789EC30E7E771837F4AD /* VoiceChatController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */; };
@@ -30,6 +31,7 @@
 		3E5CBB6DF865493628BCFBEC /* FoundationModelsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */; };
 		497ACD8657D6264471963ECC /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
 		4B801BFA891D016E580EABDD /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
+		532EF86EA533402790F7F10F /* GemmaToolEmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */; };
 		5369533E7A4AC1E924B5F602 /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
 		55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		5AA8354ADF3A57116E84B014 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
@@ -48,6 +50,7 @@
 		7310C4D3D29ECB47A4630A4D /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = C9D62A3FFA8A8E1052D233AF /* HuggingFace */; };
 		74DAC895C6ED5C745E46FDE8 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		75F3449BD67167AE2D95E62B /* VoiceChatController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */; };
+		799EF5736678928BFBA4962C /* ZimfoContext+Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */; };
 		7C80D1F8333B3BEEE7348FC0 /* KokoroAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */; };
 		7DB08BA62F598A060EB40F39 /* DebugPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 267EDFBA28517128DC5EB6E5 /* DebugPane.swift */; };
 		7E259B163ABF78C66E1B5993 /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
@@ -79,6 +82,7 @@
 		CA3F5AF9BEB7381081B9895B /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		CE739BBD78E30B102A53F8C8 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79130F0C1B723177E34B9AD0 /* TTSService.swift */; };
 		CF4C4D6916DCD55F90003229 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 627D27FCFC19D35BACEC4DB2 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D4C6FA388511ADE3EEF2F1F2 /* ZimfoContext+Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */; };
 		D545A04576364A00D190809D /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = F57CDF84A48A33BBD022CF1C /* MLXUtilsLibrary */; };
 		D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
@@ -159,8 +163,10 @@
 		6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsNativeTools.swift; sourceTree = "<group>"; };
 		71F26EEF012F57C0CF856CC2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7495A1AA64C657297341FF95 /* LocationFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationFetcher.swift; sourceTree = "<group>"; };
+		75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ZimfoContext+Adapter.swift"; sourceTree = "<group>"; };
 		79130F0C1B723177E34B9AD0 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CoreKiwix.xcframework; path = MCPZimChat/Frameworks/CoreKiwix.xcframework; sourceTree = "<group>"; };
+		7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiModelEvalTests.swift; sourceTree = "<group>"; };
 		8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MCPZimChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
 		94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
@@ -174,6 +180,7 @@
 		C4495544D6591F69F7CC0A24 /* LibzimBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LibzimBridge.h; sourceTree = "<group>"; };
 		C51F39432F92BDC2873FF548 /* ZimfoContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoContext.swift; sourceTree = "<group>"; };
 		C7B765A66EE5E37E25348E19 /* MCPZimChat-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "MCPZimChat-iOS.entitlements"; sourceTree = "<group>"; };
+		DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaToolEmissionTests.swift; sourceTree = "<group>"; };
 		E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gemma4Provider.swift; sourceTree = "<group>"; };
 		E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroDownloader.swift; sourceTree = "<group>"; };
 		ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = LibzimBridge.mm; sourceTree = "<group>"; };
@@ -310,6 +317,7 @@
 			children = (
 				149DA9870C0F015A888DD308 /* DeviceProfile.swift */,
 				F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */,
+				75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */,
 			);
 			path = Common;
 			sourceTree = "<group>";
@@ -336,6 +344,8 @@
 			isa = PBXGroup;
 			children = (
 				5814FC5C00DC7003BA980822 /* ConversationalEvalTests.swift */,
+				DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */,
+				7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */,
 				197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */,
 			);
 			path = MCPZimChatMacTests;
@@ -537,6 +547,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				6DDC0A1A00428E2129F5DCF6 /* ConversationalEvalTests.swift in Sources */,
+				532EF86EA533402790F7F10F /* GemmaToolEmissionTests.swift in Sources */,
+				1333E4C1DAA2F8B84EB6D92C /* MultiModelEvalTests.swift in Sources */,
 				E8429766D83FB7A9E83BD30E /* ZimfoIntentsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -573,6 +585,7 @@
 				1AFD789EC30E7E771837F4AD /* VoiceChatController.swift in Sources */,
 				2B06752A95E47D38D1E794E0 /* VoiceChatView.swift in Sources */,
 				08496228AA371E7E9190F493 /* ZimURLSchemeHandler.swift in Sources */,
+				799EF5736678928BFBA4962C /* ZimfoContext+Adapter.swift in Sources */,
 				3569A18ECEA25DFFA02E346C /* ZimfoContext.swift in Sources */,
 				55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */,
 				2FDFC126506F934041D5B973 /* ZimfoRunner.swift in Sources */,
@@ -611,6 +624,7 @@
 				75F3449BD67167AE2D95E62B /* VoiceChatController.swift in Sources */,
 				E799CDAC1E31F24F18413D9D /* VoiceChatView.swift in Sources */,
 				A54A973CBA0A78BA50B9F26F /* ZimURLSchemeHandler.swift in Sources */,
+				D4C6FA388511ADE3EEF2F1F2 /* ZimfoContext+Adapter.swift in Sources */,
 				5369533E7A4AC1E924B5F602 /* ZimfoContext.swift in Sources */,
 				0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */,
 				C9AFDA297646DDAD66FEE56A /* ZimfoRunner.swift in Sources */,

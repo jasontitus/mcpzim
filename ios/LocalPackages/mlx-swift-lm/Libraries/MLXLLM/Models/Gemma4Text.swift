@@ -202,6 +202,32 @@ private func gemma4ApplyRotaryPosition<R: RoPELayer>(
     }
 }
 
+/// KV cache state handed from a non-shared "donor" layer to the
+/// downstream KV-shared consumer layer of the same attention type.
+///
+/// Carries *either* the FP16 post-update tensors (when the donor
+/// layer's cache is a regular `KVCacheSimple` / `RotatingKVCache`)
+/// or the 4-bit quantized triples plus their dequant params (when
+/// the donor's cache is a `QuantizedKVCache`). Consumers branch on
+/// the case and call the matching form of
+/// `scaledDotProductAttention` directly, so the quantized path
+/// never has to dequantize a full-history K/V tensor back to FP16
+/// just to satisfy the shared-KV hand-off. That used to cost us
+/// ~40–60 MB of transient FP16 per donor layer per decode step —
+/// enough to push a concurrent Kokoro-TTS session over the iPhone
+/// jetsam cap. See `ios/KV_CACHE_COMPRESSION.md`.
+enum Gemma4SharedKV {
+    case fp16(keys: MLXArray, values: MLXArray)
+    case quantized(
+        keys: (MLXArray, MLXArray, MLXArray?),
+        values: (MLXArray, MLXArray, MLXArray?),
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode,
+        seqLen: Int
+    )
+}
+
 // MARK: - Attention
 
 private class Gemma4Attention: Module {
@@ -282,109 +308,137 @@ private class Gemma4Attention: Module {
         _ x: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode? = nil,
         cache: KVCache? = nil,
-        sharedKV: (MLXArray, MLXArray)? = nil,
+        sharedKV: Gemma4SharedKV? = nil,
         positionOffset: Gemma4PositionOffset? = nil
-    ) -> (MLXArray, (MLXArray, MLXArray), Gemma4PositionOffset) {
+    ) -> (MLXArray, Gemma4SharedKV, Gemma4PositionOffset) {
         let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
 
         var queries = qProj(x).reshaped(B, L, nHeads, effectiveHeadDim)
         queries = qNorm(queries)
 
-        let keys: MLXArray
-        let values: MLXArray
         let activePositionOffset = positionOffset ?? gemma4CapturePositionOffset(from: cache)
 
-        if let (sharedK, sharedV) = sharedKV {
-            // KV-shared layers use pre-computed KV from an earlier layer
-            keys = sharedK
-            values = sharedV
-        } else {
-            var k = kProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
-            k = kNorm(k)
-            k = k.transposed(0, 2, 1, 3)
-            k = gemma4ApplyRotaryPosition(rope, to: k, offset: activePositionOffset)
-
-            var v: MLXArray
-            if let vProj {
-                v = vProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
-            } else {
-                v = k
-            }
-            v = vNorm(v)
-            v = v.transposed(0, 2, 1, 3)
-
-            if let cache {
-                // Quantized KV-cache fast path (MLX `QuantizedKVCache`).
-                // `updateQuantized` stores K/V in 4-bit groupwise form and
-                // returns quantized tuples `(weight, scales, biases)`,
-                // which feed straight into
-                // `quantizedScaledDotProductAttention` so we never
-                // materialise a full-precision K/V tensor in the cache
-                // itself. ~4× smaller KV — the biggest lever on iPhone
-                // per `ios/KV_CACHE_COMPRESSION.md`.
-                //
-                // Donor handling: Gemma 4's KV-sharing pattern (full-
-                // attention layers 0..firstKvShared-1 donate to shared
-                // layers firstKvShared..hiddenLayers-1 of the same type)
-                // needs the donor's FULL post-update K/V as plain
-                // MLXArrays. We dequantize the quantized tuple back to
-                // FP16 here before returning — that tensor is a
-                // one-step transient (never re-enters the cache), so
-                // the steady-state cache stays 4× smaller even though
-                // a forward pass briefly materialises the full K/V.
-                if let qCache = cache as? QuantizedKVCacheProtocol {
-                    queries = queries.transposed(0, 2, 1, 3)
-                    queries = gemma4ApplyRotaryPosition(
-                        rope, to: queries, offset: activePositionOffset)
-                    let (qK, qV) = qCache.updateQuantized(keys: k, values: v)
-                    // Mask adjustment uses the keys' seq-len; with the
-                    // quantized path we don't have a materialised
-                    // keys tensor to inspect, so we approximate the
-                    // length from `qCache.offset` (already updated by
-                    // `updateQuantized`).
-                    var adjustedMask = mask
-                    if case .array(let maskArray) = mask {
-                        let keysSeqLen = qCache.offset
-                        if maskArray.dim(-1) != keysSeqLen {
-                            adjustedMask = .array(
-                                maskArray[.ellipsis, 0 ..< keysSeqLen])
-                        }
-                    }
-                    let attnOut = quantizedScaledDotProductAttention(
-                        queries: queries,
-                        quantizedKeys: qK,
-                        quantizedValues: qV,
-                        scale: scale,
-                        mask: adjustedMask ?? .none,
-                        groupSize: qCache.groupSize,
-                        bits: qCache.bits,
-                        mode: qCache.mode
-                    )
-                    .transposed(0, 2, 1, 3)
-                    .reshaped(B, L, -1)
-                    let donorK = dequantized(
-                        qK.0, scales: qK.1, biases: qK.2,
-                        groupSize: qCache.groupSize, bits: qCache.bits,
-                        mode: qCache.mode)
-                    let donorV = dequantized(
-                        qV.0, scales: qV.1, biases: qV.2,
-                        groupSize: qCache.groupSize, bits: qCache.bits,
-                        mode: qCache.mode)
-                    return (oProj(attnOut), (donorK, donorV), activePositionOffset)
-                }
-                let (updatedK, updatedV) = cache.update(keys: k, values: v)
-                keys = updatedK
-                values = updatedV
-            } else {
-                keys = k
-                values = v
-            }
-        }
-
+        // Queries are always rope'd the same way regardless of which
+        // K/V source we're attending over; factor that out.
         queries = queries.transposed(0, 2, 1, 3)
         queries = gemma4ApplyRotaryPosition(rope, to: queries, offset: activePositionOffset)
 
-        // Adjust mask if cache size differs from mask size
+        // 1) KV-shared layers (consumers) — branch on whether the donor
+        //    handed us FP16 or quantized K/V and use the matching form
+        //    of scaledDotProductAttention. No full-precision tensor is
+        //    materialised on the quantized hot path.
+        if let sharedKV {
+            let output: MLXArray
+            switch sharedKV {
+            case .fp16(let sharedK, let sharedV):
+                var adjustedMask = mask
+                if case .array(let maskArray) = mask {
+                    let keysSeqLen = sharedK.dim(2)
+                    if maskArray.dim(-1) != keysSeqLen {
+                        adjustedMask = .array(maskArray[.ellipsis, 0 ..< keysSeqLen])
+                    }
+                }
+                output = MLXFast.scaledDotProductAttention(
+                    queries: queries,
+                    keys: sharedK,
+                    values: sharedV,
+                    scale: scale,
+                    mask: adjustedMask ?? .none
+                )
+                .transposed(0, 2, 1, 3)
+                .reshaped(B, L, -1)
+            case let .quantized(qK, qV, groupSize, bits, mode, seqLen):
+                var adjustedMask = mask
+                if case .array(let maskArray) = mask {
+                    if maskArray.dim(-1) != seqLen {
+                        adjustedMask = .array(maskArray[.ellipsis, 0 ..< seqLen])
+                    }
+                }
+                output = quantizedScaledDotProductAttention(
+                    queries: queries,
+                    quantizedKeys: qK,
+                    quantizedValues: qV,
+                    scale: scale,
+                    mask: adjustedMask ?? .none,
+                    groupSize: groupSize,
+                    bits: bits,
+                    mode: mode
+                )
+                .transposed(0, 2, 1, 3)
+                .reshaped(B, L, -1)
+            }
+            // Hand the donor KV back unchanged — the inner model's
+            // `kvDonors` table keeps using the donor layer's form.
+            return (oProj(output), sharedKV, activePositionOffset)
+        }
+
+        // 2) Non-shared "donor" layers — compute K/V, update the cache,
+        //    and emit the donor tuple that downstream shared layers will
+        //    consume. Quantized caches emit `.quantized(...)`;
+        //    unquantized caches (or the no-cache case) emit `.fp16(...)`.
+        var k = kProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
+        k = kNorm(k)
+        k = k.transposed(0, 2, 1, 3)
+        k = gemma4ApplyRotaryPosition(rope, to: k, offset: activePositionOffset)
+
+        var v: MLXArray
+        if let vProj {
+            v = vProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
+        } else {
+            v = k
+        }
+        v = vNorm(v)
+        v = v.transposed(0, 2, 1, 3)
+
+        if let qCache = cache as? QuantizedKVCacheProtocol {
+            // Quantized KV-cache fast path (MLX `QuantizedKVCache`).
+            // `updateQuantized` stores K/V in 4-bit groupwise form and
+            // returns quantized tuples `(weight, scales, biases)`,
+            // which feed straight into
+            // `quantizedScaledDotProductAttention` — we never
+            // materialise a full-precision K/V tensor in the cache,
+            // AND (since 2026-04-21) we don't materialise one on the
+            // donor hand-off either: the downstream shared layer
+            // consumes the quantized triple directly.
+            let (qK, qV) = qCache.updateQuantized(keys: k, values: v)
+            let seqLen = qCache.offset
+            var adjustedMask = mask
+            if case .array(let maskArray) = mask {
+                if maskArray.dim(-1) != seqLen {
+                    adjustedMask = .array(maskArray[.ellipsis, 0 ..< seqLen])
+                }
+            }
+            let attnOut = quantizedScaledDotProductAttention(
+                queries: queries,
+                quantizedKeys: qK,
+                quantizedValues: qV,
+                scale: scale,
+                mask: adjustedMask ?? .none,
+                groupSize: qCache.groupSize,
+                bits: qCache.bits,
+                mode: qCache.mode
+            )
+            .transposed(0, 2, 1, 3)
+            .reshaped(B, L, -1)
+            let donor: Gemma4SharedKV = .quantized(
+                keys: qK, values: qV,
+                groupSize: qCache.groupSize, bits: qCache.bits,
+                mode: qCache.mode, seqLen: seqLen
+            )
+            return (oProj(attnOut), donor, activePositionOffset)
+        }
+
+        let keys: MLXArray
+        let values: MLXArray
+        if let cache {
+            let (updatedK, updatedV) = cache.update(keys: k, values: v)
+            keys = updatedK
+            values = updatedV
+        } else {
+            keys = k
+            values = v
+        }
+
         var adjustedMask = mask
         if case .array(let maskArray) = mask {
             let keysSeqLen = keys.dim(2)
@@ -403,7 +457,7 @@ private class Gemma4Attention: Module {
         .transposed(0, 2, 1, 3)
         .reshaped(B, L, -1)
 
-        return (oProj(output), (keys, values), activePositionOffset)
+        return (oProj(output), .fp16(keys: keys, values: values), activePositionOffset)
     }
 }
 
@@ -492,9 +546,9 @@ private class Gemma4DecoderLayer: Module {
         mask: MLXFast.ScaledDotProductAttentionMaskMode? = nil,
         cache: KVCache? = nil,
         perLayerInput: MLXArray? = nil,
-        sharedKV: (MLXArray, MLXArray)? = nil,
+        sharedKV: Gemma4SharedKV? = nil,
         positionOffset: Gemma4PositionOffset? = nil
-    ) -> (MLXArray, (MLXArray, MLXArray), Gemma4PositionOffset) {
+    ) -> (MLXArray, Gemma4SharedKV, Gemma4PositionOffset) {
         let residual = x
 
         let h = inputLayernorm(x)
@@ -662,8 +716,12 @@ private class Gemma4TextModelInner: Module {
             }
         }
 
-        // Forward through layers, tracking intermediate KV pairs for sharing
-        var intermediates = [(kv: (MLXArray, MLXArray)?, positionOffset: Gemma4PositionOffset?)](
+        // Forward through layers, tracking intermediate KV pairs for
+        // sharing. `intermediates[i].kv` may be FP16 or quantized (see
+        // `Gemma4SharedKV` — the latter lets us skip a full-precision
+        // K/V materialisation for KV-shared consumers when the donor
+        // layer is a QuantizedKVCache).
+        var intermediates = [(kv: Gemma4SharedKV?, positionOffset: Gemma4PositionOffset?)](
             repeating: (nil, nil), count: config.numHiddenLayers)
 
         for (idx, layer) in layers.enumerated() {

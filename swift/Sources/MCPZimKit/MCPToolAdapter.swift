@@ -41,6 +41,119 @@ public enum ToolSurface: Sendable {
     case full
 }
 
+/// Snapshot of the host's "current location" at tool-dispatch time. Supplied
+/// by the host via `HostStateProvider` so tools like `what_is_here` don't
+/// need iOS frameworks in the pure-Swift MCPZimKit layer.
+public struct LocationSnapshot: Sendable {
+    public let lat: Double
+    public let lon: Double
+    public init(lat: Double, lon: Double) {
+        self.lat = lat; self.lon = lon
+    }
+}
+
+/// Snapshot of an active driving route. Mirrors the minimum `ActiveRoute`
+/// shape the host tracks — enough to answer "how much longer?" without
+/// re-running the routing graph. Host converts its own state into this
+/// shape inside `HostStateProvider`.
+public struct RouteSnapshot: Sendable {
+    public struct Coordinate: Sendable {
+        public let lat: Double
+        public let lon: Double
+        public init(lat: Double, lon: Double) {
+            self.lat = lat; self.lon = lon
+        }
+    }
+    public let origin: Coordinate
+    public let destination: Coordinate
+    public let originName: String
+    public let destinationName: String
+    public let totalDistanceMeters: Double
+    public let totalDurationSeconds: Double
+    /// Polyline vertices; parallel to `cumulativeDistanceMeters`.
+    public let polyline: [Coordinate]
+    /// Cumulative path distance up to each polyline index.
+    /// `.last == totalDistanceMeters`.
+    public let cumulativeDistanceMeters: [Double]
+    public let turnByTurn: [String]
+
+    public init(
+        origin: Coordinate, destination: Coordinate,
+        originName: String, destinationName: String,
+        totalDistanceMeters: Double, totalDurationSeconds: Double,
+        polyline: [Coordinate],
+        cumulativeDistanceMeters: [Double],
+        turnByTurn: [String]
+    ) {
+        self.origin = origin
+        self.destination = destination
+        self.originName = originName
+        self.destinationName = destinationName
+        self.totalDistanceMeters = totalDistanceMeters
+        self.totalDurationSeconds = totalDurationSeconds
+        self.polyline = polyline
+        self.cumulativeDistanceMeters = cumulativeDistanceMeters
+        self.turnByTurn = turnByTurn
+    }
+}
+
+extension RouteSnapshot {
+    /// Snap `current` to the nearest polyline vertex, then derive how much
+    /// of the route is left. Same math the iOS host's `RouteProgress` runs;
+    /// duplicated here so MCPZimKit doesn't depend on the iOS-side type.
+    public func remaining(at current: Coordinate)
+        -> (remainingMeters: Double, remainingSeconds: Double, fractionDone: Double)
+    {
+        guard polyline.count >= 2 else {
+            return (totalDistanceMeters, totalDurationSeconds, 0)
+        }
+        var bestIdx = 0
+        var bestD = Double.infinity
+        for (i, p) in polyline.enumerated() {
+            let d = Self.haversineMetersApprox(current.lat, current.lon, p.lat, p.lon)
+            if d < bestD { bestD = d; bestIdx = i }
+        }
+        let covered = bestIdx < cumulativeDistanceMeters.count
+            ? cumulativeDistanceMeters[bestIdx] : 0
+        let remainingMeters = max(0, totalDistanceMeters - covered)
+        let fraction = totalDistanceMeters > 0
+            ? 1.0 - (remainingMeters / totalDistanceMeters) : 0
+        let remainingSeconds = totalDurationSeconds * (1.0 - fraction)
+        return (remainingMeters, remainingSeconds, fraction)
+    }
+
+    static func haversineMetersApprox(
+        _ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double
+    ) -> Double {
+        let R = 6_371_000.0
+        let rlat1 = lat1 * .pi / 180
+        let rlat2 = lat2 * .pi / 180
+        let dlat = (lat2 - lat1) * .pi / 180
+        let dlon = (lon2 - lon1) * .pi / 180
+        let a = sin(dlat / 2) * sin(dlat / 2)
+            + cos(rlat1) * cos(rlat2) * sin(dlon / 2) * sin(dlon / 2)
+        return 2 * R * asin(min(1.0, sqrt(a)))
+    }
+}
+
+/// Snapshot the host feeds in at dispatch time. Either field may be nil —
+/// tools that need a missing piece (e.g. `route_status` with no active
+/// route) return a clear error instead of failing.
+public struct HostStateSnapshot: Sendable {
+    public let activeRoute: RouteSnapshot?
+    public let currentLocation: LocationSnapshot?
+    public init(activeRoute: RouteSnapshot?, currentLocation: LocationSnapshot?) {
+        self.activeRoute = activeRoute
+        self.currentLocation = currentLocation
+    }
+}
+
+/// Host-supplied closure for pulling "current world state" into a tool
+/// call. When nil, `route_status` / `what_is_here` are still registered
+/// but reject with a clear error so the model learns to stop calling
+/// them. Mark sendable since actors dispatch it on arbitrary executors.
+public typealias HostStateProvider = @Sendable () async -> HostStateSnapshot
+
 /// Optional post-processor for `search` tool hits. Takes the user's
 /// query text + the BM25-ranked hit list and returns a possibly-
 /// reordered (and possibly-shortened) list. Hosted outside MCPZimKit
@@ -64,11 +177,25 @@ public actor MCPToolAdapter {
     /// first, not just the keyword-densest.
     private var hitReranker: HitReranker?
 
-    public init(service: any ZimService, hasStreetzim: Bool, surface: ToolSurface = .full, categoryVocabulary: [String] = []) {
+    /// Optional closure the host installs so location-aware tools
+    /// (`route_status`, `what_is_here`) can read the latest active
+    /// route + GPS fix at dispatch time. Nil means the tools still
+    /// register (so model behaviour doesn't branch on host identity)
+    /// but reject with a clear error.
+    private var hostStateProvider: HostStateProvider?
+
+    public init(
+        service: any ZimService,
+        hasStreetzim: Bool,
+        surface: ToolSurface = .full,
+        categoryVocabulary: [String] = [],
+        hostStateProvider: HostStateProvider? = nil
+    ) {
         self.service = service
         self.hasStreetzim = hasStreetzim
         self.surface = surface
         self.categoryVocabulary = categoryVocabulary
+        self.hostStateProvider = hostStateProvider
     }
 
     /// Install (or clear) a semantic reranker. Passing `nil` drops
@@ -77,7 +204,18 @@ public actor MCPToolAdapter {
         self.hitReranker = reranker
     }
 
-    public static func from(service: any ZimService, surface: ToolSurface = .full) async -> MCPToolAdapter {
+    /// Install (or clear) the host-state provider. Called post-construction
+    /// because the host usually builds the adapter before its route /
+    /// location state actors are wired up.
+    public func installHostStateProvider(_ provider: HostStateProvider?) {
+        self.hostStateProvider = provider
+    }
+
+    public static func from(
+        service: any ZimService,
+        surface: ToolSurface = .full,
+        hostStateProvider: HostStateProvider? = nil
+    ) async -> MCPToolAdapter {
         let inventory = (try? await service.inventory()) ?? InventoryResult(zims: [], capabilities: [])
         let hasStreetzim = inventory.zims.contains { $0.kind == .streetzim && $0.hasRoutingData }
         let vocab: [String]
@@ -86,7 +224,13 @@ public actor MCPToolAdapter {
         } else {
             vocab = []
         }
-        return MCPToolAdapter(service: service, hasStreetzim: hasStreetzim, surface: surface, categoryVocabulary: vocab)
+        return MCPToolAdapter(
+            service: service,
+            hasStreetzim: hasStreetzim,
+            surface: surface,
+            categoryVocabulary: vocab,
+            hostStateProvider: hostStateProvider
+        )
     }
 
     public var registry: MCPToolRegistry {
@@ -177,6 +321,56 @@ public actor MCPToolAdapter {
                     + "shipped (generator commit a485ce3).",
                 inputSchemaJSON: Self.zimInfoSchema
             ),
+            MCPTool(
+                name: "article_overview",
+                description:
+                    "Fetch an article's lead plus a few major narrative sections — "
+                    + "the right tool for \"tell me about X\" / \"give me an "
+                    + "overview of X\". Automatically skips boilerplate (References, "
+                    + "See also, External links, …) and prefers sections named "
+                    + "History / Overview / Background / Description / Geography / "
+                    + "Culture / Economy, filling remaining slots with the longest "
+                    + "remaining sections. Prefer this over `list_article_sections` "
+                    + "+ N×`get_article_section`.",
+                inputSchemaJSON: Self.articleOverviewSchema
+            ),
+            MCPTool(
+                name: "compare_articles",
+                description:
+                    "Pull the same section (or lead + top sections) from 2–4 "
+                    + "articles at once, aligned so a side-by-side comparison "
+                    + "reads cleanly. Use this for \"how is X different from Y\" / "
+                    + "\"compare X and Y\". Omit `section` to get each article's "
+                    + "lead + its two biggest narrative sections; pass `section` "
+                    + "to align on a named topic (e.g. section=\"History\").",
+                inputSchemaJSON: Self.compareArticlesSchema
+            ),
+            MCPTool(
+                name: "article_relationship",
+                description:
+                    "Pull the prose that describes how two entities relate. First "
+                    + "probes dedicated Wikipedia relations articles ("
+                    + "\"A–B relations\", \"Foreign relations of A\", "
+                    + "\"History of A–B relations\"), then falls back to a "
+                    + "\"Foreign relations\" section on each entity's own article. "
+                    + "Use for \"how have A and B gotten along\" / \"relations "
+                    + "between A and B\" / \"history of A–B\". Returns the lead "
+                    + "plus sections naming the counterpart.",
+                inputSchemaJSON: Self.articleRelationshipSchema
+            ),
+            MCPTool(
+                name: "narrate_article",
+                description:
+                    "Return the full article body cleaned for narration ("
+                    + "headings announced as sentences, citation markers stripped, "
+                    + "boilerplate sections dropped). The host reads this text "
+                    + "directly to the user without further model generation — "
+                    + "it's the \"read that to me\" / \"read the full article\" "
+                    + "path. Prefer over `article_overview` when the user "
+                    + "explicitly asks for the full piece. Supports any loaded "
+                    + "Wikipedia-family ZIM.",
+                inputSchemaJSON: Self.narrateArticleSchema
+            ),
         ]
         if hasStreetzim {
             // Name-based streetzim tools are safe for every surface.
@@ -230,6 +424,61 @@ public actor MCPToolAdapter {
                         + "the system preamble for \"what's around me\" / \"nearest ___\" "
                         + "queries. For a NAMED place use `near_named_place` instead.",
                     inputSchemaJSON: Self.nearPlacesSchema(vocabulary: categoryVocabulary)
+                ),
+                // Composite "tell me something interesting" tools — wrap
+                // near_places(has_wiki=true) + parallel lead-paragraph
+                // fetches so the model gets story-ready excerpts on one
+                // call instead of stitching together N×get_article_by_title.
+                MCPTool(
+                    name: "nearby_stories",
+                    description:
+                        "Return 3–5 story-ready excerpts (~1–2 paragraphs each) "
+                        + "from Wikipedia articles for places around the given "
+                        + "lat/lon. The right tool for \"tell me something "
+                        + "interesting about where I am\" / \"stories about "
+                        + "this neighborhood\" / \"history of this area\". "
+                        + "\"Interesting\" means `has_wiki=true` — museums, "
+                        + "tourism sites, historic spots, named landmarks, "
+                        + "parks, anything that has a Wikipedia article. "
+                        + "Optionally filter with `kinds` (e.g. "
+                        + "`kinds=[\"museum\"]` for \"interesting museums\"). "
+                        + "Each excerpt is substantive enough to narrate "
+                        + "directly; the model should read them out, not "
+                        + "summarize.",
+                    inputSchemaJSON: Self.nearbyStoriesSchema(vocabulary: categoryVocabulary)
+                ),
+                MCPTool(
+                    name: "nearby_stories_at_place",
+                    description:
+                        "Same shape as `nearby_stories` but for a named place "
+                        + "(not the user's current coords). Geocodes the place "
+                        + "internally. Use for \"interesting stories from "
+                        + "Palo Alto\" / \"history of downtown Portland\".",
+                    inputSchemaJSON: Self.nearbyStoriesAtPlaceSchema(vocabulary: categoryVocabulary)
+                ),
+                MCPTool(
+                    name: "what_is_here",
+                    description:
+                        "Answer \"where am I?\" / \"what neighborhood is this?\". "
+                        + "Reverse-geocodes to the nearest named place (admin / "
+                        + "neighborhood / city) and, if that place has a "
+                        + "Wikipedia article, pulls its lead paragraph. Omit "
+                        + "lat/lon to use the host's current GPS fix; pass "
+                        + "explicit lat/lon for a named-coord variant.",
+                    inputSchemaJSON: Self.whatIsHereSchema
+                ),
+                MCPTool(
+                    name: "route_status",
+                    description:
+                        "Check progress on the currently-active driving route. "
+                        + "Use for \"how much longer?\" / \"what's my next turn?\" "
+                        + "/ \"am I there yet?\". Takes no arguments — reads the "
+                        + "last planned route (via `route_from_places` / "
+                        + "`plan_driving_route`) and the host's live GPS fix, "
+                        + "returns remaining distance, ETA, progress %, and "
+                        + "the next turn-by-turn leg. Returns an error if no "
+                        + "route is active.",
+                    inputSchemaJSON: Self.emptyObjectSchema
                 ),
             ])
             if surface == .full {
@@ -452,9 +701,531 @@ public actor MCPToolAdapter {
             body["destination_resolved"] = Self.encodePlace(result.resolved.destination)
             if let zim = result.zimUsed { body["zim"] = zim }
             return body
+        case "article_overview":
+            return try await dispatchArticleOverview(args: args)
+        case "compare_articles":
+            return try await dispatchCompareArticles(args: args)
+        case "article_relationship":
+            return try await dispatchArticleRelationship(args: args)
+        case "narrate_article":
+            return try await dispatchNarrateArticle(args: args)
+        case "nearby_stories":
+            return try await dispatchNearbyStories(args: args)
+        case "nearby_stories_at_place":
+            return try await dispatchNearbyStoriesAtPlace(args: args)
+        case "what_is_here":
+            return try await dispatchWhatIsHere(args: args)
+        case "route_status":
+            return await dispatchRouteStatus()
         default:
             throw ZimServiceError.notFound(tool)
         }
+    }
+
+    // MARK: - Dispatch helpers for composite tools
+
+    private func dispatchArticleOverview(args: [String: Any]) async throws -> [String: Any] {
+        let title = (args["title"] as? String) ?? ""
+        guard !title.isEmpty else {
+            return ["error": "article_overview requires a non-empty `title`."]
+        }
+        let zim = args["zim"] as? String
+        let maxSections = max(1, min(10, (args["max_sections"] as? Int) ?? 5))
+        let resolved = try await ArticleHeuristics.sectionsByTitle(
+            service: service, title: title, zim: zim
+        )
+        let picked = ArticleHeuristics.pickOverview(
+            sections: resolved.sections, maxSections: maxSections
+        )
+        return [
+            "zim": resolved.zim,
+            "path": resolved.path,
+            "title": resolved.title,
+            "section_count": picked.count,
+            "sections": picked.map { s -> [String: Any] in
+                [
+                    "title": s.title.isEmpty ? "lead" : s.title,
+                    "level": s.level,
+                    "bytes": s.bytes,
+                    "text": s.text,
+                ]
+            },
+        ]
+    }
+
+    private func dispatchCompareArticles(args: [String: Any]) async throws -> [String: Any] {
+        let titles = (args["titles"] as? [String]) ?? []
+        let trimmed = titles.compactMap { t -> String? in
+            let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty ? nil : s
+        }
+        guard trimmed.count >= 2 else {
+            return [
+                "error": "compare_articles needs at least two non-empty `titles`. "
+                    + "Received: \(titles)",
+            ]
+        }
+        guard trimmed.count <= 4 else {
+            return [
+                "error": "compare_articles caps at 4 titles to keep the prompt "
+                    + "budget reasonable. Received \(trimmed.count).",
+            ]
+        }
+        let section = (args["section"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let zim = args["zim"] as? String
+
+        let svc = service
+        let articles: [[String: Any]] = try await withThrowingTaskGroup(of: (Int, [String: Any]).self) { group in
+            for (i, title) in trimmed.enumerated() {
+                group.addTask { [svc] in
+                    do {
+                        let row = try await Self.fetchCompareEntry(
+                            service: svc, title: title,
+                            section: section, zim: zim
+                        )
+                        return (i, row)
+                    } catch {
+                        return (i, [
+                            "title": title,
+                            "error": "Could not fetch: \(error)",
+                        ])
+                    }
+                }
+            }
+            var out: [(Int, [String: Any])] = []
+            for try await row in group { out.append(row) }
+            out.sort { $0.0 < $1.0 }
+            return out.map(\.1)
+        }
+
+        return [
+            "requested": trimmed,
+            "section_mode": section == nil ? "overview" : "aligned",
+            "aligned_section": section ?? "",
+            "count": articles.count,
+            "articles": articles,
+        ]
+    }
+
+    private static func fetchCompareEntry(
+        service: any ZimService, title: String,
+        section: String?, zim: String?
+    ) async throws -> [String: Any] {
+        if let namedSection = section, !namedSection.isEmpty {
+            let hit = try await service.articleByTitle(
+                title: title, zim: zim, section: namedSection
+            )
+            return [
+                "title": hit.title,
+                "zim": hit.zim,
+                "path": hit.path,
+                "sections": [[
+                    "title": hit.section.title.isEmpty ? "lead" : hit.section.title,
+                    "text": hit.section.text,
+                    "bytes": hit.section.bytes,
+                ]],
+            ] as [String: Any]
+        }
+        let resolved = try await ArticleHeuristics.sectionsByTitle(
+            service: service, title: title, zim: zim
+        )
+        // For comparison we want each article's lead + 2 biggest narrative
+        // sections — tighter than article_overview's default so the side-
+        // by-side payload stays under the model's prompt budget.
+        let picked = ArticleHeuristics.pickOverview(
+            sections: resolved.sections, maxSections: 3
+        )
+        return [
+            "title": resolved.title,
+            "zim": resolved.zim,
+            "path": resolved.path,
+            "sections": picked.map { s -> [String: Any] in
+                [
+                    "title": s.title.isEmpty ? "lead" : s.title,
+                    "text": s.text,
+                    "bytes": s.bytes,
+                ]
+            },
+        ] as [String: Any]
+    }
+
+    private func dispatchArticleRelationship(args: [String: Any]) async throws -> [String: Any] {
+        let a = (args["a"] as? String) ?? ""
+        let b = (args["b"] as? String) ?? ""
+        let zim = args["zim"] as? String
+        guard !a.isEmpty, !b.isEmpty else {
+            return ["error": "article_relationship requires both `a` and `b` to be non-empty."]
+        }
+        let candidates = ArticleHeuristics.relationshipCandidates(a: a, b: b)
+        // Probe candidates sequentially with fast-fail — first hit wins. We
+        // can't race these because each extra probe is ~free on a miss
+        // (title index lookup) but doubles resident cost on a hit.
+        for candidate in candidates {
+            do {
+                let resolved = try await ArticleHeuristics.sectionsByTitle(
+                    service: service, title: candidate, zim: zim
+                )
+                // Prefer sections that actually mention the counterpart.
+                let counterpart = candidate.lowercased().contains(a.lowercased()) ? b : a
+                let picked = ArticleHeuristics.sectionsMentioning(
+                    counterpart, in: resolved.sections, maxExtra: 3
+                )
+                return [
+                    "strategy": "dedicated_relations_article",
+                    "resolved_title": resolved.title,
+                    "zim": resolved.zim,
+                    "path": resolved.path,
+                    "a": a,
+                    "b": b,
+                    "sections": picked.map { s -> [String: Any] in
+                        [
+                            "title": s.title.isEmpty ? "lead" : s.title,
+                            "text": s.text,
+                            "bytes": s.bytes,
+                        ]
+                    },
+                ]
+            } catch {
+                continue
+            }
+        }
+        // Fallback: pull the "Foreign relations" section from each
+        // entity's own article. Either may miss — we include whatever
+        // we find and flag what we didn't.
+        var fallback: [[String: Any]] = []
+        var missing: [String] = []
+        for entity in [a, b] {
+            do {
+                let hit = try await service.articleByTitle(
+                    title: entity, zim: zim, section: "Foreign relations"
+                )
+                fallback.append([
+                    "entity": entity,
+                    "title": hit.title,
+                    "zim": hit.zim,
+                    "path": hit.path,
+                    "section": hit.section.title.isEmpty
+                        ? "lead" : hit.section.title,
+                    "text": hit.section.text,
+                    "bytes": hit.section.bytes,
+                ])
+            } catch {
+                missing.append(entity)
+            }
+        }
+        if fallback.isEmpty {
+            return [
+                "error": "Could not find a dedicated \(a)–\(b) relations article "
+                    + "or a \"Foreign relations\" section on either entity.",
+                "probed_titles": candidates,
+            ]
+        }
+        var out: [String: Any] = [
+            "strategy": "foreign_relations_sections",
+            "a": a,
+            "b": b,
+            "results": fallback,
+        ]
+        if !missing.isEmpty { out["missing"] = missing }
+        return out
+    }
+
+    private func dispatchNarrateArticle(args: [String: Any]) async throws -> [String: Any] {
+        let title = (args["title"] as? String) ?? ""
+        guard !title.isEmpty else {
+            return ["error": "narrate_article requires a non-empty `title`."]
+        }
+        let zim = args["zim"] as? String
+        let resolved = try await ArticleHeuristics.sectionsByTitle(
+            service: service, title: title, zim: zim
+        )
+        let body = ArticleHeuristics.formatForNarration(
+            title: resolved.title, sections: resolved.sections
+        )
+        return [
+            // Sentinel the host uses to short-circuit the normal "feed
+            // tool result back to model" loop and emit `text` directly
+            // as the assistant reply. See ChatSession for the check.
+            "pass_through": true,
+            "title": resolved.title,
+            "zim": resolved.zim,
+            "path": resolved.path,
+            "section_count": resolved.sections.count,
+            "bytes": body.utf8.count,
+            "text": body,
+        ]
+    }
+
+    private func dispatchNearbyStories(args: [String: Any]) async throws -> [String: Any] {
+        guard let lat = args["lat"] as? Double,
+              let lon = args["lon"] as? Double,
+              !(lat == 0 && lon == 0)
+        else {
+            return [
+                "error": "nearby_stories requires numeric `lat` and `lon`. For a "
+                    + "named place, call `nearby_stories_at_place(place=…)` "
+                    + "instead.",
+            ]
+        }
+        let radius = (args["radius_km"] as? Double) ?? 2.0
+        let maxStories = max(1, min(10, (args["max_stories"] as? Int) ?? 4))
+        let kinds = args["kinds"] as? [String]
+        let zim = args["zim"] as? String
+        return try await buildNearbyStories(
+            lat: lat, lon: lon, radius: radius,
+            maxStories: maxStories, kinds: kinds, zim: zim,
+            origin: ["lat": lat, "lon": lon],
+            resolved: nil
+        )
+    }
+
+    private func dispatchNearbyStoriesAtPlace(args: [String: Any]) async throws -> [String: Any] {
+        let place = (args["place"] as? String) ?? ""
+        guard !place.isEmpty else {
+            return ["error": "nearby_stories_at_place requires a non-empty `place`."]
+        }
+        let radius = (args["radius_km"] as? Double) ?? 2.0
+        let maxStories = max(1, min(10, (args["max_stories"] as? Int) ?? 4))
+        let kinds = args["kinds"] as? [String]
+        let zim = args["zim"] as? String
+        // Reuse the streetzim geocode path used by near_named_place — fans
+        // out across loaded streetzims if the pinned one misses.
+        let hits = try await service.geocode(
+            query: place, limit: 1, zim: zim, kinds: nil
+        )
+        guard let first = hits.first else {
+            throw ZimServiceError.noMatch(place)
+        }
+        return try await buildNearbyStories(
+            lat: first.lat, lon: first.lon, radius: radius,
+            maxStories: maxStories, kinds: kinds, zim: zim,
+            origin: nil,
+            resolved: first
+        )
+    }
+
+    /// Shared body for both story tools: pull POIs with a Wikipedia link
+    /// in range, fetch the lead paragraph in parallel, trim each to ~800
+    /// chars on a sentence boundary. Overfetches nearby POIs to survive
+    /// wiki titles that don't resolve in the loaded ZIMs.
+    private func buildNearbyStories(
+        lat: Double, lon: Double, radius: Double,
+        maxStories: Int, kinds: [String]?, zim: String?,
+        origin: [String: Double]?, resolved: Place?
+    ) async throws -> [String: Any] {
+        let overfetch = max(maxStories * 3, maxStories + 3)
+        let nearby = try await service.nearPlaces(
+            lat: lat, lon: lon,
+            radiusKm: radius,
+            limit: overfetch,
+            kinds: kinds,
+            zim: zim,
+            hasWiki: true
+        )
+        let candidates: [(place: Place, distanceMeters: Double)] = nearby.results
+            .filter { pair in
+                let w = pair.place.wiki ?? ""
+                return !w.isEmpty
+            }
+
+        if candidates.isEmpty {
+            var out: [String: Any] = [
+                "radius_km": radius,
+                "count": 0,
+                "stories": [] as [[String: Any]],
+                "note": "No wiki-linked places found in range. Try widening "
+                    + "`radius_km` or dropping the `kinds` filter.",
+            ]
+            if let origin { out["origin"] = origin }
+            if let resolved { out["resolved"] = Self.encodePlace(resolved) }
+            return out
+        }
+
+        let svc = service
+        let excerpts: [(Int, [String: Any])] = await withTaskGroup(
+            of: (Int, [String: Any]?).self
+        ) { group in
+            for (i, pair) in candidates.prefix(maxStories * 2).enumerated() {
+                let place = pair.place
+                let distance = pair.distanceMeters
+                let wiki = place.wiki ?? ""
+                group.addTask { [svc] in
+                    do {
+                        // Wiki tag form "en:HP_Garage" is stripped of prefix
+                        // inside articleByTitle; we pass the raw tag so the
+                        // lookup stays identical to how get_article_by_title
+                        // handles near_places' `wikipedia` field today.
+                        let hit = try await svc.articleByTitle(
+                            title: wiki, zim: nil, section: "lead"
+                        )
+                        let excerpt = ArticleHeuristics.trimToSentence(
+                            ArticleHeuristics.stripCitations(hit.section.text),
+                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
+                        )
+                        if excerpt.isEmpty { return (i, nil) }
+                        return (i, [
+                            "place_name": place.name,
+                            "wiki_title": hit.title,
+                            "wiki_tag": wiki,
+                            "zim": hit.zim,
+                            "path": hit.path,
+                            "lat": place.lat,
+                            "lon": place.lon,
+                            "distance_m": Int(distance.rounded()),
+                            "excerpt": excerpt,
+                            "has_more_sections": true,
+                        ])
+                    } catch {
+                        return (i, nil)
+                    }
+                }
+            }
+            var collected: [(Int, [String: Any])] = []
+            for await row in group {
+                if let payload = row.1 {
+                    collected.append((row.0, payload))
+                }
+            }
+            return collected
+        }
+
+        let ordered = excerpts
+            .sorted { $0.0 < $1.0 }
+            .prefix(maxStories)
+            .map(\.1)
+        var out: [String: Any] = [
+            "radius_km": radius,
+            "count": ordered.count,
+            "stories": Array(ordered),
+        ]
+        if ordered.isEmpty {
+            out["note"] = "Found \(candidates.count) wiki-linked places but "
+                + "none of their articles resolved in the loaded Wikipedia "
+                + "ZIMs. Try a different region or check that the matching "
+                + "Wikipedia ZIM is loaded."
+        } else if ordered.count < maxStories && candidates.count > ordered.count {
+            out["note"] = "Some wiki-linked places had articles that didn't "
+                + "resolve in the loaded Wikipedia ZIMs — returned the ones "
+                + "that did."
+        }
+        if let origin { out["origin"] = origin }
+        if let resolved { out["resolved"] = Self.encodePlace(resolved) }
+        return out
+    }
+
+    private func dispatchWhatIsHere(args: [String: Any]) async throws -> [String: Any] {
+        var lat = args["lat"] as? Double
+        var lon = args["lon"] as? Double
+        if lat == nil || lon == nil {
+            if let provider = hostStateProvider {
+                let snap = await provider()
+                if let loc = snap.currentLocation {
+                    lat = loc.lat
+                    lon = loc.lon
+                }
+            }
+        }
+        guard let resolvedLat = lat, let resolvedLon = lon,
+              !(resolvedLat == 0 && resolvedLon == 0)
+        else {
+            return [
+                "error": "what_is_here needs either explicit `lat`+`lon` or a "
+                    + "host-supplied GPS fix. Neither is available.",
+            ]
+        }
+        // Reverse-geocode approximation: nearest admin-named place within
+        // 1.5 km. No separate reverse-geocode primitive exists today; this
+        // leans on the same proximity index as near_places.
+        let nearest = try await service.nearPlaces(
+            lat: resolvedLat, lon: resolvedLon,
+            radiusKm: 1.5, limit: 5,
+            kinds: ["place"],
+            zim: args["zim"] as? String,
+            hasWiki: false
+        )
+        guard let first = nearest.results.first else {
+            return [
+                "error": "No named place (neighborhood / city) within 1.5 km "
+                    + "of (\(resolvedLat), \(resolvedLon)). This streetzim may "
+                    + "not cover the current location.",
+                "lat": resolvedLat,
+                "lon": resolvedLon,
+            ]
+        }
+        var out: [String: Any] = [
+            "lat": resolvedLat,
+            "lon": resolvedLon,
+            "nearest_named_place": first.place.name,
+            "admin_area": first.place.subtype.isEmpty ? first.place.kind : first.place.subtype,
+            "distance_m": Int(first.distanceMeters.rounded()),
+            "place_lat": first.place.lat,
+            "place_lon": first.place.lon,
+        ]
+        if let wiki = first.place.wiki, !wiki.isEmpty {
+            out["wikipedia"] = wiki
+            if let hit = try? await service.articleByTitle(
+                title: wiki, zim: nil, section: "lead"
+            ) {
+                let summary = ArticleHeuristics.trimToSentence(
+                    ArticleHeuristics.stripCitations(hit.section.text),
+                    maxChars: ArticleHeuristics.defaultStoryExcerptChars
+                )
+                out["wiki_title"] = hit.title
+                out["wiki_zim"] = hit.zim
+                out["wiki_summary"] = summary
+            }
+        }
+        return out
+    }
+
+    private func dispatchRouteStatus() async -> [String: Any] {
+        guard let provider = hostStateProvider else {
+            return [
+                "error": "route_status is only available when the host wires a "
+                    + "route-state provider. No active-route plumbing in this "
+                    + "environment.",
+            ]
+        }
+        let snap = await provider()
+        guard let route = snap.activeRoute else {
+            return [
+                "error": "No active driving route. Plan one first with "
+                    + "`route_from_places` or `plan_driving_route`.",
+            ]
+        }
+        guard let loc = snap.currentLocation else {
+            return [
+                "destination_name": route.destinationName,
+                "total_km": route.totalDistanceMeters / 1000.0,
+                "total_minutes": route.totalDurationSeconds / 60.0,
+                "progress_pct": 0,
+                "total_steps": route.turnByTurn.count,
+                "note": "GPS fix not yet available — reporting full-route totals.",
+            ]
+        }
+        let progress = route.remaining(at: .init(lat: loc.lat, lon: loc.lon))
+        let pct = Int((progress.fractionDone * 100).rounded())
+        // Approximate which turn is next by slotting progress into the
+        // turn list. The `turnByTurn` array isn't index-aligned with the
+        // polyline (it's one-per-road-segment), so this is a rough
+        // heuristic — fine for "what's my next turn" voice prompts.
+        var nextStep: String = ""
+        if !route.turnByTurn.isEmpty {
+            let idx = min(
+                route.turnByTurn.count - 1,
+                Int(progress.fractionDone * Double(route.turnByTurn.count))
+            )
+            nextStep = route.turnByTurn[idx]
+        }
+        return [
+            "destination_name": route.destinationName,
+            "remaining_km": progress.remainingMeters / 1000.0,
+            "remaining_minutes": progress.remainingSeconds / 60.0,
+            "progress_pct": pct,
+            "next_step": nextStep,
+            "total_steps": route.turnByTurn.count,
+        ]
     }
 
     // MARK: - Encoders
@@ -774,4 +1545,78 @@ public actor MCPToolAdapter {
         "zim":{"type":"string","description":"Optional streetzim filename to geocode against."}
     }}
     """#.data(using: .utf8)!
+
+    private static let articleOverviewSchema: Data = #"""
+    {"type":"object","required":["title"],"properties":{
+        "title":{"type":"string","description":"Article title. Accepts bare title or the OSM language-prefixed form (\"en:HP Garage\")."},
+        "max_sections":{"type":"integer","default":5,"minimum":1,"maximum":10,"description":"Max sections to return (always includes lead)."},
+        "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let compareArticlesSchema: Data = #"""
+    {"type":"object","required":["titles"],"properties":{
+        "titles":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4,"description":"2–4 article titles to compare side-by-side."},
+        "section":{"type":"string","description":"Optional: align on this named section from each article. Omit for each article's lead + top sections."},
+        "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let articleRelationshipSchema: Data = #"""
+    {"type":"object","required":["a","b"],"properties":{
+        "a":{"type":"string","description":"First entity name (country, organization, person, …)."},
+        "b":{"type":"string","description":"Second entity name."},
+        "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let narrateArticleSchema: Data = #"""
+    {"type":"object","required":["title"],"properties":{
+        "title":{"type":"string","description":"Article title. Accepts bare title or the OSM language-prefixed form (\"en:HP Garage\")."},
+        "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let whatIsHereSchema: Data = #"""
+    {"type":"object","properties":{
+        "lat":{"type":"number","description":"Optional: latitude. Omit to use the host's current GPS fix."},
+        "lon":{"type":"number","description":"Optional: longitude. Omit to use the host's current GPS fix."},
+        "zim":{"type":"string","description":"Optional: restrict to a specific streetzim filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static func nearbyStoriesSchema(vocabulary: [String]) -> Data {
+        schemaJSON(
+            required: ["lat", "lon"],
+            properties: [
+                ("lat", ["type": "number",
+                         "description": "Center latitude (use the user's current coords from the system preamble)."]),
+                ("lon", ["type": "number",
+                         "description": "Center longitude."]),
+                ("radius_km", ["type": "number", "default": 2.0,
+                               "description": "Search radius. 1 ≈ walking, 2–5 ≈ neighborhood, 10 ≈ whole city."]),
+                ("max_stories", ["type": "integer", "default": 4, "minimum": 1, "maximum": 10,
+                                 "description": "How many story excerpts to return."]),
+                ("kinds", kindsSchema(vocabulary: vocabulary)),
+                ("zim", ["type": "string",
+                         "description": "Optional streetzim filename."]),
+            ]
+        )
+    }
+
+    private static func nearbyStoriesAtPlaceSchema(vocabulary: [String]) -> Data {
+        schemaJSON(
+            required: ["place"],
+            properties: [
+                ("place", ["type": "string",
+                           "description": "Free-text place name — geocoded internally."]),
+                ("radius_km", ["type": "number", "default": 2.0,
+                               "description": "Search radius around the resolved place."]),
+                ("max_stories", ["type": "integer", "default": 4, "minimum": 1, "maximum": 10]),
+                ("kinds", kindsSchema(vocabulary: vocabulary)),
+                ("zim", ["type": "string",
+                         "description": "Optional streetzim filename."]),
+            ]
+        )
+    }
 }

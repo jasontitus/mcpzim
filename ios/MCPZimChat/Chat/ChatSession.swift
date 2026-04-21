@@ -116,7 +116,32 @@ public final class ChatSession {
     /// `DeviceProfile.current.maxReplyTokens` directly.
     public var effectiveMaxReplyTokens: Int {
         let base = DeviceProfile.current.maxReplyTokens
-        return longerReplies ? base * 2 : base
+        let withToggle = longerReplies ? base * 2 : base
+        // Per-provider floor — small models with reasoning modes
+        // (Qwen 3 1.7B's `<think>` burns the default budget) get a
+        // bigger budget because their weight footprint leaves plenty
+        // of headroom. Only raises the budget, never lowers it.
+        if let floor = (selectedModel as? Gemma4Provider)?.replyTokensFloor {
+            return max(withToggle, floor)
+        }
+        return withToggle
+    }
+
+    /// When true, construct the `FoundationModelsProvider` variants at
+    /// launch (model picker shows "Apple Foundation Models"). When
+    /// false, skip them entirely — saves the FoundationModels.framework
+    /// dylib load (~10–30 MB) and any Swift heap associated with the
+    /// per-provider Tool schemas. Default: `false` on iOS while we're
+    /// memory-constrained; flip via Library → Settings to restore
+    /// the picker. Takes effect on next app launch (providers are
+    /// constructed in ChatSession's init).
+    public static let enableAppleFMKey = "enableAppleFM"
+    public static var enableAppleFM: Bool {
+        UserDefaults.standard.object(forKey: enableAppleFMKey) as? Bool ?? false
+    }
+    public var enableAppleFMBinding: Bool {
+        get { Self.enableAppleFM }
+        set { UserDefaults.standard.set(newValue, forKey: Self.enableAppleFMKey) }
     }
 
     public func debug(_ message: String, category: String = "App") {
@@ -270,14 +295,15 @@ public final class ChatSession {
         // LCP == cachedTokens.count on that first user send → cache hit,
         // skipping ~4000 tokens of prefill.
         //
-        // We can't use `Gemma4PromptTemplate.render(... turns: [])` because
-        // that appends `<|turn>model\n` at the end, which diverges from
+        // We can't use `template.renderTranscript(... turns: [])` because
+        // that appends the assistant-open marker, which diverges from
         // iter 0 (which has `<|turn>user\n{msg}…` there). Call the
-        // system-turn formatter directly.
-        let systemTurn = Gemma4ToolFormat.formatSystemTurn(
+        // system-turn formatter directly via the template.
+        let template = selectedModel.template
+        let systemTurn = template.formatSystemTurn(
             systemMessage: preamble, tools: toolDecls
         )
-        let prompt = Gemma4PromptTemplate.bos + systemTurn
+        let prompt = template.bos + systemTurn
         try await gemma.primeCache(prompt: prompt)
     }
 
@@ -394,8 +420,8 @@ public final class ChatSession {
         lastQueryComplexity = .topical
         let preamble = self.systemMessageText(for: .topical)
         let turns = [ChatTurn(role: .user, text: "hi")]
-        let finalPrompt = Gemma4PromptTemplate.render(
-            systemMessage: preamble, tools: toolDecls, turns: turns
+        let finalPrompt = selectedModel.template.renderTranscript(
+            systemPreamble: preamble, tools: toolDecls, turns: turns
         )
         do {
             let params = GenerationParameters(
@@ -616,6 +642,20 @@ public final class ChatSession {
           * "nearest <kind>" / "where's the closest <kind>" → \
             `near_places(lat=\(latStr), lon=\(lonStr), radius_km=5, \
             kinds=["<kind>"])`, then pick the single best hit.
+
+        Tool recipes when the question references a DIFFERENT, \
+        NAMED place (not the user's current position):
+          * "<kind> in <named place>" / "restaurants in San Francisco" \
+            / "museums near Berkeley" → `near_named_place(place="<named \
+            place>", kinds=["<kind>"], radius_km=<default 1>)`. NEVER \
+            use `near_places` with the user's lat/lon for these — that \
+            would search their neighborhood, not the place they asked \
+            about. `near_named_place` geocodes the string internally \
+            and searches from there.
+          * "tell me about <named place>" with no category filter → \
+            `near_named_place(place="<named place>")` for a mixed list, \
+            or `get_article(title="<named place>")` for an encyclopedic \
+            summary.
           * "directions to <place>" / "how do I get to <place>" → \
             ALWAYS call `route_from_places(origin="my location", \
             destination="<place>")`. The host auto-fills the \
@@ -668,6 +708,11 @@ public final class ChatSession {
             "current location", "here", "me",
         ]
         var out = args
+        // 1) Only resolve MY-LOCATION synonyms in string fields — never
+        //    touch a string field that holds a real place name ("San
+        //    Francisco", "the museum"). Otherwise we'd silently lie to
+        //    the user: a query for restaurants in SF would come back
+        //    with restaurants near the user's couch.
         for (key, val) in args {
             guard let s = val as? String else { continue }
             let lower = s.lowercased().trimmingCharacters(in: .whitespaces)
@@ -675,28 +720,44 @@ public final class ChatSession {
                 out[key] = coord
             }
         }
-        // Detect the tool name via the key shapes the model emits —
-        // near_places/near_named_place use `lat`+`lon` (numeric); routing
-        // tools use `origin`/`destination` (string). For proximity
-        // tools, inject numeric lat/lon if missing and remove a stray
-        // `origin` string that the model sometimes adds.
-        let usesLatLon = out["lat"] != nil || out["lon"] != nil
-            || (out["origin"] == nil && out["destination"] == nil
-                && (out["radius_km"] != nil || out["kinds"] != nil
-                    || out["has_wiki"] != nil))
-        if usesLatLon {
-            if toDouble(out["lat"]) == nil { out["lat"] = here.lat }
-            if toDouble(out["lon"]) == nil { out["lon"] = here.lon }
+        // 2) Detect the tool shape. `near_places` / `near_named_place`
+        //    expect numeric `lat`+`lon`; routing tools use `origin` /
+        //    `destination` strings. ONLY inject the user's coords when
+        //    we can tell the proximity tool is being called AND the
+        //    model gave us nothing location-like to work with — no
+        //    `origin` string, no existing lat/lon. If the model passed
+        //    a real-looking origin (a place name), leave it alone —
+        //    the tool adapter is responsible for geocoding it.
+        let isProximityTool = out["kinds"] != nil || out["radius_km"] != nil
+            || out["has_wiki"] != nil
+        let hasNumericOrigin = toDouble(out["lat"]) != nil
+            && toDouble(out["lon"]) != nil
+        let originString = (out["origin"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        let hasMeaningfulOriginString = !originString.isEmpty
+        if isProximityTool && !hasNumericOrigin && !hasMeaningfulOriginString {
+            out["lat"] = here.lat
+            out["lon"] = here.lon
+        }
+        // If the origin string is our own "lat,lon" synonym substitution
+        // AND numeric lat/lon are also present, the string is redundant
+        // — drop it so the tool adapter doesn't try to geocode a coord.
+        if isProximityTool,
+           hasNumericOrigin,
+           originString == coord
+        {
             out.removeValue(forKey: "origin")
-            // The model often pins `zim` to a Wikipedia ZIM by
-            // mistake (prompt contamination). near_places requires a
-            // streetzim — drop any wikipedia/mdwiki pin so the
-            // service's fallback picks the right one.
-            if let z = out["zim"] as? String,
-               z.contains("wikipedia") || z.contains("mdwiki")
-            {
-                out.removeValue(forKey: "zim")
-            }
+        }
+        // The model often pins `zim` to a Wikipedia ZIM by mistake on
+        // near_places (prompt contamination). near_places requires a
+        // streetzim — drop any wikipedia/mdwiki pin so the service's
+        // fallback picks the right one. Applies only to proximity
+        // tools; article lookups need the wikipedia ZIM.
+        if isProximityTool,
+           let z = out["zim"] as? String,
+           z.contains("wikipedia") || z.contains("mdwiki")
+        {
+            out.removeValue(forKey: "zim")
         }
         // Numeric fallback: the model sometimes emits `origin_lat:0,
         // origin_lon:0` when the preamble lacked a location block (no
@@ -768,9 +829,61 @@ public final class ChatSession {
         // and that override persists.
         self.articleCapKB = storedCap > 0 ? storedCap : DeviceProfile.current.articleCapKB
         let mock = MockProvider()
-        let gemma = Gemma4Provider()
-        var providers: [any ModelProvider] = [gemma]
-        if #available(macOS 26.0, iOS 19.0, *) {
+        // Default Gemma — multimodal repo that sanitize()'s down to
+        // text-only at load time. Already in the on-device HF cache
+        // on most dev phones, so launches instantly.
+        let gemma = Gemma4Provider(
+            id: "gemma4-e2b-it-4bit",
+            displayName: "Gemma 4 E2B (4-bit · multimodal)",
+            huggingFaceRepo: "mlx-community/gemma-4-e2b-it-4bit",
+            approximateMemoryMB: 2600
+        )
+        // Pure text-only 4-bit quant. Kept in the picker so eval
+        // harnesses can A/B it against the multimodal baseline even
+        // though its tool-calling fidelity is weak under long prompts
+        // (reproducer: `GemmaToolEmissionTests
+        // .testEachVariantPicksNearNamedPlaceForNamedCity`). Expose it
+        // anyway — the picker is what lets you run the eval harness
+        // against it from the same binary.
+        let gemmaText = Gemma4Provider(
+            id: "gemma4-e2b-it-4bit-text",
+            displayName: "Gemma 4 E2B Text (4-bit · text-only)",
+            huggingFaceRepo: "mlx-community/Gemma4-E2B-IT-Text-int4",
+            approximateMemoryMB: 2200
+        )
+        // Qwen 3 family — ChatML tool-call format, registered upstream
+        // (`qwen3` / `qwen3_5_text` in `LLMModelFactory`). Same provider
+        // class, same streaming path as Gemma; only the `template`
+        // differs. 4B peers Gemma 4 E2B on memory; 1.7B is the small
+        // slot for ≤4 GB iPhones.
+        let qwen3_4b = Gemma4Provider(
+            id: "qwen3-4b-4bit",
+            displayName: "Qwen 3 4B (4-bit)",
+            huggingFaceRepo: "mlx-community/Qwen3-4B-4bit",
+            approximateMemoryMB: 2200,
+            template: QwenChatMLTemplate()
+        )
+        let qwen3_1_7b = Gemma4Provider(
+            id: "qwen3-1-7b-4bit",
+            displayName: "Qwen 3 1.7B (4-bit)",
+            huggingFaceRepo: "mlx-community/Qwen3-1.7B-4bit",
+            approximateMemoryMB: 1000,
+            template: QwenChatMLTemplate(),
+            // Qwen 3's `<think>` reasoning mode spends the default
+            // 320–384-token budget on scratchpad before reaching the
+            // tool call. 1.7B has ~4 GB of memory headroom vs the
+            // default 2600 MB Gemma budget, so give it a bigger token
+            // budget so it can reliably finish both reasoning + tool.
+            replyTokensFloor: 1024
+        )
+        var providers: [any ModelProvider] = [gemma, gemmaText, qwen3_4b, qwen3_1_7b]
+        if #available(macOS 26.0, iOS 19.0, *), Self.enableAppleFM {
+            // FoundationModels.framework gets linked into the app at
+            // load time on iOS 19+/macOS 26+, costing ~10–30 MB. Only
+            // construct the providers when the user has explicitly
+            // opted into trying the Apple FM runtime — Gemma is the
+            // default and we'd rather claw that headroom back for
+            // KV-cache / Kokoro spikes.
             providers.append(FoundationModelsProvider())
             providers.append(FoundationModelsProvider(useNativeTools: true))
         }
@@ -805,7 +918,11 @@ public final class ChatSession {
         // `@State private var session = ChatSession()` in the @main scene,
         // and `Gemma4Provider.load()` is idempotent (early-returns if a
         // container already exists), so there's no way this double-loads.
-        Task { @MainActor in await self.loadSelectedModel() }
+        // Test harnesses pass `autoLoadOnInit: false` so they can control
+        // memory probing around the load.
+        if autoLoadOnInit {
+            Task { @MainActor in await self.loadSelectedModel() }
+        }
         // Subscribe to the LocationFetcher singleton. Every CL delegate
         // callback pushes a new coord into `currentLocation` with zero
         // polling / timeout machinery — replaces the fragile
@@ -815,6 +932,14 @@ public final class ChatSession {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.currentLocation = (coord.latitude, coord.longitude)
+            }
+            // Mirror into ZimfoContext so the route_status / what_is_here
+            // tools (dispatched off-main through the adapter's actor) have
+            // a thread-safe source of the latest GPS fix.
+            Task {
+                await ZimfoContext.shared.updateLastLocation(
+                    .init(lat: coord.latitude, lon: coord.longitude)
+                )
             }
         }
         // Listen for iOS memory warnings and aggressively free the KV
@@ -879,6 +1004,37 @@ public final class ChatSession {
             }
         }
         #endif
+    }
+
+    /// Test-only factory. Skips the normal init's Documents scan + ZIM
+    /// reader bootstrap + model-picker restoration, and instead takes an
+    /// explicit providers list + a pre-built `MCPToolAdapter` (typically
+    /// backed by `StubZimService`). The harness can then immediately call
+    /// `loadSelectedModel()` / `send(...)` / `waitForIdle()` without any
+    /// real HF downloads or libzim I/O.
+    ///
+    /// `autoLoadOnInit: false` is forced — tests decide when to load so
+    /// they can measure memory baselines first.
+    public static func forTesting(
+        providers: [any ModelProvider],
+        adapter: MCPToolAdapter,
+        initialModelId: String? = nil
+    ) -> ChatSession {
+        let session = ChatSession(autoLoadOnInit: false)
+        session.models = providers
+        if let id = initialModelId,
+           let picked = providers.first(where: { $0.id == id })
+        {
+            session.selectedModel = picked
+        } else if let first = providers.first {
+            session.selectedModel = first
+        }
+        session.adapter = adapter
+        // `send(...)` early-returns when `setupState != .ready` —
+        // tests bypass the real setup flow and inject their own
+        // adapter, so mark the session ready straight away.
+        session.setupState = .ready
+        return session
     }
 
     private func startObservingSelectedModel() {
@@ -1071,6 +1227,13 @@ public final class ChatSession {
         await adapter.installHitReranker { query, hits in
             await SemanticReranker.shared.rerank(query: query, hits: hits)
         }
+        // Host-state provider for the location-aware tools
+        // (`route_status`, `what_is_here`). Reads from `ZimfoContext`
+        // so the adapter stays framework-free — the iOS side mirrors
+        // CL updates + route plans into ZimfoContext at their source.
+        await adapter.installHostStateProvider {
+            await ZimfoContext.shared.mcpSnapshot()
+        }
         self.adapter = adapter
         // Wire the native-tools Apple-FM variant to the freshly-built
         // service so its Tool conformances dispatch to the same
@@ -1203,10 +1366,11 @@ public final class ChatSession {
             // with: `<bos>` + system-turn. No user turn, no trailing
             // model-open — the upcoming send's encode will land on
             // the same first N tokens and LCP-hit.
-            let systemTurn = Gemma4ToolFormat.formatSystemTurn(
+            let template = self.selectedModel.template
+            let systemTurn = template.formatSystemTurn(
                 systemMessage: preamble, tools: toolDecls
             )
-            let prompt = Gemma4PromptTemplate.bos + systemTurn
+            let prompt = template.bos + systemTurn
             self.debug("prewarming KV cache in background…", category: "Gemma4")
             do {
                 try await gemma.primeCache(prompt: prompt)
@@ -1415,8 +1579,8 @@ public final class ChatSession {
             //     degrades answer quality noticeably, so we keep it.
             let prompt: String
             if selectedModel is Gemma4Provider {
-                prompt = Gemma4PromptTemplate.render(
-                    systemMessage: systemMessage,
+                prompt = selectedModel.template.renderTranscript(
+                    systemPreamble: systemMessage,
                     tools: toolDecls,
                     turns: turns
                 )
@@ -1465,7 +1629,7 @@ public final class ChatSession {
                         appendToAssistant(buffer)
                         lastUIPush = now
                     }
-                    if let call = Self.extractToolCall(in: buffer) {
+                    if let call = self.extractToolCall(in: buffer) {
                         appendToAssistant(buffer)
                         toolCall = call
                         break
@@ -1521,6 +1685,13 @@ public final class ChatSession {
             debug("dispatching \(call.name)(\(argsStr)) — first call against a ZIM may block on graph/index load", category: "Tool")
             do {
                 let fullResult = try await adapter.dispatch(tool: call.name, args: resolvedArgs)
+                // Pass-through sentinel: the tool wants its `text` emitted
+                // verbatim to the user without another model pass. Used by
+                // `narrate_article` so Wikipedia prose reaches TTS unaltered
+                // (no paraphrase, no re-summarization, no KV-cost for the
+                // model re-encoding an article it already decided to read).
+                let isPassThrough = (fullResult["pass_through"] as? Bool) == true
+                let passThroughText = (fullResult["text"] as? String) ?? ""
                 // Routing results carry a polyline with thousands of points
                 // and a turn-by-turn list that together inflate to 50+ KB.
                 // Feeding that verbatim into the next prompt turns into
@@ -1528,6 +1699,20 @@ public final class ChatSession {
                 // to the model (it can't navigate by lat/lons anyway). Trim
                 // to a summary before re-prompting.
                 var preTrim = fullResult
+                if isPassThrough {
+                    // Swap the body for a compact ack so the tool-response
+                    // turn the model sees on re-prompt stays cheap. The
+                    // full body is still available in `rawResult` for
+                    // debug + UI.
+                    preTrim = [
+                        "pass_through": true,
+                        "title": (fullResult["title"] as? String) ?? "",
+                        "bytes": (fullResult["bytes"] as? Int) ?? 0,
+                        "delivered": true,
+                        "note": "Full article body was read directly to the "
+                            + "user; no further narration or summary needed.",
+                    ]
+                }
                 if call.name == "search" {
                     preTrim = self.enrichSearchHits(preTrim)
                 }
@@ -1573,7 +1758,7 @@ public final class ChatSession {
                 // Format tool response in the provider's native wire format.
                 let toolTurnText: String
                 if selectedModel is Gemma4Provider {
-                    toolTurnText = Gemma4ToolFormat.formatToolResponse(name: call.name, payload: result)
+                    toolTurnText = selectedModel.template.formatToolResponse(name: call.name, payload: result)
                 } else {
                     toolTurnText = resultStr
                 }
@@ -1583,6 +1768,17 @@ public final class ChatSession {
                 // byte-for-byte and hit the KV cache at iter 0.
                 recordToolRoundTrip(assistantEmission: assistantTurnText,
                                     toolResponse: toolTurnText)
+
+                // Pass-through short-circuit: emit the tool's `text` body
+                // as the assistant reply and skip iter 1 — saves both the
+                // prefill of the full article body AND the generation cost
+                // of the model re-narrating what's already clean prose.
+                if isPassThrough, !passThroughText.isEmpty {
+                    updateAssistant(passThroughText)
+                    debug("narrate pass-through: emitted \(passThroughText.count) chars (iter 1 skipped)",
+                          category: "Chat")
+                    return
+                }
 
                 // Optional fast path for routing tools — skip iter 1.
                 // Saves ~5 s per routing turn by synthesizing the reply
@@ -1606,10 +1802,10 @@ public final class ChatSession {
                 if !assistantTurnText.isEmpty {
                     turns.append(ChatTurn(role: .assistant, text: assistantTurnText))
                 }
-                let errPayload: Any = ["error": err]
+                let errPayload: [String: Any] = ["error": err]
                 let toolTurnText: String
                 if selectedModel is Gemma4Provider {
-                    toolTurnText = Gemma4ToolFormat.formatToolResponse(name: call.name, payload: errPayload)
+                    toolTurnText = selectedModel.template.formatToolResponse(name: call.name, payload: errPayload)
                 } else {
                     toolTurnText = "[error] \(err)"
                 }
@@ -1638,8 +1834,8 @@ public final class ChatSession {
             var finalTurns = turns
             finalTurns.append(summaryInstruction)
             if selectedModel is Gemma4Provider {
-                summaryPrompt = Gemma4PromptTemplate.render(
-                    systemMessage: systemMessage, tools: toolDecls, turns: finalTurns
+                summaryPrompt = selectedModel.template.renderTranscript(
+                    systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
                 )
             } else {
                 let preamble = Self.toolsPreamble(registry: registry)
@@ -1737,8 +1933,8 @@ public final class ChatSession {
             let turns = [ChatTurn(role: .user, text: mapUserTurn)]
             let prompt: String
             if selectedModel is Gemma4Provider {
-                prompt = Gemma4PromptTemplate.render(
-                    systemMessage: preamble, tools: [], turns: turns
+                prompt = selectedModel.template.renderTranscript(
+                    systemPreamble: preamble, tools: [], turns: turns
                 )
             } else {
                 prompt = selectedModel.formatTranscript(
@@ -1886,14 +2082,22 @@ public final class ChatSession {
 
     private func appendToAssistant(_ replacement: String) {
         if messages.last?.role == .assistant {
-            messages[messages.count - 1].text = replacement
+            messages[messages.count - 1].text = scrubReasoning(replacement)
         }
     }
 
     private func updateAssistant(_ newText: String) {
         if messages.last?.role == .assistant {
-            messages[messages.count - 1].text = newText
+            messages[messages.count - 1].text = scrubReasoning(newText)
         }
+    }
+
+    /// Run the selected model's template-specific reasoning scrubber
+    /// over `text` before it lands in the chat bubble. Gemma's default
+    /// is no-op; Qwen removes `<think>…</think>` blocks. Partial /
+    /// still-open spans stay visible so we don't flash mid-stream.
+    private func scrubReasoning(_ text: String) -> String {
+        selectedModel.template.stripReasoning(text)
     }
 
     /// Pull the lead paragraph for the top-3 search hits and add it
@@ -2157,16 +2361,16 @@ public final class ChatSession {
     /// For the `zim` parameter specifically, we also inject the actual
     /// list of loaded ZIM filenames as an enum — small models sometimes
     /// invent plausible names (`"streetzim"`, `"wikipedia"`) otherwise.
-    private func toolDeclarations(registry: MCPToolRegistry) -> [Gemma4ToolFormat.ToolDeclaration] {
+    private func toolDeclarations(registry: MCPToolRegistry) -> [ModelToolDeclaration] {
         let zimNames = library.filter { $0.isEnabled }.map { $0.url.lastPathComponent }
-        return registry.tools.map { tool -> Gemma4ToolFormat.ToolDeclaration in
+        return registry.tools.map { tool -> ModelToolDeclaration in
             let schema = (try? JSONSerialization.jsonObject(with: tool.inputSchemaJSON)) as? [String: Any] ?? [:]
             let properties = schema["properties"] as? [String: Any] ?? [:]
             let required = Set((schema["required"] as? [String]) ?? [])
-            let params: [Gemma4ToolFormat.ToolDeclaration.Parameter] = properties.keys.sorted().map { key in
+            let params: [ModelToolDeclaration.Parameter] = properties.keys.sorted().map { key in
                 let raw = (properties[key] as? [String: Any]) ?? [:]
                 let typeStr = ((raw["type"] as? String) ?? "string").lowercased()
-                let type: Gemma4ToolFormat.ToolDeclaration.Parameter.ParamType = {
+                let type: ModelToolDeclaration.Parameter.ParamType = {
                     switch typeStr {
                     case "integer": return .integer
                     case "number":  return .number
@@ -2214,11 +2418,11 @@ public final class ChatSession {
         return lines.joined(separator: "\n")
     }
 
-    /// Accept either format: Gemma 4's native `<|tool_call>call:NAME{…}<tool_call|>`
-    /// (what the real model emits) or the legacy `<tool_call>{…json…}</tool_call>`
-    /// (what Mock and some older prompts use). Whichever fires first wins.
-    static func extractToolCall(in buffer: String) -> (range: Range<String.Index>, name: String, args: [String: Any])? {
-        if let m = Gemma4ToolCallParser.firstCall(in: buffer) {
+    /// Accept the selected model's native tool-call format first, then
+    /// fall back to the generic `<tool_call>{…json…}</tool_call>` Mock
+    /// and older prompts use. Whichever fires first wins.
+    func extractToolCall(in buffer: String) -> (range: Range<String.Index>, name: String, args: [String: Any])? {
+        if let m = selectedModel.template.firstToolCall(in: buffer) {
             return (m.range, m.name, m.arguments)
         }
         if let m = ChatToolCallParser.firstCall(in: buffer) {

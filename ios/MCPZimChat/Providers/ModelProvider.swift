@@ -43,6 +43,15 @@ public protocol ModelProvider: AnyObject, Sendable {
     var approximateMemoryMB: Int { get }    // for the UI memory warning.
     var supportsToolCalls: Bool { get }
 
+    /// Model-family-specific prompt + tool-call template. Drives every
+    /// tool-surface detail that differs across LLM families — Gemma 4's
+    /// `<|turn>` markers + custom tool-call syntax vs Qwen's ChatML +
+    /// JSON tool calls, etc. The host (ChatSession / MCPToolAdapter)
+    /// calls through this protocol and never touches a model-specific
+    /// type directly, so adding a new family is `struct FooTemplate:
+    /// ModelTemplate { … }` plus a provider that returns it here.
+    var template: any ModelTemplate { get }
+
     /// Observable-ish state — implementations usually back this with an
     /// `@MainActor` property on a SwiftUI-visible store so the UI can react
     /// to downloads.
@@ -66,6 +75,13 @@ public protocol ModelProvider: AnyObject, Sendable {
 }
 
 public extension ModelProvider {
+    /// Default: Gemma 4's template. Providers for other families
+    /// (Qwen, Llama 3, …) should override. Safe default for the
+    /// MockProvider / FoundationModelsProvider paths — those never
+    /// exercise the text-loop tool surface, so the template is
+    /// effectively unused.
+    var template: any ModelTemplate { Gemma4Template() }
+
     /// Generic fallback template — `<|role|>\n…` blocks, ending on an open
     /// assistant turn. Providers with a native template should override.
     func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String {

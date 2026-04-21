@@ -64,19 +64,19 @@ public extension DeviceProfile {
     /// still work but the body the model sees is just the lead.
     static let tight = DeviceProfile(
         articleCapKB: 6, maxReplyTokens: 256, mlxCacheLimitMB: 256,
-        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 via vendored mlx-swift-lm fork that patches `Gemma4Attention` for QuantizedKVCache. Prewarm is now gated on first-keystroke, so the cold-launch prefill spike that jetsammed us on 2026-04-20 shouldn't recur.
+        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 after plumbing a quantized donor tuple through `Gemma4Attention.sharedKV` — the FP16 donor-dequant transients that previously caused mid-Kokoro jetsams are gone.
         label: "tight (≈4 GB)"
     )
     /// 6 GB base iPhones — the default "mobile" target.
     static let snug = DeviceProfile(
         articleCapKB: 12, maxReplyTokens: 384, mlxCacheLimitMB: 384,
-        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 via vendored mlx-swift-lm fork that patches `Gemma4Attention` for QuantizedKVCache. Prewarm is now gated on first-keystroke, so the cold-launch prefill spike that jetsammed us on 2026-04-20 shouldn't recur.
+        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 after plumbing a quantized donor tuple through `Gemma4Attention.sharedKV` — the FP16 donor-dequant transients that previously caused mid-Kokoro jetsams are gone.
         label: "snug (≈6 GB)"
     )
     /// 8 GB Pro iPhones & M-series iPads.
     static let balanced = DeviceProfile(
         articleCapKB: 16, maxReplyTokens: 320, mlxCacheLimitMB: 384,
-        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 via vendored mlx-swift-lm fork that patches `Gemma4Attention` for QuantizedKVCache. Prewarm is now gated on first-keystroke, so the cold-launch prefill spike that jetsammed us on 2026-04-20 shouldn't recur.
+        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 after plumbing a quantized donor tuple through `Gemma4Attention.sharedKV` — the FP16 donor-dequant transients that previously caused mid-Kokoro jetsams are gone.
         label: "balanced (≈8 GB)"
     )
     /// 12 GB+ iPhones / iPads. On iPhone 17 Pro Max the *process* cap
@@ -87,7 +87,7 @@ public extension DeviceProfile {
     /// which kills the voice-chat flow.
     static let generous = DeviceProfile(
         articleCapKB: 24, maxReplyTokens: 320, mlxCacheLimitMB: 448,
-        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 via vendored mlx-swift-lm fork that patches `Gemma4Attention` for QuantizedKVCache. Prewarm is now gated on first-keystroke, so the cold-launch prefill spike that jetsammed us on 2026-04-20 shouldn't recur.
+        useQuantizedKVCache: true,    // Re-enabled 2026-04-21 after plumbing a quantized donor tuple through `Gemma4Attention.sharedKV` — the FP16 donor-dequant transients that previously caused mid-Kokoro jetsams are gone.
         label: "generous (≈12 GB)"
     )
     /// Development machines — not trying to avoid jetsam on macOS;

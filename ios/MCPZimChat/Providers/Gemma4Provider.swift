@@ -25,18 +25,65 @@ import HuggingFace
 import Tokenizers
 
 public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
-    public let id = "gemma4-4b-it-4bit"
-    public let displayName = "Gemma 4 4B (4-bit)"
-    /// Resident weights ~2.6 GB once the 4-bit safetensors decompress.
-    /// Displayed in the model picker so the user sees the real footprint
-    /// before committing to a load. Generation itself adds KV cache
-    /// (~500 MB FP16 on long prompts; 4-bit quant halved that but is
-    /// currently disabled pending an upstream attention patch — see
-    /// `KV_CACHE_COMPRESSION.md`) plus MLX's Metal pool (~400 MB).
-    public let approximateMemoryMB = 2600
+    public let id: String
+    public let displayName: String
+    /// Approximate resident weights in MB. Displayed in the model picker
+    /// so the user sees the real footprint before committing to a load.
+    /// Generation adds KV cache (~125 MB at 4-bit quant, ~500 MB FP16)
+    /// plus MLX's Metal pool (~400 MB).
+    public let approximateMemoryMB: Int
     public let supportsToolCalls = true
 
-    private let modelConfiguration = LLMRegistry.gemma4_e2b_it_4bit
+    /// HF repo id + display metadata passed in at construction time.
+    /// Known Gemma 4 E2B variants:
+    ///
+    /// - `mlx-community/gemma-4-e2b-it-4bit` — multimodal 4-bit, but
+    ///   `Gemma4Model.sanitize(weights:)` discards vision/audio/MM
+    ///   projector keys at load time so resident is text-only
+    ///   (~2.6 GB). Already cached on most dev devices; safe default.
+    /// - `mlx-community/Gemma4-E2B-IT-Text-int4` — pure text-only
+    ///   `gemma4_text` 4-bit. Smaller (2.46 GB download, ~2.2 GB
+    ///   resident) and routes straight to `Gemma4TextModel` without
+    ///   the multimodal wrapper. Currently blocked on iOS by an
+    ///   HF Xet CDN redirect issue (CFNetwork "retry(N) reason(1)
+    ///   error [4:-5]" on `cas-bridge.xethub.hf.co`).
+    private let modelConfiguration: ModelConfiguration
+
+    /// Template override. Defaults to `Gemma4Template()` — set via init
+    /// to a different template (e.g. `QwenChatMLTemplate()`) for Qwen
+    /// or other model families that reuse this provider's MLX loading
+    /// + streaming path but emit different prompt / tool-call formats.
+    public let template: any ModelTemplate
+
+    /// Per-provider floor on reply tokens. Small models (e.g. Qwen 3
+    /// 1.7B) burn their default budget in reasoning before reaching
+    /// the tool call; raising the minimum gives them headroom to
+    /// finish. Weighs against the DeviceProfile cap by taking max of
+    /// the two — see `ChatSession.effectiveMaxReplyTokens`.
+    public let replyTokensFloor: Int?
+
+    public init(
+        id: String = "gemma4-e2b-it-4bit",
+        displayName: String = "Gemma 4 E2B (4-bit · multimodal)",
+        huggingFaceRepo: String = "mlx-community/gemma-4-e2b-it-4bit",
+        approximateMemoryMB: Int = 2600,
+        template: any ModelTemplate = Gemma4Template(),
+        replyTokensFloor: Int? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.modelConfiguration = ModelConfiguration(id: huggingFaceRepo)
+        self.approximateMemoryMB = approximateMemoryMB
+        self.template = template
+        self.replyTokensFloor = replyTokensFloor
+        // MLX's Metal buffer pool defaults its cache limit to the system
+        // memory limit (~128 GB on an M1 Ultra) — which means it happily
+        // hoards tens of GB of intermediate tensors from past generations
+        // "just in case". Cap the cache per device tier so 6 GB phones
+        // don't jetsam while Macs and 12 GB Pros still get hot-reuse.
+        // Budget: weights ~2.6 GB + active KV cache ~1 GB + pool cap.
+        MLX.GPU.set(cacheLimit: DeviceProfile.current.mlxCacheLimitMB * 1024 * 1024)
+    }
     private var container: ModelContainer?
     private var state: ModelLoadState = .notLoaded
     private var continuations: [AsyncStream<ModelLoadState>.Continuation] = []
@@ -191,19 +238,6 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         debug("loaded prompt cache (\(tokens.count) tokens) ← \(url.lastPathComponent)")
     }
 
-    public init() {
-        // `gemma4_text` is pre-registered in upstream `LLMRegistry.shared`
-        // (see `mlx-swift-lm/Libraries/MLXLLM/LLMModelFactory.swift`), so
-        // no sidecar registration is needed any more.
-        //
-        // MLX's Metal buffer pool defaults its cache limit to the system
-        // memory limit (~128 GB on an M1 Ultra) — which means it happily
-        // hoards tens of GB of intermediate tensors from past generations
-        // "just in case". Cap the cache per device tier so 6 GB phones
-        // don't jetsam while Macs and 12 GB Pros still get hot-reuse.
-        // Budget: weights ~2.6 GB + active KV cache ~1 GB + pool cap.
-        MLX.GPU.set(cacheLimit: DeviceProfile.current.mlxCacheLimitMB * 1024 * 1024)
-    }
 
     private func debug(_ s: String) {
         debugSink?(s)
@@ -259,8 +293,26 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
             let modelConfiguration = self.modelConfiguration
             debug("downloading weights from HF Hub…")
             log.notice("loadContainer: downloading Gemma-4 weights from HF hub")
+            // HubClient's default URLSession uses
+            // `URLSessionConfiguration.default`, which caps
+            // `timeoutIntervalForRequest` at 60s. For a 2.5 GB
+            // safetensors file over a cellular or slow wifi link
+            // that's far too short — the download aborts on the
+            // first chunk that takes longer than 60s to arrive, and
+            // the app sees "download failed" without a useful reason.
+            // Pass an explicit session with a 10-minute per-request
+            // timeout + 1-hour per-resource timeout to make large
+            // first-launch downloads survive normal network wobbles.
+            let longDownloadSession: URLSession = {
+                let cfg = URLSessionConfiguration.default
+                cfg.timeoutIntervalForRequest = 600      // 10 minutes
+                cfg.timeoutIntervalForResource = 3600    // 1 hour
+                cfg.waitsForConnectivity = true
+                return URLSession(configuration: cfg)
+            }()
+            let hub = HubClient(session: longDownloadSession)
             let container = try await LLMModelFactory.shared.loadContainer(
-                from: #hubDownloader(),
+                from: #hubDownloader(hub),
                 using: #huggingFaceTokenizerLoader(),
                 configuration: modelConfiguration,
                 progressHandler: { [weak self] progress in

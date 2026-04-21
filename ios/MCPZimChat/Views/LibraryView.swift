@@ -127,6 +127,16 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Providers") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.enableAppleFMBinding) {
+                    Text("Apple Foundation Models")
+                }
+                Text("Adds Apple's on-device Foundation Models to the model picker. Off saves the framework load (~10–30 MB) + per-provider tool schemas; on exposes two extra picker entries (text-loop and native-tools). Takes effect on next app launch.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Aggregate capabilities") {
                 let caps = session.adapter == nil ? [] : registryCapabilities()
                 if caps.isEmpty {

@@ -55,6 +55,12 @@ final class ZimfoRunner {
         }
         let service = DefaultZimService(readers: readers)
         let adapter = await MCPToolAdapter.from(service: service)
+        // Same bridge ChatSession uses — lets Siri intents that end up
+        // calling `route_status` / `what_is_here` read from the same
+        // persistent route + GPS state as the in-app chat.
+        await adapter.installHostStateProvider {
+            await ZimfoContext.shared.mcpSnapshot()
+        }
         let byName = Dictionary(uniqueKeysWithValues: readers.map { ($0.name, $0.reader) })
         return ZimfoRunner(service: service, adapter: adapter, readersByName: byName)
     }
