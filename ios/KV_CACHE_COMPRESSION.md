@@ -209,6 +209,43 @@ Revisit TurboQuant when **either**:
    "Lightning quants".
 4. **Hold off on TurboQuant** until one of the triggers above fires.
 
+## Status as of 2026-04-21
+
+Option 1 is **wired but disabled by default** on iOS:
+
+- `DeviceProfile.useQuantizedKVCache` is `false` on every iOS/iPadOS
+  tier (was `true` briefly). `Gemma4Provider.generate(...)` still reads
+  the flag and only passes `kvBits: 4` to MLX when it flips to `true`.
+- `ios/LocalPackages/Swift-gemma4-core/Sources/Gemma4SwiftCore/Layers/Gemma4TextAttention+Forward.swift`
+  retains the `QuantizedKVCacheProtocol` branch + donor-dequantize
+  bridge so the path is testable when we re-enable it.
+
+The flip to `false` was a defensive rollback after a jetsam kill on an
+iPhone 17 Pro Max on the first post-install launch:
+
+- Prewarm `primeCache` prefill peak: **~4916 MB** (vs ~4264 MB on the
+  pre-quant build, a **+652 MB regression** we can't yet attribute to
+  anything on the code path — `primeCache` doesn't pass `kvBits`).
+- Jetsam event `freeze_skip_reason: out-of-slots`, RSS 4987 MB at kill.
+- Rollback restored the pre-quant generate path; separately we moved
+  the composer prewarm trigger from "focus gained" to "first keystroke"
+  so a cold launch no longer fires `primeCache` automatically.
+
+### Before re-enabling
+
+1. Reproduce the +652 MB prewarm regression on an untouched `kvBits=nil`
+   build. If it disappears when we toggle just the DeviceProfile flag,
+   the flag's presence is triggering something (MLX session-wide state?
+   Swift optimizer inlining?) that primeCache indirectly feels.
+2. If it reproduces regardless of the flag: SPM / build-artifact side
+   effect — compare `project.pbxproj` / `Package.resolved` deltas from
+   commit `8ec0fb3` more carefully.
+3. Write the donor-quantized attention path (see comment in
+   `Gemma4TextAttention+Forward.swift`) so we stop dequantizing the
+   full history back to FP16 on every forward pass for donor layers.
+   Only needed once the 1 above is cleared — donor dequant is
+   orthogonal to prewarm.
+
 ## References
 
 - [TurboQuant: Redefining AI efficiency with extreme compression — Google Research](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)

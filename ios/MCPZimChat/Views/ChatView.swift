@@ -157,13 +157,20 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .submitLabel(.send)
                 .onSubmit(send)
-                // Prewarm the model session as soon as the user
-                // focuses the input — Apple FM's system daemon
-                // aggressively unloads the model on idle, so getting
-                // the KV cache hot during the seconds before the user
-                // hits send is the single biggest TTFT win we have.
-                .onChange(of: inputFocused) { _, focused in
-                    if focused { session.prewarmSelectedModel() }
+                // Prewarm the model session the first time the user
+                // actually types a character — auto-focus on launch
+                // doesn't count. Previously we hooked `inputFocused`,
+                // which meant a fresh launch would fire primeCache
+                // before the app had even loaded its working set. On a
+                // 12 GB iPhone 17 Pro Max the combined weights + ZIM
+                // graph + primeCache prefill peak crossed 4.9 GB and
+                // iOS jetsammed us (freeze_skip_reason: out-of-slots).
+                // Gating on "user has typed" keeps the "warm while
+                // typing" win but avoids the cold-launch spike.
+                .onChange(of: draft) { old, new in
+                    if old.isEmpty && !new.isEmpty {
+                        session.prewarmSelectedModel()
+                    }
                 }
             Button {
                 showVoiceChat = true
