@@ -20,8 +20,13 @@ packages:
   MCPZimKit:
     path: ../swift
   Gemma4SwiftCore:
-    url: https://github.com/yejingyang8963-byte/Swift-gemma4-core.git
-    from: 0.1.0
+    # Vendored fork of https://github.com/yejingyang8963-byte/Swift-gemma4-core.
+    # Local patch adds a `QuantizedKVCacheProtocol` branch to
+    # `Gemma4TextAttention+Forward.swift` so MLX's 4-bit groupwise
+    # KV cache works end-to-end (~500 MB → ~125 MB on a 2500-token
+    # prompt). See `KV_CACHE_COMPRESSION.md` Option 1 for the
+    # rationale and upstream-PR plan.
+    path: LocalPackages/Swift-gemma4-core
   # High-quality on-device TTS (Kokoro v1.0 via MLX). Vendored as a
   # local path because upstream kokoro-ios pins `mlx-swift` to exact
   # 0.30.2 which conflicts with Swift-gemma4-core's 0.31+ requirement.

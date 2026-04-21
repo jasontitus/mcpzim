@@ -107,6 +107,26 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Routing") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.routingSkipModelReply) {
+                    Text("Fast routing replies")
+                }
+                Text("When on, routing questions (\"directions to X\") skip the model's final summary turn and render the distance / duration / first few steps directly from the tool result. Saves about 5 s per route query. Reply wording is more mechanical.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Generation") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.longerReplies) {
+                    Text("Longer replies")
+                }
+                Text("Doubles the per-turn token budget (\(DeviceProfile.current.maxReplyTokens) → \(DeviceProfile.current.maxReplyTokens * 2) tokens) so the model can finish longer answers without clipping. Costs extra generation time and KV-cache memory; with 4-bit KV quantization on, the memory tax is ~4× cheaper than it used to be.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Aggregate capabilities") {
                 let caps = session.adapter == nil ? [] : registryCapabilities()
                 if caps.isEmpty {

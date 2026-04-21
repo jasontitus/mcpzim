@@ -34,15 +34,35 @@ struct RouteWebView: View {
     let trace: ToolCallTrace
 
     @Environment(ChatSession.self) private var session
-    @State private var userLocation: (lat: Double, lon: Double)? = nil
     @State private var presentFullscreen: Bool = false
+    @State private var presentDirections: Bool = false
+
+    /// Use the session-level location snapshot directly — ChatSession
+    /// already fetches it at launch and on each send, so we get a
+    /// free blue dot on every map without each view re-requesting GPS.
+    private var userLocation: (lat: Double, lon: Double)? {
+        session.currentLocation
+    }
+
+    /// Full turn-by-turn list pulled from the tool's untrimmed result.
+    /// Empty for `show_map` or when the route tool didn't return any
+    /// instructions.
+    private var turnByTurn: [String] {
+        guard let data = trace.rawResult.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let turns = json["turn_by_turn"] as? [String]
+        else { return [] }
+        return turns
+    }
 
     var body: some View {
         if let spec = resolveSpec(userLocation: userLocation) {
             WebViewContainer(spec: spec, session: session)
                 .frame(height: 360)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(alignment: .topTrailing) {
+                .overlay(alignment: .bottomLeading) {
+                    // Placed bottom-left so it doesn't collide with
+                    // MapLibre's top-right zoom (+/-) controls.
                     Button {
                         presentFullscreen = true
                     } label: {
@@ -54,22 +74,50 @@ struct RouteWebView: View {
                     .accessibilityLabel("Expand map")
                     .padding(8)
                 }
-                .padding(.top, 4)
-                .task {
-                    // Background-fetch current location once so the
-                    // viewer can drop a "you are here" dot. If
-                    // permission is denied / location times out we
-                    // just skip the marker — the route itself still
-                    // renders.
-                    #if canImport(UIKit)
-                    if let here = try? await LocationFetcher.once() {
-                        userLocation = (here.latitude, here.longitude)
+                .overlay(alignment: .bottomTrailing) {
+                    // Directions list — only when the route tool returned
+                    // non-empty turn_by_turn. For `show_map` this stays
+                    // hidden since there's nothing to step through.
+                    if !turnByTurn.isEmpty {
+                        Button {
+                            presentDirections = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "list.bullet")
+                                Text("Directions")
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.thinMaterial, in: Capsule())
+                        }
+                        .accessibilityLabel("Full directions")
+                        .padding(8)
                     }
-                    #endif
                 }
+                .padding(.top, 4)
+                .onAppear {
+                    // Nudge the session if we still don't have a fix.
+                    if session.currentLocation == nil {
+                        session.refreshLocationIfStale()
+                    }
+                }
+                #if os(iOS)
                 .fullScreenCover(isPresented: $presentFullscreen) {
                     FullscreenMap(spec: spec, session: session) {
                         presentFullscreen = false
+                    }
+                }
+                #else
+                .sheet(isPresented: $presentFullscreen) {
+                    FullscreenMap(spec: spec, session: session) {
+                        presentFullscreen = false
+                    }
+                }
+                #endif
+                .sheet(isPresented: $presentDirections) {
+                    DirectionsListView(steps: turnByTurn) {
+                        presentDirections = false
                     }
                 }
         }
@@ -192,6 +240,50 @@ struct RouteWebView: View {
     }
 }
 
+/// Scrollable list of turn-by-turn directions pulled from the route
+/// tool result. Presented as a sheet so the user can step through the
+/// full list without losing the map underneath.
+private struct DirectionsListView: View {
+    let steps: [String]
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("\(idx + 1).")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, alignment: .trailing)
+                        Text(step)
+                            .font(.body)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .listStyle(.plain)
+            .navigationTitle("Turn by Turn")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                #if os(iOS)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", action: onDismiss)
+                }
+                #else
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done", action: onDismiss)
+                }
+                #endif
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
 /// Fullscreen wrapper around the same `WebViewContainer` used inline.
 /// Presented via `fullScreenCover` from `RouteWebView` — an `X` button
 /// top-right dismisses. Matches the inline map (same spec, same JS
@@ -202,7 +294,7 @@ private struct FullscreenMap: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: .topLeading) {
             WebViewContainer(spec: spec, session: session)
                 .edgesIgnoringSafeArea(.all)
             Button {
@@ -216,7 +308,7 @@ private struct FullscreenMap: View {
             }
             .accessibilityLabel("Close map")
             .padding(.top, 12)
-            .padding(.trailing, 12)
+            .padding(.leading, 12)
         }
     }
 }
@@ -345,15 +437,19 @@ private func makeWebView(spec: RouteWebView.Spec, session: ChatSession) -> WKWeb
       };
       // The streetzim viewer keeps its MapLibre instance in a local `var map`
       // inside `fetchConfig().then(...)`, so it's invisible from the host
-      // scope. Patch `maplibregl.Map`'s constructor the moment the library
-      // is parsed — every new Map also lands on `window.__mcpzimMap`, which
-      // our overlay polls for.
-      function patchMaplibre() {
-        if (typeof maplibregl === 'undefined' || !maplibregl.Map) {
-          return setTimeout(patchMaplibre, 25);
-        }
-        if (maplibregl.Map.__mcpzimPatched) return;
-        var Orig = maplibregl.Map;
+      // scope. Catch it via two paths:
+      // (1) Setter-based interception — the moment the viewer assigns
+      //     `window.maplibregl = ...`, we patch `.Map` to capture every
+      //     instance via `window.__mcpzimMap`. This is the fast path.
+      //     Polling alone races with fast loads where the page assigns
+      //     maplibregl AND calls `new maplibregl.Map()` in one synchronous
+      //     run before our 25 ms timer fires.
+      // (2) DOM-scan fallback — if MapLibre is loaded via ES-module or
+      //     otherwise bypasses `window.maplibregl`, walk the DOM for
+      //     `.maplibregl-canvas` whose parent carries an `_map` reference.
+      function wrapMaplibre(lib) {
+        if (!lib || !lib.Map || lib.Map.__mcpzimPatched) return;
+        var Orig = lib.Map;
         function Patched(opts) {
           var m = new Orig(opts);
           window.__mcpzimMap = m;
@@ -363,9 +459,44 @@ private func makeWebView(spec: RouteWebView.Spec, session: ChatSession) -> WKWeb
         Patched.prototype = Orig.prototype;
         Patched.__mcpzimPatched = true;
         for (var k in Orig) { if (Orig.hasOwnProperty(k)) Patched[k] = Orig[k]; }
-        maplibregl.Map = Patched;
+        lib.Map = Patched;
       }
-      patchMaplibre();
+      var _maplibregl;
+      try {
+        Object.defineProperty(window, 'maplibregl', {
+          configurable: true,
+          get: function() { return _maplibregl; },
+          set: function(v) { _maplibregl = v; wrapMaplibre(v); }
+        });
+      } catch (e) {
+        // Some browsers disallow redefining window globals; fall back
+        // to polling + DOM scan below.
+      }
+      function pollOrProbe(tries) {
+        tries = tries || 0;
+        if (typeof _maplibregl !== 'undefined' && _maplibregl && _maplibregl.Map) {
+          wrapMaplibre(_maplibregl);
+        } else if (typeof maplibregl !== 'undefined' && maplibregl && maplibregl.Map) {
+          wrapMaplibre(maplibregl);
+        }
+        if (!window.__mcpzimMap) {
+          // DOM fallback: find a maplibregl canvas and read the private
+          // `_map` back-pointer MapLibre keeps on the container node.
+          var canvas = document.querySelector('.maplibregl-canvas');
+          if (canvas) {
+            var container = canvas.parentNode && canvas.parentNode.parentNode;
+            var m = container && (container._map || container.__map || container._maplibreMap);
+            if (m && typeof m.getSource === 'function') {
+              window.__mcpzimMap = m;
+              try { post('info', ['mcpzim captured MapLibre via DOM scan']); } catch (e) {}
+            }
+          }
+        }
+        if (!window.__mcpzimMap && tries < 300) {
+          setTimeout(function() { pollOrProbe(tries + 1); }, 50);
+        }
+      }
+      pollOrProbe();
       post('info', ['mcpzim console bridge active']);
     })();
     """
@@ -508,10 +639,10 @@ private func loadSpec(_ webView: WKWebView, spec: RouteWebView.Spec) {
           var m = window.__mcpzimMap;
           if (m.loaded && m.loaded()) cb(m);
           else m.on('load', function() { cb(m); });
-        } else if (tries < 120) {
+        } else if (tries < 300) {
           setTimeout(function() { waitForMap(cb, tries + 1); }, 100);
         } else {
-          console.error('mcpzim: __mcpzimMap not ready after 12s, giving up');
+          console.error('mcpzim: __mcpzimMap not ready after 30s, giving up');
         }
       }
       function frameRoute(m) {

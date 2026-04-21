@@ -94,13 +94,14 @@ public protocol ZimService: Sendable {
     func article(path: String, zim: String?) async throws -> ArticleResult
     func articleSections(path: String, zim: String?) async throws -> (zim: String, title: String, sections: [ArticleSection])
     func articleSection(path: String, section: String, zim: String?) async throws -> (zim: String, title: String, section: ArticleSection)
+    func articleByTitle(title: String, zim: String?, section: String?) async throws -> (zim: String, path: String, title: String, section: ArticleSection)
     func mainPage(zim: String?) async throws -> [ArticleResult]
 
     // Streetzim-only. Implementations may throw `.noStreetzim` if unavailable;
     // MCPZimServerKit uses those throws to decide whether to register the tool.
     func planDrivingRoute(_ req: RouteRequest) async throws -> Route
     func geocode(query: String, limit: Int, zim: String?, kinds: [String]?) async throws -> [Place]
-    func nearPlaces(lat: Double, lon: Double, radiusKm: Double, limit: Int, kinds: [String]?, zim: String?) async throws -> NearPlacesResult
+    func nearPlaces(lat: Double, lon: Double, radiusKm: Double, limit: Int, kinds: [String]?, zim: String?, hasWiki: Bool) async throws -> NearPlacesResult
     func nearNamedPlace(place: String, radiusKm: Double, limit: Int, kinds: [String]?, zim: String?) async throws -> (resolved: Place, result: NearPlacesResult)
     func zimInfo(zim: String?) async throws -> [[String: Any]]
     func routeFromPlaces(origin: String, destination: String, zim: String?) async throws -> (resolved: (origin: Place, destination: Place), route: Route, zimUsed: String?)
@@ -369,6 +370,91 @@ public actor DefaultZimService: ZimService {
         return (parsed.zim, parsed.title, hit)
     }
 
+    /// Look up a Wikipedia-family article by title. Accepts both a
+    /// bare title ("HP Garage") and the OSM-style wiki tag
+    /// ("en:HP Garage") that the streetzim stores on each POI.
+    /// Searches the ZIM's title index (libzim `suggestTitles`) which
+    /// handles redirects and approximate matches. Default `section`
+    /// is "lead" — a reasonable summary.
+    public func articleByTitle(title: String, zim: String?, section: String? = "lead")
+        async throws -> (zim: String, path: String, title: String, section: ArticleSection)
+    {
+        // Strip language prefix if present (e.g. "en:HP Garage" → "HP Garage").
+        let cleanedTitle: String = {
+            if let r = title.range(of: ":"), r.lowerBound != title.startIndex {
+                let prefix = String(title[..<r.lowerBound])
+                // Only strip if the prefix is a 2–3 char language code.
+                if (2...3).contains(prefix.count),
+                   prefix.allSatisfy({ $0.isLetter })
+                {
+                    return String(title[r.upperBound...])
+                }
+            }
+            return title
+        }()
+        // Wikipedia titles in OSM use underscores for spaces; libzim
+        // suggest accepts either, but let's also prepare a spaced form.
+        let withSpaces = cleanedTitle.replacingOccurrences(of: "_", with: " ")
+
+        // Candidate readers — wikipedia-family only, optionally pinned.
+        let candidates: [(name: String, reader: ZimReader)] = readers.filter { pair in
+            guard pair.reader.kind == .wikipedia || pair.reader.kind == .mdwiki else { return false }
+            if let zim, pair.name != zim { return false }
+            return true
+        }
+        guard !candidates.isEmpty else {
+            throw ZimServiceError.notFound("no wikipedia ZIM loaded")
+        }
+
+        // Wikipedia ZIMs store articles at predictable paths derived
+        // from the title — usually `A/Title_With_Underscores` (classic
+        // Kiwix layout) or just `Title_With_Underscores`. Since the
+        // OSM `wikipedia=` tag is the actual Wikipedia article title,
+        // we can go directly from tag → path without an index lookup.
+        // Two orders of magnitude faster than `searchTitles` and
+        // guaranteed to hit the exact article (no fuzzy-match drift).
+        // Fall back to `searchTitles` only if every direct-path
+        // variant misses.
+        let underscored = withSpaces.replacingOccurrences(of: " ", with: "_")
+        let directPaths: [String] = [
+            "A/\(underscored)",
+            underscored,
+            "A/\(withSpaces)",
+            withSpaces,
+        ]
+        for pair in candidates {
+            for candidate in directPaths {
+                if let entry = try? pair.reader.read(path: candidate) {
+                    let html = String(data: entry.content, encoding: .utf8) ?? ""
+                    let sections = ArticleSections.parse(html: html)
+                    let wantSection = section ?? "lead"
+                    let found = ArticleSections.find(wantSection, in: sections)
+                        ?? sections.first
+                    guard let sec = found else {
+                        throw ZimServiceError.notFound("no sections in \(candidate)")
+                    }
+                    return (pair.name, candidate, entry.title, sec)
+                }
+            }
+        }
+        // Fallback: fuzzy title suggest. Handles redirects, title
+        // drift, minor casing differences — slower but catches the
+        // cases the direct path missed.
+        for pair in candidates {
+            if let hit = (try? pair.reader.searchTitles(query: withSpaces, limit: 1))?.first {
+                let parsed = try await articleSections(path: hit.path, zim: pair.name)
+                let wantSection = section ?? "lead"
+                let found = ArticleSections.find(wantSection, in: parsed.sections)
+                    ?? parsed.sections.first
+                guard let sec = found else {
+                    throw ZimServiceError.notFound("no sections in \(hit.path)")
+                }
+                return (parsed.zim, hit.path, parsed.title, sec)
+            }
+        }
+        throw ZimServiceError.notFound("title \"\(cleanedTitle)\" not found in any Wikipedia ZIM")
+    }
+
     public func mainPage(zim: String?) async throws -> [ArticleResult] {
         var out: [ArticleResult] = []
         for pair in readers {
@@ -399,7 +485,31 @@ public actor DefaultZimService: ZimService {
     }
 
     public func geocode(query: String, limit: Int, zim: String?, kinds: [String]?) async throws -> [Place] {
-        try await geocodeResolved(query: query, limit: limit, zim: zim, kinds: kinds).map(\.place)
+        // Literal "lat,lon" (from "my location" substitution, or a user
+        // pasting coords) short-circuits the streetzim index: return a
+        // synthetic Place so route_from_places / near_places can proceed
+        // without needing a matching POI in the ZIM.
+        if let p = Self.parseLatLon(query) {
+            return [p]
+        }
+        return try await geocodeResolved(query: query, limit: limit, zim: zim, kinds: kinds).map(\.place)
+    }
+
+    /// Parse strings like "37.44121,-122.15530" or "37.44,-122.15" into
+    /// a synthetic `Place`. Accepts an optional space after the comma.
+    /// Returns nil unless both halves are valid decimal degrees.
+    static func parseLatLon(_ s: String) -> Place? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        let parts = trimmed.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2,
+              let lat = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+              let lon = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+              (-90...90).contains(lat), (-180...180).contains(lon)
+        else { return nil }
+        return Place(
+            name: String(format: "%.5f, %.5f", lat, lon),
+            kind: "here", lat: lat, lon: lon
+        )
     }
 
     /// Same as `geocode` but also tells the caller which streetzim produced
@@ -482,7 +592,8 @@ public actor DefaultZimService: ZimService {
         radiusKm: Double,
         limit: Int,
         kinds: [String]?,
-        zim: String?
+        zim: String?,
+        hasWiki: Bool = false
     ) async throws -> NearPlacesResult {
         guard let pair = try pickStreetzim(zim, containing: (lat: lat, lon: lon)) else {
             throw ZimServiceError.noStreetzim
@@ -546,7 +657,8 @@ public actor DefaultZimService: ZimService {
                     guard let recs = loadCategoryChunk(pair: pair, slug: slug) else { continue }
                     scanRecords(recs, filter: effectiveKinds, applyKindFilter: applyKindFilter,
                                 centerLat: lat, centerLon: lon,
-                                radiusMeters: radiusM, hits: &hits)
+                                radiusMeters: radiusM,
+                                requireWiki: hasWiki, hits: &hits)
                 }
                 return summarize(hits: hits, limit: limit)
             }
@@ -561,7 +673,8 @@ public actor DefaultZimService: ZimService {
             let records = try loadChunk(pair: pair, prefix: prefix)
             scanRecords(records, filter: effectiveKinds, applyKindFilter: true,
                         centerLat: lat, centerLon: lon,
-                        radiusMeters: radiusM, hits: &hits)
+                        radiusMeters: radiusM,
+                        requireWiki: hasWiki, hits: &hits)
         }
         return summarize(hits: hits, limit: limit)
     }
@@ -589,18 +702,53 @@ public actor DefaultZimService: ZimService {
         filter: Set<String>, applyKindFilter: Bool,
         centerLat: Double, centerLon: Double,
         radiusMeters: Double,
+        requireWiki: Bool = false,
         hits: inout [(Place, Double)]
     ) {
+        // Expand synonyms once so every record doesn't repeat the
+        // work. For each literal filter term, pull in the subtype
+        // targets AND name-keyword patterns from userFacingKindSynonyms.
+        var expandedSubtypes: Set<String> = filter
+        var nameKeywords: [String] = []
+        for term in filter {
+            if let syn = Self.userFacingKindSynonyms[term] {
+                expandedSubtypes.formUnion(syn.subtypes)
+                nameKeywords.append(contentsOf: syn.nameKeywords)
+            }
+        }
+        let needKeywordFallback = !nameKeywords.isEmpty
         for rec in records {
             guard let rlat = (rec["a"] as? Double) ?? (rec["lat"] as? Double),
                   let rlon = (rec["o"] as? Double) ?? (rec["lon"] as? Double)
             else { continue }
             let d = haversineMeters(centerLat, centerLon, rlat, rlon)
             guard d <= radiusMeters else { continue }
+            if requireWiki {
+                let wiki = rec["w"] as? String ?? ""
+                let wikidata = rec["q"] as? String ?? ""
+                if wiki.isEmpty && wikidata.isEmpty { continue }
+            }
             if applyKindFilter {
                 let kind = ((rec["t"] as? String) ?? (rec["type"] as? String) ?? "").lowercased()
                 let subtype = ((rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "").lowercased()
-                if !filter.contains(kind) && !filter.contains(subtype) { continue }
+                let subtypeMatch = expandedSubtypes.contains(kind) || expandedSubtypes.contains(subtype)
+                if !subtypeMatch {
+                    // Last-chance name keyword match — covers the case
+                    // where OSM tags a record `amenity=restaurant` but
+                    // the streetzim generator only preserved
+                    // subtype=="amenity". "Sushi House" still reads
+                    // like a restaurant from the name.
+                    if needKeywordFallback && subtype == "amenity" {
+                        let name = ((rec["n"] as? String) ?? (rec["name"] as? String) ?? "").lowercased()
+                        var kw = false
+                        for key in nameKeywords {
+                            if name.contains(key) { kw = true; break }
+                        }
+                        if !kw { continue }
+                    } else {
+                        continue
+                    }
+                }
             }
             let p = Place(
                 name: (rec["n"] as? String) ?? (rec["name"] as? String) ?? "",
@@ -655,8 +803,73 @@ public actor DefaultZimService: ZimService {
                 for key in categories.keys { set.insert(key.lowercased()) }
             }
         }
+        // Also expose common user-facing food / POI synonyms. They
+        // aren't in the streetzim's literal category slugs, but
+        // `scanRecords`'s filter-expansion maps them to real subtypes
+        // (e.g. "restaurant" → amenity-with-food-name + fast_food).
+        // Without this the schema's `enum` doesn't contain
+        // "restaurant", "bar", etc., so the model is more likely to
+        // invent strings that fall through filtering.
+        set.formUnion(Self.userFacingKindSynonyms.keys)
         return set.sorted()
     }
+
+    /// Synonym table mapping common English POI kinds to the
+    /// {subtype} set or {name-keyword} patterns in the streetzim. Used
+    /// by `scanRecords` to expand a caller's `kinds` filter so that
+    /// "restaurant" matches real records even when the data tags them
+    /// as generic `amenity` with a food-like name.
+    static let userFacingKindSynonyms: [String: (subtypes: Set<String>, nameKeywords: [String])] = [
+        "restaurant":   (subtypes: ["restaurant", "fast_food", "food_court"],
+                         nameKeywords: ["restaurant", "pizzeria", "pizza", "bistro",
+                                        "taqueria", "sushi", "ramen", "noodle",
+                                        "taverna", "kitchen", "grill", "diner",
+                                        "steakhouse", "burger", "bbq", "curry",
+                                        "tacos", "chicken", "seafood", "thai",
+                                        "vietnamese", "mexican", "italian",
+                                        "chinese", "korean", "japanese"]),
+        "food":         (subtypes: ["restaurant", "fast_food", "food_court", "cafe", "bar", "pub"],
+                         nameKeywords: ["pizzeria", "pizza", "bistro", "sushi",
+                                        "ramen", "taqueria", "kitchen", "grill"]),
+        "cafe":         (subtypes: ["cafe"], nameKeywords: ["cafe", "coffee", "café"]),
+        "coffee":       (subtypes: ["cafe"], nameKeywords: ["coffee", "cafe", "café",
+                                                              "espresso", "roaster"]),
+        "bar":          (subtypes: ["bar", "pub"], nameKeywords: ["bar", "pub", "tavern"]),
+        "pub":          (subtypes: ["bar", "pub"], nameKeywords: ["pub", "tavern"]),
+        "store":        (subtypes: ["shop", "clothing_store", "grocery"], nameKeywords: []),
+        "shop":         (subtypes: ["shop", "clothing_store", "grocery"], nameKeywords: []),
+        "groceries":    (subtypes: ["grocery"], nameKeywords: ["market", "grocery"]),
+        "supermarket":  (subtypes: ["grocery"], nameKeywords: ["market", "supermarket"]),
+        "gas":          (subtypes: ["fuel"], nameKeywords: ["gas station", "shell", "chevron", "76"]),
+        "pharmacy":     (subtypes: ["pharmacy"], nameKeywords: ["pharmacy", "cvs", "walgreens"]),
+        "hotel":        (subtypes: ["lodging", "hotel"], nameKeywords: ["hotel", "inn", "motel", "lodge"]),
+        "lodging":      (subtypes: ["lodging", "hotel"], nameKeywords: ["hotel", "inn", "motel"]),
+        "atm":          (subtypes: ["bank"], nameKeywords: ["atm"]),
+        "bank":         (subtypes: ["bank"], nameKeywords: ["bank", "chase", "wells fargo",
+                                                              "bank of america", "citibank"]),
+        "hospital":     (subtypes: ["hospital"], nameKeywords: ["hospital", "medical center",
+                                                                  "emergency"]),
+        "park":         (subtypes: ["park"], nameKeywords: ["park"]),
+        "school":       (subtypes: ["school"], nameKeywords: ["school", "academy"]),
+        "church":       (subtypes: ["place_of_worship"], nameKeywords: ["church", "mosque",
+                                                                          "temple", "synagogue"]),
+        // Museum-family synonyms. Name keywords kept deliberately tight
+        // (only unambiguous words) because the subtype="amenity"
+        // fallback otherwise sweeps in false positives — e.g., a
+        // keyword of "heritage" matched "Heritage Park Dental" (a
+        // dentist's office) and surfaced it as the #1 museum.
+        "museum":       (subtypes: ["museum", "tourism", "gallery"],
+                         nameKeywords: ["museum", "gallery"]),
+        "gallery":      (subtypes: ["gallery", "tourism"],
+                         nameKeywords: ["gallery", "museum"]),
+        "attraction":   (subtypes: ["tourism", "museum", "gallery", "viewpoint",
+                                     "attraction", "zoo", "theme_park"],
+                         nameKeywords: ["museum", "gallery", "zoo"]),
+        "landmark":     (subtypes: ["tourism", "historic", "monument", "memorial"],
+                         nameKeywords: ["memorial", "monument"]),
+        "zoo":          (subtypes: ["zoo", "tourism"], nameKeywords: ["zoo", "aquarium"]),
+        "library":      (subtypes: ["library"], nameKeywords: ["library"]),
+    ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for
     /// each loaded streetzim — or for just the named one. Streetzims
@@ -693,7 +906,8 @@ public actor DefaultZimService: ZimService {
         let result = try await nearPlaces(
             lat: first.place.lat, lon: first.place.lon,
             radiusKm: radiusKm, limit: limit,
-            kinds: kinds, zim: first.zim
+            kinds: kinds, zim: first.zim,
+            hasWiki: false
         )
         return (first.place, result)
     }

@@ -4,9 +4,16 @@
 // set of available models, the current chat transcript, and a reference to
 // the MCPZim tool adapter that a Gemma 4 tool loop can dispatch through.
 
+import CryptoKit
 import Foundation
 import MCPZimKit
 import Observation
+import OSLog
+#if canImport(UIKit)
+import UIKit
+#endif
+
+private let chatLog = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "Chat")
 
 @MainActor
 @Observable
@@ -73,6 +80,45 @@ public final class ChatSession {
     /// scan the full log can bump this before a long scenario.
     public var maxDebugEntries = 500
 
+    /// When true, after a routing tool (`route_from_places` /
+    /// `plan_driving_route`) returns, skip the model's iter-1 summary
+    /// turn and render the reply directly from the tool result
+    /// (distance + duration + first-few turn_by_turn steps). Saves
+    /// the ~5 s generation cost of iter 1 for every routing question
+    /// at the price of a more mechanical reply wording. User-toggleable
+    /// in Library → Settings so both flavors can be A/B'd live.
+    /// Persisted to UserDefaults via `didSet` so the choice survives
+    /// relaunch.
+    public var routingSkipModelReply: Bool = UserDefaults.standard.bool(
+        forKey: "routingSkipModelReply"
+    ) {
+        didSet {
+            UserDefaults.standard.set(routingSkipModelReply, forKey: "routingSkipModelReply")
+        }
+    }
+
+    /// When true, double the per-turn reply token budget over the
+    /// DeviceProfile default. Trades KV-cache headroom (and ~seconds
+    /// of generation time) for fuller, less-clipped answers. With
+    /// 4-bit KV-cache quantization enabled on phones the memory tax
+    /// is ~4× cheaper than it used to be, so this is usually safe on
+    /// 8 GB+ iPhones. Persisted so the choice survives relaunch.
+    public var longerReplies: Bool = UserDefaults.standard.bool(
+        forKey: "longerReplies"
+    ) {
+        didSet {
+            UserDefaults.standard.set(longerReplies, forKey: "longerReplies")
+        }
+    }
+
+    /// Device default × 2 when the user has opted in. All reply-generating
+    /// sites (iter 0, iter 1, section reduce) read this instead of
+    /// `DeviceProfile.current.maxReplyTokens` directly.
+    public var effectiveMaxReplyTokens: Int {
+        let base = DeviceProfile.current.maxReplyTokens
+        return longerReplies ? base * 2 : base
+    }
+
     public func debug(_ message: String, category: String = "App") {
         // Prefix every log line with resident-memory so it's easy to eyeball
         // which step moved the needle. Uses `phys_footprint` — the same number
@@ -84,6 +130,10 @@ public final class ChatSession {
             debugEntries.removeFirst(debugEntries.count - maxDebugEntries)
         }
         print("[\(category)] \(decorated)")
+        // OSLog so idevicesyslog / Console.app can see these lines too.
+        // print() only lands in Xcode's console when attached, which
+        // we aren't when the app crashes/hangs on-device.
+        chatLog.notice("[\(category, privacy: .public)] \(decorated, privacy: .public)")
     }
 
     @ObservationIgnored private var stateObservationTask: Task<Void, Never>?
@@ -95,10 +145,183 @@ public final class ChatSession {
     public var currentLocation: (lat: Double, lon: Double)? = nil
     @ObservationIgnored private var lastLocationFetch: Date = .distantPast
 
+    /// One-time setup state — drives the "Setting things up…" overlay
+    /// at launch. `send()` refuses to run until this is `.ready` so a
+    /// user-triggered generate never races with the prompt-cache
+    /// prewarm.
+    public enum SetupState: Equatable, Sendable {
+        case pending
+        case running(stage: String, progress: Double?)
+        case ready
+        case failed(String)
+    }
+    public var setupState: SetupState = .pending
+
     /// Warm the expensive start-up caches off the user's hot path.
     /// Called from `RootView` at launch. Intentionally concurrent —
     /// streetzim graph parse, reranker asset load, and location fix
     /// are all independent, so there's no point serialising them.
+    /// Run the one-time setup that warms the KV cache with the static
+    /// system prompt + tool declarations. Gates the chat UI so the
+    /// user can't send a query until the cache is populated — that
+    /// closes the race that hung the first build of this. Subsequent
+    /// launches load the cache from disk and this returns quickly.
+    @MainActor
+    public func runSetupIfNeeded() async {
+        guard setupState == .pending else { return }
+        setupState = .running(stage: "Loading model…", progress: nil)
+        // Wait for Gemma weights to be in memory. The download/load
+        // itself fires from `loadSelectedModel()` which is kicked off
+        // at init time.
+        if case .ready = modelState {
+            // already loaded
+        } else {
+            for _ in 0..<120 { // ~60 s
+                if case .ready = modelState { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            guard case .ready = modelState else {
+                setupState = .failed("Model failed to load within 60 s.")
+                return
+            }
+        }
+        // primeCache disabled: pre-filling ~4500 tokens of KV state
+        // at launch left ~500-700 MB of extra resident memory
+        // permanently allocated. On an iPhone 17 Pro Max already
+        // carrying Gemma 4 weights (~2.6 GB) + Kokoro TTS (~400 MB)
+        // + ZIMs + WebKit, that pushed peak into iOS jetsam territory
+        // and the app got killed mid-reply repeatedly. First user
+        // turn now pays ~3 s of full prefill instead, which is cheap
+        // vs. getting terminated. Disk cache code below left intact
+        // for when we resurrect a memory-safe variant (e.g.,
+        // load-from-disk on first send, then evict).
+        setupState = .ready
+        return
+        #if PRIMECACHE_ENABLED
+        guard let gemma = selectedModel as? Gemma4Provider else {
+            setupState = .ready
+            return
+        }
+        // Cache key = static preamble + tools + model id + enabled
+        // ZIMs (by filename). Anything that changes those should
+        // invalidate the stored cache.
+        let cacheKey = makePromptCacheKey()
+        let cacheURL = promptCacheURL(for: cacheKey)
+        let exists = FileManager.default.fileExists(atPath: cacheURL.path)
+        let size = (try? FileManager.default.attributesOfItem(atPath: cacheURL.path)[.size] as? Int64) ?? 0
+        debug("setup: cacheURL=\(cacheURL.path) exists=\(exists) size=\(size) bytes",
+              category: "Gemma4")
+        if exists {
+            setupState = .running(stage: "Restoring saved prompt cache…", progress: nil)
+            do {
+                try await gemma.loadPromptCache(from: cacheURL)
+                setupState = .ready
+                debug("loaded prompt cache from disk (key=\(cacheKey.prefix(12))…)",
+                      category: "Gemma4")
+                return
+            } catch {
+                debug("disk cache load failed: \(error) — will re-prewarm",
+                      category: "Gemma4")
+                try? FileManager.default.removeItem(at: cacheURL)
+            }
+        }
+        setupState = .running(stage: "Pre-filling system prompt…", progress: nil)
+        do {
+            try await warmPromptCacheOnce(gemma: gemma)
+            try await gemma.savePromptCache(to: cacheURL, keyHint: cacheKey)
+            debug("prewarmed + saved prompt cache (key=\(cacheKey.prefix(12))…)",
+                  category: "Gemma4")
+            setupState = .ready
+        } catch {
+            debug("prompt-cache warmup failed: \(error)", category: "Gemma4")
+            // Fall through — user can still chat, just without the
+            // cache benefit.
+            setupState = .ready
+        }
+        #endif
+    }
+
+    /// Invalidate the on-disk cache so the next `runSetupIfNeeded()`
+    /// rebuilds it. Called when the enabled ZIM set changes or the
+    /// user swaps models.
+    @MainActor
+    public func invalidateSetupCache() {
+        setupState = .pending
+        // Best-effort — we don't know the old cache key, so nuke all
+        // files under our prompt-cache dir. Cheap: they're < 1 GB.
+        let dir = promptCacheDirectory()
+        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for f in files where f.pathExtension == "safetensors" || f.pathExtension == "json" {
+                try? FileManager.default.removeItem(at: f)
+            }
+        }
+    }
+
+    private func warmPromptCacheOnce(gemma: Gemma4Provider) async throws {
+        guard let adapter else { return }
+        let registry = await adapter.registry
+        let toolDecls = toolDeclarations(registry: registry)
+        lastQueryComplexity = .topical
+        let preamble = systemMessageText(for: .topical)
+        // Build a prewarm prompt that is a BYTE-EXACT prefix of what the
+        // first real turn will look like. No user message, no trailing
+        // `<|turn>model\n` — just `<bos>` + the tool-system turn. Iter 0
+        // will tokenize its full prompt starting with the same bytes, so
+        // LCP == cachedTokens.count on that first user send → cache hit,
+        // skipping ~4000 tokens of prefill.
+        //
+        // We can't use `Gemma4PromptTemplate.render(... turns: [])` because
+        // that appends `<|turn>model\n` at the end, which diverges from
+        // iter 0 (which has `<|turn>user\n{msg}…` there). Call the
+        // system-turn formatter directly.
+        let systemTurn = Gemma4ToolFormat.formatSystemTurn(
+            systemMessage: preamble, tools: toolDecls
+        )
+        let prompt = Gemma4PromptTemplate.bos + systemTurn
+        try await gemma.primeCache(prompt: prompt)
+    }
+
+    private func makePromptCacheKey() -> String {
+        // Strip the location block — it's dynamic and we want the
+        // cache to survive a GPS fix landing later.
+        let preamble = Self.composeSystemMessage(
+            categoryHint: Self.categoryHint(for: .topical),
+            locationLine: ""
+        )
+        let toolNames = library
+            .filter(\.isEnabled)
+            .map { $0.url.lastPathComponent }
+            .sorted()
+            .joined(separator: ",")
+        let modelID = selectedModel.id
+        let raw = preamble + "\n\(toolNames)\n\(modelID)"
+        return Self.sha256Hex(raw)
+    }
+
+    private static func sha256Hex(_ s: String) -> String {
+        let h = SHA256.hash(data: Data(s.utf8))
+        return h.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func promptCacheDirectory() -> URL {
+        // Application Support persists across launches and is NOT
+        // evicted by iOS under storage pressure (Caches is). Our
+        // prompt cache is expensive to rebuild (5+ s of prefill), so
+        // we want it to stick around.
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent("PromptCache", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func promptCacheURL(for key: String) -> URL {
+        promptCacheDirectory()
+            .appendingPathComponent("gemma-\(key.prefix(16)).safetensors")
+    }
+
     public func prewarmBackgroundCaches() {
         Task { [weak self] in
             guard let self else { return }
@@ -122,6 +345,297 @@ public final class ChatSession {
                             category: "Rerank")
             }
         }
+        // NOTE: Gemma prompt-cache prewarm disabled — racing with
+        // the user's first query caused the app to hang (two
+        // `ModelContainer` reads serialise, and tearing down the
+        // prewarm's inner stream while the user's task awaited the
+        // actor blocked indefinitely). Cross-turn cache hits still
+        // work via the LCP match in `Gemma4Provider.generate`. The
+        // disk-serialised cache (planned next) avoids this race by
+        // loading state directly without touching `container.perform`.
+    }
+
+    /// Run a silent 1-token "hi" generation so Gemma's KV cache is
+    /// populated with the static system-prompt + tool-declaration
+    /// prefix. Next real send() does an LCP match against that
+    /// prefix, skipping most of the prefill.
+    @MainActor
+    private func prewarmPromptCache() async {
+        guard let gemma = selectedModel as? Gemma4Provider else { return }
+        // Wait until weights are actually loaded; container ready =
+        // modelState == .ready. If we fire before load, we'd just
+        // spin.
+        if case .ready = modelState {
+            // ok
+        } else {
+            for _ in 0..<40 { // wait up to ~20 s
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if case .ready = modelState { break }
+            }
+            guard case .ready = modelState else {
+                debug("prompt-cache warmup: model not ready in 20 s, skipping",
+                      category: "Gemma4")
+                return
+            }
+        }
+        let started = Date()
+        // Build a preamble+tools prefix that matches what a real
+        // send() will build, but with a throwaway user message. The
+        // location + category blocks will still land at the end (so
+        // they're outside the cached prefix), but the big static
+        // header + all tool declarations land inside it.
+        guard let adapter else {
+            debug("prompt-cache warmup: no tool adapter yet, skipping",
+                  category: "Gemma4")
+            return
+        }
+        let registry = await adapter.registry
+        let toolDecls = toolDeclarations(registry: registry)
+        lastQueryComplexity = .topical
+        let preamble = self.systemMessageText(for: .topical)
+        let turns = [ChatTurn(role: .user, text: "hi")]
+        let finalPrompt = Gemma4PromptTemplate.render(
+            systemMessage: preamble, tools: toolDecls, turns: turns
+        )
+        do {
+            let params = GenerationParameters(
+                maxTokens: 1, temperature: 0.3, topP: 0.9
+            )
+            for try await _ in gemma.generate(prompt: finalPrompt, parameters: params) {
+                break // one token is enough to bake the cache
+            }
+            let dt = Date().timeIntervalSince(started)
+            debug(String(format: "prewarmed prompt cache in %.2fs", dt),
+                  category: "Gemma4")
+        } catch {
+            debug("prompt-cache warmup failed: \(error)", category: "Gemma4")
+        }
+    }
+
+    /// Build the `<|turn>system\n…` body used by `runGenerationLoop`
+    /// and the prompt-cache warmup. Fully invariant — we used to
+    /// fold a per-turn classification hint into either the preamble
+    /// or the user-turn body, but a Mac behavior test (see
+    /// `tools/gemma-smoke` `prompt-experiment`) confirmed Gemma 4
+    /// picks the same tool calls with or without that hint, so we
+    /// dropped it. The `_` argument is kept for call-site
+    /// compatibility.
+    fileprivate func systemMessageText(for _: QueryComplexity) -> String {
+        let locationLine = self.locationLineText()
+        return Self.composeSystemMessage(categoryHint: "", locationLine: locationLine)
+    }
+
+    /// Static assembly of the preamble body. Mirrors exactly the
+    /// inline string that used to live in `runGenerationLoop`; do
+    /// NOT reorder without bumping the prompt-cache version key.
+    /// The `categoryHint` argument is now unused for the live path
+    /// (kept for the cache-key hash to stay backwards-compatible).
+    static func composeSystemMessage(categoryHint: String, locationLine: String) -> String {
+        return """
+        You are a helpful assistant with access to tools over locally-loaded \
+        ZIM archives. Call tools immediately whenever they can answer the \
+        user's question — do NOT ask the user to confirm, and do NOT ask \
+        which ZIM to use (if there is a streetzim, use it for routing; \
+        if there is a wikipedia, use it for general knowledge; if there \
+        is an mdwiki, use it for medical questions). Pick sensible \
+        defaults for optional arguments. Only respond in prose after \
+        you have the tool result.\(locationLine)
+
+        Follow-up interpretation: when the user's current message is
+        SHORT (under ~8 words) or begins with "and", "what about", "how
+        about", "ok", "then", "also", "more on", "more about", treat it
+        as a follow-up to the immediately previous turn in THIS
+        conversation. Carry the prior subject forward — if the last
+        turn was about "Iraq–United States relations" and the user
+        says "and what about modern relations?", answer about the
+        MODERN U.S.–Iraq relationship. Do NOT reply "could you
+        specify what you mean" when the prior-turn subject makes the
+        answer obvious; instead, search/fetch articles that extend
+        that subject. Only ask for clarification when the short
+        follow-up could plausibly mean several very different topics.
+
+        Medical questions are in-scope: this app ships with WikiMed \
+        (the mdwiki ZIM), an open encyclopedia of medical articles \
+        written for clinicians and patients. For clearly clinical \
+        queries (conditions, drugs, dosages, first aid), search it \
+        for better-calibrated answers and relay what the article \
+        says. Do NOT refuse with "I'm not a doctor" boilerplate — the \
+        user is asking for the mdwiki's content, not your opinion.
+
+        IMPORTANT: do NOT set `kind: "mdwiki"` (or any `kind` filter) \
+        unless the user's question is unambiguously medical. Setting \
+        `kind="mdwiki"` on a general query like "plasma physics" or \
+        "Billy Crystal" blinds the search to Wikipedia and returns \
+        nonsense. Default behaviour: OMIT `kind` entirely and let the \
+        unified search pick the best ZIM for you.
+
+        For routing questions, keep the reply SHORT — the user also \
+        sees the map and the full list on-screen, and a spoken reply of \
+        30+ turns is unusable. Your reply MUST include:
+        1) total distance and duration from the tool result,
+        2) a single-sentence summary of the major roads involved \
+           (name the one or two freeways / arterials from the \
+           `turn_by_turn` list that cover most of the distance),
+        3) at most the FIRST 3–4 turns from `turn_by_turn`, then stop. \
+           If `turn_by_turn_total` is present just say "about N steps \
+           total" — do NOT enumerate the rest.
+
+        For "what's nearby" style questions, lead your reply with the \
+        `by_category` breakdown from the tool response. Only names from \
+        the current `results` array are trustworthy — don't invent items \
+        from counts or from earlier turns. The tool's own description \
+        spells out when to re-call with `kinds` to drill into a bucket.
+
+        For "tell me about X" / "what is X" / "how does X work" / \
+        "explain X" questions, the preferred chain is:
+        1. `search` — pick the best matching hit.
+        2. `list_article_sections` on that hit's `path` — pick the 1–3 \
+           sections that actually answer the question (skip "See also", \
+           "References", etc. which the tool already strips).
+        3. `get_article_section` once per chosen section.
+        4. Answer from the sections you read. Write in natural prose — \
+           DO NOT open with "per the 'lead' section" or "according to \
+           the article"; the user already knows the answer is grounded. \
+           Only name a section when it genuinely clarifies (e.g. \
+           contrasting two sections of the same article).
+
+        When the question is a short factoid, one `get_article_section` \
+        on `lead` is usually enough. When it's broader ("tell me about \
+        the French Revolution"), read 2–3 sections. When you truly \
+        need the whole article (rare) fall back to `get_article`. \
+        NEVER stop after `search` to ask "would you like me to fetch \
+        it?" — just proceed through the chain.
+
+        === Grounding policy ===
+        This app's value to the user is that answers are grounded in \
+        the loaded ZIM archives — not in your training priors. So: \
+        * Every factual claim in your reply should trace to a tool result \
+          you have seen this turn OR an earlier turn in this conversation. \
+        * If the user asks a follow-up that refers back to a prior topic \
+          ("when was that?", "tell me more about it"), reuse the article(s) \
+          from the earlier turn rather than re-running the full search. \
+        * Cite section / article names inline (e.g. "per 'Article' § \
+          Causes…") whenever a claim isn't obviously common knowledge. \
+        * If the loaded ZIMs genuinely don't cover the question, say that \
+          — do not guess.
+        """
+    }
+
+    private static func categoryHint(for complexity: QueryComplexity) -> String {
+        switch complexity {
+        case .navigational:
+            return """
+            The user's current turn looks NAVIGATIONAL (routing / "what's \
+            around" / nearest-X). Use streetzim tools (`near_named_place`, \
+            `route_from_places`). Do NOT call `search` or read Wikipedia \
+            articles for this turn — that's a different surface.
+            """
+        case .factoid:
+            return """
+            The user's current turn looks FACTOID (short, single-fact \
+            lookup). You MUST ground the answer in a tool-result — \
+            never answer a factual claim from prior knowledge alone. \
+            Either: \
+            (a) call `search` → `get_article_section(section: "lead")` \
+            and cite the article, OR \
+            (b) if this is a follow-up (short question with pronouns \
+            like "that"/"those"/"it"/"them"), reuse an article from \
+            an earlier turn in THIS conversation and cite that \
+            specific article + section. If you genuinely can't find \
+            the fact in the loaded ZIMs, say so — don't guess.
+            """
+        case .topical:
+            return """
+            The user's current turn looks TOPICAL ("tell me about X" / \
+            "what is X"). Fixed chain you MUST follow before writing a \
+            reply: \
+            1. `search` (one call). The search result's top hits include \
+               a `preview` field (first ~400 chars of the article's \
+               lead). READ every preview and pick the hit whose \
+               preview actually matches what the user asked — do NOT \
+               default to `hits[0]`. For "origin of pizza", skip \
+               "Chicago-style pizza" (a regional variant) and choose \
+               the general "Pizza" article. For "plasma", pick the \
+               physics article over "plasma actuators" or "blood \
+               plasma" unless the user specifically asked about those.
+            2. `list_article_sections` on the chosen hit. \
+            3. `get_article_section(section: "lead")`. \
+            4. `get_article_section` on AT LEAST ONE more section \
+               whose title bears on the user's question (history, \
+               applications, current status, impact, mechanism, …). \
+            5. Only then write the answer. \
+            Skipping step 4 leaves the user with a lead-only summary \
+            and that's what the model was asked NOT to do.
+            """
+        case .explanatory:
+            return """
+            The user's current turn looks EXPLANATORY ("explain how X \
+            works" / "why did X happen" / "compare X and Y"). This is \
+            a SYNTHESIS question. Fixed chain you MUST follow: \
+            1. `search`. \
+            2. `list_article_sections` on the best hit. \
+            3. `get_article_section` on the lead + at least ONE \
+               content section (mechanism / causes / effects / …). \
+            4. For compare/contrast questions, or when the first \
+               article alone can't answer the question, do a second \
+               `search`/`list_article_sections`/`get_article_section` \
+               cycle on a second article. \
+            5. Only after steps 1–4 write the user-facing reply. \
+            Total minimum `get_article_section` calls this turn: 2. \
+            Answering after just one section or from snippets alone \
+            is a failure — do not do it.
+            """
+        }
+    }
+
+    private func locationLineText() -> String {
+        guard let here = currentLocation else {
+            return """
+
+            === Current location ===
+            Location permission hasn't resolved yet. If the user asks \
+            a location-relative question, tell them you can't get a \
+            fix right now rather than guessing coordinates.
+            """
+        }
+        let latStr = String(format: "%.5f", here.lat)
+        let lonStr = String(format: "%.5f", here.lon)
+        return """
+
+        === Current location ===
+        The user is physically at lat=\(latStr), lon=\(lonStr) right \
+        now. Treat this as load-bearing context for every "where" / \
+        "here" / "nearby" / "directions" / "nearest" question — \
+        NEVER ask the user where they are.
+
+        Tool recipes when the question references the user's \
+        position (implicitly or explicitly):
+          * "what's around (here|me)?" → `near_places(lat=\(latStr), \
+            lon=\(lonStr), radius_km=1)` (no `kinds` unless the \
+            user asked for a specific type).
+          * "nearest <kind>" / "where's the closest <kind>" → \
+            `near_places(lat=\(latStr), lon=\(lonStr), radius_km=5, \
+            kinds=["<kind>"])`, then pick the single best hit.
+          * "directions to <place>" / "how do I get to <place>" → \
+            ALWAYS call `route_from_places(origin="my location", \
+            destination="<place>")`. The host auto-fills the \
+            origin lat/lon from the user's current fix when \
+            `origin="my location"` is passed, and geocodes the \
+            destination name. Do NOT invent dest_lat / dest_lon — \
+            you DO NOT know the coordinates of place names, \
+            guessing them produces a route that goes nowhere \
+            (e.g. San Francisco is NOT at the user's \
+            coordinates). Only use `plan_driving_route` with \
+            raw lat/lons when BOTH endpoints came from a prior \
+            tool result.
+          * "directions to the nearest <kind>" → first \
+            `near_places` (as above) to get the winning hit's \
+            lat/lon, then `plan_driving_route` from \
+            (\(latStr), \(lonStr)) to those coords.
+          * "map of where I am" / "what neighborhood is this" → \
+            `show_map(place="<the nearest named place>")`, OR \
+            fall back to `near_places` and describe the top result.
+        """
     }
 
     /// Kick off a location fetch if we haven't had a fresh fix in the
@@ -130,25 +644,116 @@ public final class ChatSession {
     /// The first launch also triggers the `WhenInUse` permission
     /// prompt via `CLLocationManager`, so use a generous timeout so
     /// the user has time to tap Allow.
+    @ObservationIgnored private var locationFetchTask: Task<Void, Never>?
+
     public func refreshLocationIfStale() {
-        #if canImport(UIKit)
-        guard Date().timeIntervalSince(lastLocationFetch) > 120 else { return }
-        lastLocationFetch = Date()
-        Task { [weak self] in
-            do {
-                let here = try await LocationFetcher.once(timeout: 20)
-                await MainActor.run {
-                    self?.currentLocation = (here.latitude, here.longitude)
-                    self?.debug("location fixed: (\(here.latitude), \(here.longitude))",
-                                category: "Voice")
-                }
-            } catch {
-                await MainActor.run {
-                    self?.debug("location unavailable: \(error)", category: "Voice")
-                }
+        // No-op. `ChatSession.init` subscribes to `LocationFetcher.shared`,
+        // so `currentLocation` auto-updates on every CL delegate callback.
+        // Callers (RootView.task, RouteWebView.onAppear) still invoke this
+        // for legacy reasons; kept as a symbol to avoid touching every
+        // call site.
+    }
+
+    /// Replace any string-valued tool arg whose value is a user-facing
+    /// "my location" synonym with the literal `"lat,lon"` string so
+    /// ZimService.geocode's parseLatLon short-circuit picks it up. The
+    /// preamble tells the model to use `origin:"my location"` on
+    /// route_from_places, but the geocoder has no concept of "me" —
+    /// this is where that shortcut gets resolved.
+    private func substituteCurrentLocation(in args: [String: Any]) -> [String: Any] {
+        guard let here = currentLocation else { return args }
+        let coord = String(format: "%.5f,%.5f", here.lat, here.lon)
+        let synonyms: Set<String> = [
+            "my location", "my current location",
+            "current location", "here", "me",
+        ]
+        var out = args
+        for (key, val) in args {
+            guard let s = val as? String else { continue }
+            let lower = s.lowercased().trimmingCharacters(in: .whitespaces)
+            if synonyms.contains(lower) {
+                out[key] = coord
             }
         }
-        #endif
+        // Detect the tool name via the key shapes the model emits —
+        // near_places/near_named_place use `lat`+`lon` (numeric); routing
+        // tools use `origin`/`destination` (string). For proximity
+        // tools, inject numeric lat/lon if missing and remove a stray
+        // `origin` string that the model sometimes adds.
+        let usesLatLon = out["lat"] != nil || out["lon"] != nil
+            || (out["origin"] == nil && out["destination"] == nil
+                && (out["radius_km"] != nil || out["kinds"] != nil
+                    || out["has_wiki"] != nil))
+        if usesLatLon {
+            if toDouble(out["lat"]) == nil { out["lat"] = here.lat }
+            if toDouble(out["lon"]) == nil { out["lon"] = here.lon }
+            out.removeValue(forKey: "origin")
+            // The model often pins `zim` to a Wikipedia ZIM by
+            // mistake (prompt contamination). near_places requires a
+            // streetzim — drop any wikipedia/mdwiki pin so the
+            // service's fallback picks the right one.
+            if let z = out["zim"] as? String,
+               z.contains("wikipedia") || z.contains("mdwiki")
+            {
+                out.removeValue(forKey: "zim")
+            }
+        }
+        // Numeric fallback: the model sometimes emits `origin_lat:0,
+        // origin_lon:0` when the preamble lacked a location block (no
+        // GPS at turn start). If we now have a fix by dispatch time,
+        // inject it so the route still goes through with "my
+        // location" semantics.
+        if let la = toDouble(out["origin_lat"]), let lo = toDouble(out["origin_lon"]),
+           la == 0 && lo == 0 {
+            out["origin_lat"] = here.lat
+            out["origin_lon"] = here.lon
+        }
+        // Same for destination zeros (rare — usually the dest is a
+        // named place — but covers the edge where the model got
+        // confused and omitted the destination coords too).
+        if let la = toDouble(out["destination_lat"]), let lo = toDouble(out["destination_lon"]),
+           la == 0 && lo == 0,
+           (out["destination"] as? String).map({ $0.isEmpty }) ?? true {
+            // Don't auto-inject destination — ambiguous. Just clear
+            // the zeros so the geocoder uses the `destination` string.
+            out.removeValue(forKey: "destination_lat")
+            out.removeValue(forKey: "destination_lon")
+        }
+        // Final sweep: if the tool is route_from_places but has no
+        // `origin` string at all and no origin_lat/lon, inject the
+        // user's coords as the origin string.
+        if out["origin"] == nil, out["origin_lat"] == nil, out["origin_lon"] == nil {
+            out["origin"] = coord
+        }
+        return out
+    }
+
+    private func toDouble(_ any: Any?) -> Double? {
+        if let d = any as? Double { return d }
+        if let i = any as? Int { return Double(i) }
+        if let s = any as? String { return Double(s) }
+        return nil
+    }
+
+    /// Block the caller for up to `maxWait` seconds to let an
+    /// in-flight `LocationFetcher.once()` land. Used at the top of a
+    /// navigational / topical turn so "directions to X" doesn't fire
+    /// the model while `currentLocation` is still nil. Returns
+    /// immediately if we already have a fix (or the task is done).
+    ///
+    /// We poll `currentLocation` instead of awaiting `locationFetchTask.value` —
+    /// `LocationFetcher.once()` wraps CoreLocation in a `CheckedContinuation`
+    /// that cancellation cannot resume, so if CL never calls the delegate
+    /// back (e.g. permission prompt pending, airplane mode, watch-GPS
+    /// silent fail) the fetch task leaks forever and a TaskGroup.next()
+    /// join on it hangs indefinitely. Polling side-steps that: we give
+    /// up at the deadline and let the model answer without location.
+    public func awaitLocationIfAny(maxWait: TimeInterval = 5) async {
+        if currentLocation != nil { return }
+        let deadline = Date().addingTimeInterval(maxWait)
+        while currentLocation == nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+        }
     }
 
     /// - Parameter autoLoadOnInit: when true (the default, used by the
@@ -201,6 +806,79 @@ public final class ChatSession {
         // and `Gemma4Provider.load()` is idempotent (early-returns if a
         // container already exists), so there's no way this double-loads.
         Task { @MainActor in await self.loadSelectedModel() }
+        // Subscribe to the LocationFetcher singleton. Every CL delegate
+        // callback pushes a new coord into `currentLocation` with zero
+        // polling / timeout machinery — replaces the fragile
+        // `refreshLocationIfStale` + `LocationFetcher.once()` pair.
+        #if canImport(UIKit)
+        LocationFetcher.subscribe { [weak self] coord in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.currentLocation = (coord.latitude, coord.longitude)
+            }
+        }
+        // Listen for iOS memory warnings and aggressively free the KV
+        // cache + MLX Metal pool when they fire. Across a long
+        // conversation the KV mirror grows by thousands of tokens
+        // (each ~100 KB of Metal state) and combined with the 2.6 GB
+        // Gemma weights + Kokoro TTS + WebKit map, the process can
+        // drift into the zone where iOS jetsam kicks in. Dropping
+        // the cache costs one full prefill on the next turn (~3 s)
+        // which is cheap compared to getting killed.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Don't touch the KV cache during an active generate
+                // OR an in-flight KV prewarm — `resetPromptCache()`
+                // calls `MLX.GPU.clearCache()` which synchronously
+                // drains the Metal stream. Thrashing it mid-operation
+                // slows things down AND would wipe the cache we're
+                // mid-way through building. iOS fires 5–10 warnings
+                // in quick succession while MLX does a big prefill;
+                // they all become no-ops here until the operation
+                // finishes.
+                if self.isGenerating {
+                    self.debug("memory warning ignored (isGenerating=true)",
+                               category: "Chat")
+                    return
+                }
+                if self.kvPrewarmTask != nil {
+                    self.debug("memory warning ignored (kvPrewarm in flight)",
+                               category: "Chat")
+                    return
+                }
+                self.debug("memory warning — dropping KV cache + MLX pool",
+                           category: "Chat")
+                if let gemma = self.selectedModel as? Gemma4Provider {
+                    gemma.resetPromptCache()
+                }
+            }
+        }
+        // Drop the KV cache + MLX buffer pool when the app moves to
+        // background. iOS suspends us at our current RSS, and if the
+        // suspended footprint is the biggest on the device, the
+        // jetsam compressor will kill us to reclaim memory. We've
+        // seen this repeatedly: MCPZimChat suspended at ~5 GB ends up
+        // as "largestProcess" in JetsamEvent reports and gets
+        // terminated. Shrinking the suspension footprint to just the
+        // model weights + small working set avoids the kill.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.debug("backgrounded — dropping KV cache + MLX pool",
+                           category: "Chat")
+                if let gemma = self.selectedModel as? Gemma4Provider {
+                    gemma.resetPromptCache()
+                }
+            }
+        }
+        #endif
     }
 
     private func startObservingSelectedModel() {
@@ -251,6 +929,13 @@ public final class ChatSession {
         library.append(contentsOf: fresh)
         persistBookmarks()
         await rebuildService()
+        // New ZIM changes the tool preamble (per-ZIM guidance) so the
+        // saved prompt cache no longer matches. Force a rebuild on
+        // next launch.
+        if !fresh.isEmpty {
+            invalidateSetupCache()
+            Task { await runSetupIfNeeded() }
+        }
     }
 
     private func openEach(urls: [URL], useSecurityScope: Bool) async -> [LibraryEntry] {
@@ -433,6 +1118,8 @@ public final class ChatSession {
         library.remove(at: idx)
         persistBookmarks()
         await rebuildService()
+        invalidateSetupCache()
+        Task { await runSetupIfNeeded() }
     }
 
     public func setEnabled(_ enabled: Bool, for entryID: LibraryEntry.ID) async {
@@ -440,6 +1127,10 @@ public final class ChatSession {
         guard library[idx].isEnabled != enabled else { return }
         library[idx].isEnabled = enabled
         await rebuildService()
+        // Enabled-set feeds into the cache key via filenames, so a
+        // toggle changes the static prefix. Invalidate + rewarm.
+        invalidateSetupCache()
+        Task { await runSetupIfNeeded() }
     }
 
     // MARK: - Model switching
@@ -458,6 +1149,11 @@ public final class ChatSession {
         // load. Users pressing the menu expect "pick a model = ready
         // to use". Tests can still opt out via their own gating.
         await loadSelectedModel()
+        // Cache key embeds modelId — any on-disk cache now points at
+        // a different model's tokenizer/architecture. Drop it and
+        // rewarm once the new model is ready.
+        invalidateSetupCache()
+        await runSetupIfNeeded()
     }
 
     /// Hint to the selected model that a user turn is imminent — e.g.
@@ -470,6 +1166,53 @@ public final class ChatSession {
            let fm = selectedModel as? FoundationModelsProvider,
            fm.useNativeTools {
             fm.prewarmIfIdle()
+        }
+        // Gemma 4: prewarm the KV cache so iter 0 of the upcoming
+        // turn hits cache instead of paying a 5 s full prefill. We
+        // trigger this from the composer's focus handler so the work
+        // overlaps with the user typing — a few seconds of hot
+        // cache is usually done before they hit send. Idempotent: a
+        // second call while the first is in flight is a no-op, and a
+        // call when the cache is already warm returns immediately.
+        // Deliberately NOT called at launch — the Kokoro TTS model
+        // needs ~400 MB and the combined footprint crossed iOS
+        // jetsam threshold when both lived in memory simultaneously.
+        prewarmGemmaKVCacheIfIdle()
+    }
+
+    @ObservationIgnored private var kvPrewarmTask: Task<Void, Never>?
+
+    /// Build the Gemma prompt KV cache in the background if we don't
+    /// already have one. Safe to call repeatedly — it noops if a
+    /// prewarm is in-flight or already finished.
+    @MainActor
+    public func prewarmGemmaKVCacheIfIdle() {
+        guard let gemma = selectedModel as? Gemma4Provider else { return }
+        if isGenerating { return }
+        // Already warm?
+        if gemma.hasPromptKVCache { return }
+        if kvPrewarmTask != nil { return }
+        kvPrewarmTask = Task { [weak self] in
+            guard let self else { return }
+            defer { Task { @MainActor [weak self] in self?.kvPrewarmTask = nil } }
+            guard let adapter = self.adapter else { return }
+            let registry = await adapter.registry
+            let toolDecls = await MainActor.run { self.toolDeclarations(registry: registry) }
+            let preamble = await MainActor.run { self.systemMessageText(for: .topical) }
+            // Build exactly the byte-prefix an iter-0 prompt starts
+            // with: `<bos>` + system-turn. No user turn, no trailing
+            // model-open — the upcoming send's encode will land on
+            // the same first N tokens and LCP-hit.
+            let systemTurn = Gemma4ToolFormat.formatSystemTurn(
+                systemMessage: preamble, tools: toolDecls
+            )
+            let prompt = Gemma4PromptTemplate.bos + systemTurn
+            self.debug("prewarming KV cache in background…", category: "Gemma4")
+            do {
+                try await gemma.primeCache(prompt: prompt)
+            } catch {
+                self.debug("KV prewarm failed: \(error)", category: "Gemma4")
+            }
         }
     }
 
@@ -497,6 +1240,12 @@ public final class ChatSession {
            let fm = selectedModel as? FoundationModelsProvider {
             fm.resetNativeConversation()
         }
+        // Drop Gemma's KV prompt cache — the next send() starts a
+        // completely new transcript, so anything cached from the
+        // previous conversation is garbage.
+        if let gemma = selectedModel as? Gemma4Provider {
+            gemma.resetPromptCache()
+        }
         debug("conversation reset", category: "Chat")
     }
 
@@ -506,10 +1255,26 @@ public final class ChatSession {
     public private(set) var lastQueryComplexity: QueryComplexity = .topical
 
     public func send(_ text: String) {
+        // Setup must have finished (prompt-cache prewarm / load) before
+        // we let a real turn hit the generator — otherwise the user's
+        // first query races with the prewarm's container.perform and
+        // hangs. The SetupOverlayView keeps the UI blocked; this guard
+        // is a belt-and-braces for anything that slips past it (e.g.
+        // the voice mic).
+        if setupState != .ready {
+            debug("send() ignored — setup still running (\(setupState))", category: "Chat")
+            return
+        }
         // Refresh GPS if our last fix is stale — the preamble built in
         // `runGenerationLoop` injects `currentLocation`, so a recent
         // snapshot means "directions to X" queries Just Work.
         refreshLocationIfStale()
+        if let here = currentLocation {
+            debug(String(format: "session location: (%.5f, %.5f)", here.lat, here.lon),
+                  category: "Location")
+        } else {
+            debug("session location: <none> — preamble will omit it", category: "Location")
+        }
         debug(text, category: "User")
         // Phase 2a classification → stashed for Phase 2b retrieval
         // routing in `runGenerationLoop`. Logged to the debug pane
@@ -521,7 +1286,7 @@ public final class ChatSession {
         debug("model=\(selectedModel.displayName), state=\(modelState)", category: "Chat")
         let user = ChatMessage(role: .user, text: text)
         messages.append(user)
-        messages.append(ChatMessage(role: .assistant, text: ""))
+        messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
         isGenerating = true
         Task {
             await runGenerationLoop()
@@ -553,175 +1318,39 @@ public final class ChatSession {
     /// `MCPToolAdapter.dispatch(...)`, appends a synthetic tool response to
     /// the transcript, and restarts.
     private func runGenerationLoop() async {
-        defer { isGenerating = false }
+        defer {
+            isGenerating = false
+            if let idx = messages.indices.last, messages[idx].role == .assistant {
+                messages[idx].finishedAt = Date()
+            }
+        }
+        debug("runGenerationLoop: entered", category: "Chat")
+        // Navigational / topical queries lean heavily on location.
+        // If a fetch is in flight, give it a short window to land
+        // before we bake the preamble — otherwise the model sees
+        // "Location permission hasn't resolved yet" and apologises
+        // instead of answering.
+        if lastQueryComplexity == .navigational || lastQueryComplexity == .topical {
+            debug("runGenerationLoop: awaiting location (max 4s)", category: "Chat")
+            await awaitLocationIfAny(maxWait: 4)
+            debug("runGenerationLoop: location await done", category: "Chat")
+        }
         guard let adapter else {
             debug("No adapter — library is empty.", category: "Chat")
             appendAssistant("[No ZIMs loaded — add .zim files to the app's Documents folder, then tap Refresh Library.]")
             return
         }
 
+        debug("runGenerationLoop: fetching adapter registry", category: "Chat")
         let registry = await adapter.registry
         let toolDecls = self.toolDeclarations(registry: registry)
+        debug("runGenerationLoop: \(toolDecls.count) tools declared", category: "Chat")
         let complexity = self.lastQueryComplexity
-        let categoryHint: String = {
-            switch complexity {
-            case .navigational:
-                return """
-                The user's current turn looks NAVIGATIONAL (routing / "what's \
-                around" / nearest-X). Use streetzim tools (`near_named_place`, \
-                `route_from_places`). Do NOT call `search` or read Wikipedia \
-                articles for this turn — that's a different surface.
-                """
-            case .factoid:
-                return """
-                The user's current turn looks FACTOID (short, single-fact \
-                lookup). You MUST ground the answer in a tool-result — \
-                never answer a factual claim from prior knowledge alone. \
-                Either: \
-                (a) call `search` → `get_article_section(section: "lead")` \
-                and cite the article, OR \
-                (b) if this is a follow-up (short question with pronouns \
-                like "that"/"those"/"it"/"them"), reuse an article from \
-                an earlier turn in THIS conversation and cite that \
-                specific article + section. If you genuinely can't find \
-                the fact in the loaded ZIMs, say so — don't guess.
-                """
-            case .topical:
-                return """
-                The user's current turn looks TOPICAL ("tell me about X" / \
-                "what is X"). Fixed chain you MUST follow before writing a \
-                reply: \
-                1. `search` (one call). The search result's top hits include \
-                   a `preview` field (first ~400 chars of the article's \
-                   lead). READ every preview and pick the hit whose \
-                   preview actually matches what the user asked — do NOT \
-                   default to `hits[0]`. For "origin of pizza", skip \
-                   "Chicago-style pizza" (a regional variant) and choose \
-                   the general "Pizza" article. For "plasma", pick the \
-                   physics article over "plasma actuators" or "blood \
-                   plasma" unless the user specifically asked about those.
-                2. `list_article_sections` on the chosen hit. \
-                3. `get_article_section(section: "lead")`. \
-                4. `get_article_section` on AT LEAST ONE more section \
-                   whose title bears on the user's question (history, \
-                   applications, current status, impact, mechanism, …). \
-                5. Only then write the answer. \
-                Skipping step 4 leaves the user with a lead-only summary \
-                and that's what the model was asked NOT to do.
-                """
-            case .explanatory:
-                return """
-                The user's current turn looks EXPLANATORY ("explain how X \
-                works" / "why did X happen" / "compare X and Y"). This is \
-                a SYNTHESIS question. Fixed chain you MUST follow: \
-                1. `search`. \
-                2. `list_article_sections` on the best hit. \
-                3. `get_article_section` on the lead + at least ONE \
-                   content section (mechanism / causes / effects / …). \
-                4. For compare/contrast questions, or when the first \
-                   article alone can't answer the question, do a second \
-                   `search`/`list_article_sections`/`get_article_section` \
-                   cycle on a second article. \
-                5. Only after steps 1–4 write the user-facing reply. \
-                Total minimum `get_article_section` calls this turn: 2. \
-                Answering after just one section or from snippets alone \
-                is a failure — do not do it.
-                """
-            }
-        }()
-        let locationLine: String
-        if let here = currentLocation {
-            locationLine = """
-
-            The user's current location is approximately \
-            (lat: \(String(format: "%.5f", here.lat)), \
-            lon: \(String(format: "%.5f", here.lon))). \
-            When they ask for directions WITHOUT naming an origin \
-            (e.g. "directions to San Francisco", "how do I get to the \
-            hospital"), call `plan_driving_route` with that origin \
-            already filled in — do NOT ask them where they are.
-            """
-        } else {
-            locationLine = ""
-        }
-        let systemMessage = """
-        You are a helpful assistant with access to tools over locally-loaded \
-        ZIM archives. Call tools immediately whenever they can answer the \
-        user's question — do NOT ask the user to confirm, and do NOT ask \
-        which ZIM to use (if there is a streetzim, use it for routing; \
-        if there is a wikipedia, use it for general knowledge; if there \
-        is an mdwiki, use it for medical questions). Pick sensible \
-        defaults for optional arguments. Only respond in prose after \
-        you have the tool result.\(locationLine)
-
-        Medical questions are in-scope: this app ships with WikiMed \
-        (the mdwiki ZIM), an open encyclopedia of medical articles \
-        written for clinicians and patients. For clearly clinical \
-        queries (conditions, drugs, dosages, first aid), search it \
-        for better-calibrated answers and relay what the article \
-        says. Do NOT refuse with "I'm not a doctor" boilerplate — the \
-        user is asking for the mdwiki's content, not your opinion.
-
-        IMPORTANT: do NOT set `kind: "mdwiki"` (or any `kind` filter) \
-        unless the user's question is unambiguously medical. Setting \
-        `kind="mdwiki"` on a general query like "plasma physics" or \
-        "Billy Crystal" blinds the search to Wikipedia and returns \
-        nonsense. Default behaviour: OMIT `kind` entirely and let the \
-        unified search pick the best ZIM for you.
-
-        For routing questions, keep the reply SHORT — the user also \
-        sees the map and the full list on-screen, and a spoken reply of \
-        30+ turns is unusable. Your reply MUST include:
-        1) total distance and duration from the tool result,
-        2) a single-sentence summary of the major roads involved \
-           (name the one or two freeways / arterials from the \
-           `turn_by_turn` list that cover most of the distance),
-        3) at most the FIRST 3–4 turns from `turn_by_turn`, then stop. \
-           If `turn_by_turn_total` is present just say "about N steps \
-           total" — do NOT enumerate the rest.
-
-        For "what's nearby" style questions, lead your reply with the \
-        `by_category` breakdown from the tool response. Only names from \
-        the current `results` array are trustworthy — don't invent items \
-        from counts or from earlier turns. The tool's own description \
-        spells out when to re-call with `kinds` to drill into a bucket.
-
-        For "tell me about X" / "what is X" / "how does X work" / \
-        "explain X" questions, the preferred chain is:
-        1. `search` — pick the best matching hit.
-        2. `list_article_sections` on that hit's `path` — pick the 1–3 \
-           sections that actually answer the question (skip "See also", \
-           "References", etc. which the tool already strips).
-        3. `get_article_section` once per chosen section.
-        4. Answer from the sections you read. Write in natural prose — \
-           DO NOT open with "per the 'lead' section" or "according to \
-           the article"; the user already knows the answer is grounded. \
-           Only name a section when it genuinely clarifies (e.g. \
-           contrasting two sections of the same article).
-
-        When the question is a short factoid, one `get_article_section` \
-        on `lead` is usually enough. When it's broader ("tell me about \
-        the French Revolution"), read 2–3 sections. When you truly \
-        need the whole article (rare) fall back to `get_article`. \
-        NEVER stop after `search` to ask "would you like me to fetch \
-        it?" — just proceed through the chain.
-
-        === This turn's classification ===
-        \(categoryHint)
-
-        === Grounding policy ===
-        This app's value to the user is that answers are grounded in \
-        the loaded ZIM archives — not in your training priors. So: \
-        * Every factual claim in your reply should trace to a tool result \
-          you have seen this turn OR an earlier turn in this conversation. \
-        * If the user asks a follow-up that refers back to a prior topic \
-          ("when was that?", "tell me more about it"), reuse the article(s) \
-          already retrieved — don't answer from memory. \
-        * Cite section / article names inline (e.g. "per 'Article' § \
-          Causes…") whenever a claim isn't obviously common knowledge. \
-        * If the loaded ZIMs genuinely don't cover the question, say that \
-          — do not guess.
-        """
+        let systemMessage = self.systemMessageText(for: complexity)
+        debug("runGenerationLoop: system message \(systemMessage.count) chars", category: "Chat")
+        // Preamble body lives in `Self.composeSystemMessage(...)` so
+        // the startup prompt-cache warmup can reproduce the exact
+        // bytes this loop emits.
         // Apple Foundation Models native-tools path: short-circuit
         // the text tool loop entirely. The framework owns the
         // transcript and dispatches tool calls internally via
@@ -745,10 +1374,30 @@ public final class ChatSession {
         // Structured turns that survive across tool-loop iterations. We drop
         // the final (empty) assistant placeholder since the provider template
         // appends the "open assistant" marker itself.
-        var turns: [ChatTurn] = messages
-            .dropLast()
-            .filter { !$0.text.isEmpty }
-            .map { ChatTurn(role: $0.role.asChatTurnRole, text: $0.text) }
+        //
+        // Each assistant message may carry `toolRoundTrips` — the exact
+        // intermediate (asst tool_call emission) + (tool response) text
+        // from every round of its tool loop. We expand those into
+        // separate ChatTurns before the final reply so the rebuilt
+        // prompt BYTE-MATCHES what the KV cache was left in. Without
+        // this, turn 2's iter 0 would diverge at the position of the
+        // first tool_call emission and pay a full prefill.
+        var turns: [ChatTurn] = []
+        for msg in messages.dropLast() {
+            if msg.role == .assistant {
+                for rt in msg.toolRoundTrips {
+                    if !rt.assistantEmission.isEmpty {
+                        turns.append(ChatTurn(role: .assistant, text: rt.assistantEmission))
+                    }
+                    if !rt.toolResponseTurn.isEmpty {
+                        turns.append(ChatTurn(role: .tool, text: rt.toolResponseTurn))
+                    }
+                }
+            }
+            if !msg.text.isEmpty {
+                turns.append(ChatTurn(role: msg.role.asChatTurnRole, text: msg.text))
+            }
+        }
 
         // Up to 6 tool loops per user turn — enough for small models
         // that burn iterations exploring (small search → wrong zim →
@@ -797,7 +1446,7 @@ public final class ChatSession {
             // and macOS) so MLX's KV-cache reservation fits the
             // jetsam budget.
             let params = GenerationParameters(
-                maxTokens: DeviceProfile.current.maxReplyTokens,
+                maxTokens: effectiveMaxReplyTokens,
                 temperature: 0.3, topP: 0.9
             )
             // Throttle UI pushes to ~10 Hz. Each `appendToAssistant` mutates
@@ -847,18 +1496,31 @@ public final class ChatSession {
                           iter, call.name, dt, chunkCount),
                   category: "Chat")
 
-            let argsData = try? JSONSerialization.data(withJSONObject: call.args)
+            // Substitute "my location" / "here" / "me" / "current location"
+            // in routing + proximity tool args with the user's lat,lon so the
+            // geocoder doesn't try to find a place literally named "my
+            // location". Covers the `origin` arg on `route_from_places` and
+            // anywhere the model used the preamble's shortcut phrasing.
+            let resolvedArgs = substituteCurrentLocation(in: call.args)
+            let argsData = try? JSONSerialization.data(withJSONObject: resolvedArgs)
             let argsStr = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             let pre = String(buffer[..<call.range.lowerBound])
-            // Always include the full `<|tool_call>…<tool_call|>` block in the
-            // assistant turn we feed back — Gemma 4 was trained to see its own
-            // tool-call emission in context when generating the continuation.
-            let assistantTurnText = String(buffer[..<call.range.upperBound])
+            // Use the FULL buffer (not trimmed at call.range.upperBound).
+            // The sampler's last token often decodes to text that spans
+            // the `<tool_call|>` marker AND a few chars past it (e.g. a
+            // trailing newline). Those post-marker chars are already
+            // in the Gemma4Provider KV cache; if we trimmed them off
+            // here, encode(iter-1 prompt) would not match the cache
+            // mirror's last token and LCP would fall short by 1 token —
+            // every follow-up turn in the same conversation would pay
+            // a full prefill. Feeding the whole buffer keeps the cache
+            // mirror and the re-encoded prompt in sync.
+            let assistantTurnText = buffer
             let memBefore = MemoryStats.physFootprintMB()
             let toolStart = Date()
             debug("dispatching \(call.name)(\(argsStr)) — first call against a ZIM may block on graph/index load", category: "Tool")
             do {
-                let fullResult = try await adapter.dispatch(tool: call.name, args: call.args)
+                let fullResult = try await adapter.dispatch(tool: call.name, args: resolvedArgs)
                 // Routing results carry a polyline with thousands of points
                 // and a turn-by-turn list that together inflate to 50+ KB.
                 // Feeding that verbatim into the next prompt turns into
@@ -916,6 +1578,27 @@ public final class ChatSession {
                     toolTurnText = resultStr
                 }
                 turns.append(ChatTurn(role: .tool, text: toolTurnText))
+                // Persist the exact round-trip text onto the assistant
+                // ChatMessage so the next user turn can rebuild the prompt
+                // byte-for-byte and hit the KV cache at iter 0.
+                recordToolRoundTrip(assistantEmission: assistantTurnText,
+                                    toolResponse: toolTurnText)
+
+                // Optional fast path for routing tools — skip iter 1.
+                // Saves ~5 s per routing turn by synthesizing the reply
+                // directly from the tool result instead of asking the
+                // model to rephrase it. Controlled by
+                // `routingSkipModelReply` (Library → Settings).
+                let routingTools: Set<String> = ["route_from_places", "plan_driving_route"]
+                if routingSkipModelReply && routingTools.contains(call.name) {
+                    let synth = Self.synthesizeRoutingReply(from: fullResult)
+                    if !synth.isEmpty {
+                        updateAssistant(synth)
+                        debug("routing skip-model-reply: synthesized \(synth.count) chars (iter 1 skipped)",
+                              category: "Chat")
+                        return
+                    }
+                }
             } catch {
                 let err = String(describing: error)
                 debug("tool \(call.name) failed: \(err)", category: "Tool")
@@ -931,6 +1614,11 @@ public final class ChatSession {
                     toolTurnText = "[error] \(err)"
                 }
                 turns.append(ChatTurn(role: .tool, text: toolTurnText))
+                // Persist the error round-trip too — the next turn
+                // needs the same bytes whether the tool succeeded or
+                // errored, or LCP will miss on failed queries.
+                recordToolRoundTrip(assistantEmission: assistantTurnText,
+                                    toolResponse: toolTurnText)
             }
         }
         // Loop exhausted with unresolved tool results — force one last
@@ -1121,7 +1809,7 @@ public final class ChatSession {
 
         var buffer = ""
         let reduceParams = GenerationParameters(
-            maxTokens: DeviceProfile.current.maxReplyTokens,
+            maxTokens: effectiveMaxReplyTokens,
             temperature: 0.3, topP: 0.9
         )
         var lastUIPush = Date.distantPast
@@ -1156,7 +1844,7 @@ public final class ChatSession {
         else { return }
         debug("native-tools turn: userMessage=\(lastUser.count) chars", category: "Chat")
         let params = GenerationParameters(
-            maxTokens: DeviceProfile.current.maxReplyTokens,
+            maxTokens: effectiveMaxReplyTokens,
             temperature: 0.3, topP: 0.9
         )
         var buffer = ""
@@ -1246,6 +1934,77 @@ public final class ChatSession {
     private func recordToolTrace(_ trace: ToolCallTrace) {
         if messages.last?.role == .assistant {
             messages[messages.count - 1].toolCalls.append(trace)
+        }
+    }
+
+    /// Build a human-readable reply from a `route_from_places` /
+    /// `plan_driving_route` result, without going through another
+    /// model generate pass. Used by the `routingSkipModelReply`
+    /// setting. Assumes the tool-adapter localised distances already
+    /// (miles for US locale, km elsewhere) — reads the
+    /// `distance_localized` + `duration_min` fields verbatim.
+    static func synthesizeRoutingReply(from fullResult: [String: Any]) -> String {
+        // Fields laid out by `MCPToolAdapter.encodeRoute` (raw) and
+        // `trimForModel` (the model-facing trim that localises
+        // units). We read the UNTRIMMED result to get the richer
+        // fields; fall back gracefully when some are missing.
+        var bits: [String] = []
+        let distance: String? = {
+            if let s = fullResult["distance_localized"] as? String { return s }
+            if let km = fullResult["distance_km"] as? Double {
+                return String(format: "%.1f km", km)
+            }
+            if let m = fullResult["distance_m"] as? Int {
+                return String(format: "%.1f km", Double(m) / 1000)
+            }
+            return nil
+        }()
+        let duration: String? = {
+            if let s = fullResult["duration_localized"] as? String { return s }
+            if let min = fullResult["duration_min"] as? Double {
+                return String(format: "%d min", Int(min.rounded()))
+            }
+            if let sec = fullResult["duration_s"] as? Int {
+                return String(format: "%d min", max(1, Int((Double(sec) / 60).rounded())))
+            }
+            return nil
+        }()
+        if let d = distance, let t = duration {
+            bits.append("Route: \(d), about \(t).")
+        } else if let d = distance {
+            bits.append("Route: \(d).")
+        } else if let t = duration {
+            bits.append("Route time: \(t).")
+        }
+        if let origin = (fullResult["origin_resolved"] as? [String: Any])?["name"] as? String,
+           let dest = (fullResult["destination_resolved"] as? [String: Any])?["name"] as? String,
+           !origin.isEmpty, !dest.isEmpty
+        {
+            bits.append("From \(origin) to \(dest).")
+        }
+        // Include the first 4 turn_by_turn steps (keep the reply
+        // short — the map + full list are on-screen).
+        if let turns = fullResult["turn_by_turn"] as? [String], !turns.isEmpty {
+            let head = Array(turns.prefix(4))
+            let rest = turns.count - head.count
+            var steps = head
+            if rest > 0 { steps.append("(\(rest) more steps — tap Directions for the full list)") }
+            bits.append("Start: " + steps.joined(separator: "; "))
+        } else if let totalTurns = fullResult["turn_by_turn_total"] as? Int, totalTurns > 0 {
+            bits.append("About \(totalTurns) steps.")
+        }
+        return bits.joined(separator: " ")
+    }
+
+    /// Store a tool-call → tool-response round-trip on the current
+    /// assistant message so subsequent turns can reconstruct the
+    /// prompt byte-for-byte for KV-cache LCP matching.
+    private func recordToolRoundTrip(assistantEmission: String, toolResponse: String) {
+        if messages.last?.role == .assistant {
+            messages[messages.count - 1].toolRoundTrips.append(
+                ToolRoundTripEntry(assistantEmission: assistantEmission,
+                                   toolResponseTurn: toolResponse)
+            )
         }
     }
 

@@ -27,6 +27,13 @@ public struct DeviceProfile: Sendable {
     /// caps let hot reuse coalesce but risk jetsam on phones.
     public let mlxCacheLimitMB: Int
 
+    /// Whether to ask MLX for a 4-bit groupwise `QuantizedKVCache`
+    /// instead of the FP16 `StandardKVCache`. ~4× smaller KV, at a
+    /// small (<1% MMLU) quality tax and slightly slower prefill.
+    /// On phones the KV is the binding memory constraint; on Macs
+    /// we have RAM to spare, so we stay FP16 for max quality.
+    public let useQuantizedKVCache: Bool
+
     public let label: String
 }
 
@@ -57,16 +64,19 @@ public extension DeviceProfile {
     /// still work but the body the model sees is just the lead.
     static let tight = DeviceProfile(
         articleCapKB: 6, maxReplyTokens: 256, mlxCacheLimitMB: 256,
+        useQuantizedKVCache: true,
         label: "tight (≈4 GB)"
     )
     /// 6 GB base iPhones — the default "mobile" target.
     static let snug = DeviceProfile(
         articleCapKB: 12, maxReplyTokens: 384, mlxCacheLimitMB: 384,
+        useQuantizedKVCache: true,
         label: "snug (≈6 GB)"
     )
     /// 8 GB Pro iPhones & M-series iPads.
     static let balanced = DeviceProfile(
         articleCapKB: 16, maxReplyTokens: 320, mlxCacheLimitMB: 384,
+        useQuantizedKVCache: true,
         label: "balanced (≈8 GB)"
     )
     /// 12 GB+ iPhones / iPads. On iPhone 17 Pro Max the *process* cap
@@ -77,12 +87,14 @@ public extension DeviceProfile {
     /// which kills the voice-chat flow.
     static let generous = DeviceProfile(
         articleCapKB: 24, maxReplyTokens: 320, mlxCacheLimitMB: 448,
+        useQuantizedKVCache: true,
         label: "generous (≈12 GB)"
     )
     /// Development machines — not trying to avoid jetsam on macOS;
     /// the OS swaps and we only care about responsiveness.
     static let mac = DeviceProfile(
         articleCapKB: 24, maxReplyTokens: 512, mlxCacheLimitMB: 512,
+        useQuantizedKVCache: false,
         label: "macOS"
     )
 }

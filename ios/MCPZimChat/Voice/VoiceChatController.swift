@@ -162,21 +162,47 @@ public final class VoiceChatController {
         // bus at a time") if one is already bound, and that kills the
         // whole app because Obj-C exceptions can't be caught from Swift.
         input.removeTap(onBus: 0)
+        // After TTS playback (especially Kokoro's MLX-based engine),
+        // AVAudioEngine has occasionally been observed in a state
+        // where `installTap` throws even with no tap present — for
+        // example if the hardware format changed mid-session. Stop
+        // the engine before re-arming to force a clean re-probe of
+        // the input node's current format. Idempotent when already
+        // stopped.
+        if engine.isRunning { engine.stop() }
         let nativeFormat = input.outputFormat(forBus: 0)
         // `installTap` rejects sample-rate==0 formats which happen on
         // first launch before the audio session is fully primed.
-        guard nativeFormat.sampleRate > 0 else {
+        guard nativeFormat.sampleRate > 0,
+              nativeFormat.channelCount > 0
+        else {
             throw SpeechSTTError.audioSessionFailed("Microphone format not ready.")
         }
         // Pull in 100 ms slices so the VAD can react quickly without
         // pegging the CPU on tiny 5 ms callbacks.
         let frameCount = AVAudioFrameCount(nativeFormat.sampleRate * 0.1)
-        input.installTap(onBus: 0, bufferSize: frameCount, format: nativeFormat) { [weak self] buf, _ in
+        // The NSException AVFAudio throws from `installTapOnBus:` has
+        // to be caught inside an Obj-C @try that's on the stack WHEN
+        // the throw happens — not wrapped around a Swift closure that
+        // calls installTap. If the throw unwinds through any Swift
+        // frame first, Swift's exception personality aborts before
+        // control can return to the @try. The dedicated Obj-C helper
+        // does the installTap call itself, so the @try is live at
+        // the moment of the throw and the exception is caught.
+        let tapBlock: AVAudioNodeTapBlock = { [weak self] buf, _ in
             guard let self else { return }
             let level = Self.rms(buf)
             Task { @MainActor [weak self] in
                 self?.handleAudio(buffer: buf, level: level)
             }
+        }
+        if let reason = ObjCExceptionWrapper.installTap(
+            on: input, bus: 0,
+            bufferSize: frameCount, format: nativeFormat,
+            block: tapBlock
+        ) {
+            throw SpeechSTTError.audioSessionFailed(
+                "AVAudioEngine installTap raised NSException: \(reason)")
         }
         engine.prepare()
         try engine.start()

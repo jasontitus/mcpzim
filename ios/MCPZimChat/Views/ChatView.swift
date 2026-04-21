@@ -34,6 +34,10 @@ struct ChatView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 }
+                // Drag-scrolling the chat also dismisses the keyboard
+                // so the debug pane + composer area become reachable
+                // without manually tapping "Done".
+                .scrollDismissesKeyboard(.immediately)
                 .onChange(of: session.messages.last?.text) { _, _ in
                     if let last = session.messages.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -200,6 +204,18 @@ private struct MessageRow: View {
     /// Article-fetching tool traces that should feed `HeroMediaView`.
     /// Any of these implies the article is load-bearing for the reply,
     /// so surfacing its hero image is useful context.
+    /// Compact user-facing duration label. "answered in 4.2 s",
+    /// "answered in 1 min 12 s". Italic small-caps hint lives in the
+    /// caller so this function is pure.
+    static func formatElapsed(_ dt: TimeInterval) -> String {
+        if dt < 60 { return String(format: "answered in %.1f s", dt) }
+        let total = Int(dt.rounded())
+        let m = total / 60, s = total % 60
+        return s == 0
+            ? "answered in \(m) min"
+            : "answered in \(m) min \(s) s"
+    }
+
     static func traceHasArticle(_ trace: ToolCallTrace) -> Bool {
         let names: Set<String> = [
             "get_article", "get_article_section", "list_article_sections",
@@ -237,6 +253,15 @@ private struct MessageRow: View {
                         copyButton
                             .padding(6)
                     }
+                }
+                if let elapsed = message.elapsed,
+                   !message.text.isEmpty,
+                   !session.isGenerating || message.id != session.messages.last?.id
+                {
+                    Text(Self.formatElapsed(elapsed))
+                        .font(.caption2.italic())
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 10)
                 }
                 if !message.toolCalls.isEmpty, sourcesVisible {
                     SourcesSection(traces: message.toolCalls)

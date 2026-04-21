@@ -7,6 +7,8 @@
 // (the `canImport(CoreKiwix)` branch) keep the scaffolding buildable until
 // you're ready to wire up the xcframework.
 
+#import "../Voice/ObjCExceptionWrapper.h"
+
 #if __has_include(<zim/archive.h>)
 
 #import <Foundation/Foundation.h>

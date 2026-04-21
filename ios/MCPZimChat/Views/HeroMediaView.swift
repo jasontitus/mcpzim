@@ -37,11 +37,19 @@ struct HeroMediaView: View {
                     .padding(8)
                 }
                 .padding(.top, 4)
+                #if os(iOS)
                 .fullScreenCover(isPresented: $presentFullscreen) {
                     FullscreenMedia(spec: spec, session: session) {
                         presentFullscreen = false
                     }
                 }
+                #else
+                .sheet(isPresented: $presentFullscreen) {
+                    FullscreenMedia(spec: spec, session: session) {
+                        presentFullscreen = false
+                    }
+                }
+                #endif
         }
     }
 

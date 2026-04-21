@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.claude/
 .venv/
 venv/
 .env
@@ -18,6 +19,12 @@ venv/
 swift/.build/
 swift/.swiftpm/
 ios/.swiftpm/
+ios/build/
+ios/LocalPackages/*/.build/
+ios/LocalPackages/*/.swiftpm/
+tools/*/.build/
+tools/*/.build-xcode/
+tools/*/.swiftpm/
 DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/

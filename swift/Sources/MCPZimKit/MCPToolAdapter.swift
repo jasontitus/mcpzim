@@ -150,6 +150,19 @@ public actor MCPToolAdapter {
                 inputSchemaJSON: Self.articleSectionSchema
             ),
             MCPTool(
+                name: "get_article_by_title",
+                description:
+                    "Fetch a Wikipedia article by its title (or by the wiki "
+                    + "tag returned in `near_places` results, e.g. "
+                    + "\"en:HP Garage\"). Finds the article via the ZIM's "
+                    + "title index (handles redirects, approximate matches) "
+                    + "and returns the requested `section` (default \"lead\"). "
+                    + "Use this to summarize places returned by "
+                    + "`near_places(has_wiki=true)` — pass each hit's "
+                    + "`wikipedia` field verbatim as `title`.",
+                inputSchemaJSON: Self.articleByTitleSchema
+            ),
+            MCPTool(
                 name: "get_main_page",
                 description: "Fetch the main/home page of one or every loaded ZIM.",
                 inputSchemaJSON: Self.mainPageSchema
@@ -194,34 +207,39 @@ public actor MCPToolAdapter {
                         + "renders the streetzim viewer at those coordinates.",
                     inputSchemaJSON: Self.showMapSchema
                 ),
+                // Coord-based routing + nearby. The host injects the
+                // user's current lat/lon into the system preamble, so
+                // the model has concrete numbers to pass here — use
+                // these for "directions to X" / "nearest Y" / "what's
+                // around here" style queries.
+                MCPTool(
+                    name: "plan_driving_route",
+                    description:
+                        "Compute a driving route between two lat/lon points using the loaded "
+                        + "streetzim routing graph. Use this (with origin_lat/origin_lon set to "
+                        + "the user's current location from the system preamble) whenever the "
+                        + "user asks for directions without naming a starting point. Returns "
+                        + "distance, duration, a polyline, and turn-by-turn instructions.",
+                    inputSchemaJSON: Self.routeSchema
+                ),
+                MCPTool(
+                    name: "near_places",
+                    description:
+                        Self.nearPlacesProtocolBlurb
+                        + " Takes numeric lat/lon — use the user's current coordinates from "
+                        + "the system preamble for \"what's around me\" / \"nearest ___\" "
+                        + "queries. For a NAMED place use `near_named_place` instead.",
+                    inputSchemaJSON: Self.nearPlacesSchema(vocabulary: categoryVocabulary)
+                ),
             ])
-            // Raw-coordinate tools: powerful for programmatic callers but
-            // a footgun for LLMs (model passes text where coords go, or
-            // defaults to 0/0). Hidden on the conversational surface.
             if surface == .full {
-                tools.append(contentsOf: [
-                    MCPTool(
-                        name: "plan_driving_route",
-                        description:
-                            "Compute a driving route between two lat/lon points using streetzim's "
-                            + "routing graph. Returns distance, duration, a polyline, and a list of "
-                            + "named road segments ready for turn-by-turn display.",
-                        inputSchemaJSON: Self.routeSchema
-                    ),
+                tools.append(
                     MCPTool(
                         name: "geocode",
                         description: "Resolve a place or address string to coordinates.",
                         inputSchemaJSON: Self.geocodeSchema
-                    ),
-                    MCPTool(
-                        name: "near_places",
-                        description:
-                            Self.nearPlacesProtocolBlurb
-                            + " Takes numeric lat/lon; for a named place use "
-                            + "`near_named_place` instead.",
-                        inputSchemaJSON: Self.nearPlacesSchema(vocabulary: categoryVocabulary)
-                    ),
-                ])
+                    )
+                )
             }
         }
         return MCPToolRegistry(tools: tools)
@@ -297,6 +315,22 @@ public actor MCPToolAdapter {
             return [
                 "zim": hit.zim,
                 "path": path,
+                "title": hit.title,
+                "section": hit.section.title.isEmpty ? "lead" : hit.section.title,
+                "level": hit.section.level,
+                "bytes": hit.section.bytes,
+                "text": hit.section.text,
+            ]
+        case "get_article_by_title":
+            let title = (args["title"] as? String) ?? ""
+            let sectionArg = args["section"] as? String
+            let zim = args["zim"] as? String
+            let hit = try await service.articleByTitle(
+                title: title, zim: zim, section: sectionArg
+            )
+            return [
+                "zim": hit.zim,
+                "path": hit.path,
                 "title": hit.title,
                 "section": hit.section.title.isEmpty ? "lead" : hit.section.title,
                 "level": hit.section.level,
@@ -399,7 +433,8 @@ public actor MCPToolAdapter {
             let result = try await service.nearPlaces(
                 lat: lat, lon: lon, radiusKm: radius,
                 limit: limit, kinds: args["kinds"] as? [String],
-                zim: args["zim"] as? String
+                zim: args["zim"] as? String,
+                hasWiki: (args["has_wiki"] as? Bool) ?? false
             )
             return Self.encodeNearPlaces(
                 origin: ["lat": lat, "lon": lon],
@@ -605,6 +640,14 @@ public actor MCPToolAdapter {
     }}
     """#.data(using: .utf8)!
 
+    private static let articleByTitleSchema: Data = #"""
+    {"type":"object","required":["title"],"properties":{
+        "title":{"type":"string","description":"Article title. Accepts either a bare title (\"HP Garage\") or the language-prefixed form returned by `near_places` in the `wikipedia` field (\"en:HP Garage\")."},
+        "section":{"type":"string","default":"lead","description":"Section to return. Default 'lead' gives a one-paragraph summary suitable for rattling off several POIs in a row."},
+        "zim":{"type":"string","description":"Optional: pin to a specific ZIM filename (otherwise we search every loaded Wikipedia ZIM)."}
+    }}
+    """#.data(using: .utf8)!
+
     private static let zimInfoSchema: Data = #"""
     {"type":"object","properties":{
         "zim":{"type":"string","description":"Optional: restrict to this streetzim filename. Omit for all."}
@@ -680,6 +723,8 @@ public actor MCPToolAdapter {
                 ("kinds", kindsSchema(vocabulary: vocabulary)),
                 ("zim", ["type": "string",
                          "description": "Specific streetzim filename, else try them all."]),
+                ("has_wiki", ["type": "boolean", "default": false,
+                              "description": "When true, only return places that have an associated Wikipedia / Wikidata article. Use for \"what's interesting around here\" and similar queries, or to filter hundreds of results (\"bars in Seattle\") down to notable ones. Each result will include `wikipedia` (e.g. \"en:HP Garage\") and/or `wikidata` (e.g. \"Q2720242\") fields that a follow-up article fetch can use."]),
             ]
         )
     }

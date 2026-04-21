@@ -60,6 +60,7 @@
 		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		A3F8DDA8CE492A709D73CDBC /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
 		A54A973CBA0A78BA50B9F26F /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
+		ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */ = {isa = PBXBuildFile; fileRef = 582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */; };
 		AF2A0E2D772718AFC1B1AF20 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
 		B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		B02A0D7A19EC22CA4345A940 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
@@ -84,6 +85,7 @@
 		EA80F310F58B8C7072C29E67 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
 		EB794946A933269998AC09F8 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; };
 		F285CF4AF2E92E604BBD35A7 /* RouteWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */; };
+		FD7F2EF8D935C4D4B01A664B /* ObjCExceptionWrapper.m in Sources */ = {isa = PBXBuildFile; fileRef = 582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -137,6 +139,7 @@
 		4C1E2487F517981835A37F64 /* swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = swift; path = ../swift; sourceTree = SOURCE_ROOT; };
 		4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimURLSchemeHandler.swift; sourceTree = "<group>"; };
 		5814FC5C00DC7003BA980822 /* ConversationalEvalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationalEvalTests.swift; sourceTree = "<group>"; };
+		582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjCExceptionWrapper.m; sourceTree = "<group>"; };
 		5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatController.swift; sourceTree = "<group>"; };
 		5F116399360AD2DE54223FA7 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
@@ -150,6 +153,7 @@
 		79130F0C1B723177E34B9AD0 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CoreKiwix.xcframework; path = MCPZimChat/Frameworks/CoreKiwix.xcframework; sourceTree = "<group>"; };
 		8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MCPZimChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
 		94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsProvider.swift; sourceTree = "<group>"; };
 		9A3987865D32352E3132C5CD /* MCPZimChatMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MCPZimChatMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -158,6 +162,7 @@
 		A13C2EE422E1BB55369509CE /* LibzimReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibzimReader.swift; sourceTree = "<group>"; };
 		A40AEB06E04009CEEFC835C1 /* MCPZimChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MCPZimChat.entitlements; sourceTree = "<group>"; };
 		B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatView.swift; sourceTree = "<group>"; };
+		BEEC7AF01BE33E2F9FB14D46 /* Swift-gemma4-core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Swift-gemma4-core"; path = "LocalPackages/Swift-gemma4-core"; sourceTree = SOURCE_ROOT; };
 		C4495544D6591F69F7CC0A24 /* LibzimBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LibzimBridge.h; sourceTree = "<group>"; };
 		C51F39432F92BDC2873FF548 /* ZimfoContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoContext.swift; sourceTree = "<group>"; };
 		C7B765A66EE5E37E25348E19 /* MCPZimChat-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "MCPZimChat-iOS.entitlements"; sourceTree = "<group>"; };
@@ -226,6 +231,8 @@
 			children = (
 				0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */,
 				E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */,
+				8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */,
+				582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */,
 				4B325A1633250C44B267166D /* SpeechRecognizerService.swift */,
 				79130F0C1B723177E34B9AD0 /* TTSService.swift */,
 				5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */,
@@ -249,6 +256,7 @@
 			children = (
 				106C21CFBBAE9B3D4B8D84C3 /* kokoro-ios */,
 				4C1E2487F517981835A37F64 /* swift */,
+				BEEC7AF01BE33E2F9FB14D46 /* Swift-gemma4-core */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -460,8 +468,8 @@
 			mainGroup = F6BE7D0DD7C1B4101D948CF5;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				74BA3B148697D2D38A7E5D4B /* XCRemoteSwiftPackageReference "Swift-gemma4-core" */,
 				930697A42CF9F14987AF1B2A /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
+				FCB151B049C4C953F806CE67 /* XCLocalSwiftPackageReference "LocalPackages/Swift-gemma4-core" */,
 				4C0387ABD225EF7CB9A0E626 /* XCLocalSwiftPackageReference "LocalPackages/kokoro-ios" */,
 				9536EEE9935C6BE29FF33EB1 /* XCLocalSwiftPackageReference "../swift" */,
 			);
@@ -530,6 +538,7 @@
 				650624C566ABA25FEA310B78 /* MockProvider.swift in Sources */,
 				857AB4463B26C17EB39CF5F9 /* ModelPickerView.swift in Sources */,
 				5ECED997884E2EF46FF2A099 /* ModelProvider.swift in Sources */,
+				ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */,
 				6EE940AF26ADE1C9F6E1E48C /* RootView.swift in Sources */,
 				1AF01DC71F41BFA84E20663D /* RouteWebView.swift in Sources */,
 				E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */,
@@ -567,6 +576,7 @@
 				C7166CA09E3B480F491B77C4 /* MockProvider.swift in Sources */,
 				C773F4CD7498B53B2A0CB3E7 /* ModelPickerView.swift in Sources */,
 				A332602332894F8A97B72609 /* ModelProvider.swift in Sources */,
+				FD7F2EF8D935C4D4B01A664B /* ObjCExceptionWrapper.m in Sources */,
 				60C3938C951EE44EACDD57B9 /* RootView.swift in Sources */,
 				F285CF4AF2E92E604BBD35A7 /* RouteWebView.swift in Sources */,
 				07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */,
@@ -919,17 +929,13 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../swift;
 		};
+		FCB151B049C4C953F806CE67 /* XCLocalSwiftPackageReference "LocalPackages/Swift-gemma4-core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "LocalPackages/Swift-gemma4-core";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		74BA3B148697D2D38A7E5D4B /* XCRemoteSwiftPackageReference "Swift-gemma4-core" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/yejingyang8963-byte/Swift-gemma4-core.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.0;
-			};
-		};
 		930697A42CF9F14987AF1B2A /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mlalma/MLXUtilsLibrary.git";
@@ -943,7 +949,6 @@
 /* Begin XCSwiftPackageProductDependency section */
 		0F89BDEE7DA0DA5A18370267 /* Gemma4SwiftCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 74BA3B148697D2D38A7E5D4B /* XCRemoteSwiftPackageReference "Swift-gemma4-core" */;
 			productName = Gemma4SwiftCore;
 		};
 		1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */ = {
@@ -956,7 +961,6 @@
 		};
 		241367EC3C0C9FE55F30DD7F /* Gemma4SwiftCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 74BA3B148697D2D38A7E5D4B /* XCRemoteSwiftPackageReference "Swift-gemma4-core" */;
 			productName = Gemma4SwiftCore;
 		};
 		3E2FE9FB9928746EDEDB1F23 /* MLXUtilsLibrary */ = {
