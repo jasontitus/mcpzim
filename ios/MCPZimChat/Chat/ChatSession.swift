@@ -2689,7 +2689,7 @@ public final class ChatSession {
     /// Drop context-heavy fields from a tool result before feeding it back
     /// into the next model turn. The original (untrimmed) payload is still
     /// what lands in the UI's tool trace — we only strip for the LLM.
-    private static func trimForModel(toolName: String, result: [String: Any], articleCapKB: Int) -> [String: Any] {
+    static func trimForModel(toolName: String, result: [String: Any], articleCapKB: Int) -> [String: Any] {
         switch toolName {
         case "plan_driving_route", "route_from_places":
             var out = result

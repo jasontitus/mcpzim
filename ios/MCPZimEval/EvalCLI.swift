@@ -35,6 +35,11 @@ struct EvalCLI {
             await ProbeCompareCLI.runArticleProbe(args: Array(args))
             return
         }
+        if args.first == "--probe-e2e" {
+            _ = args.removeFirst()
+            await ProbeE2ECLI.run(args: Array(args))
+            return
+        }
         while let a = args.first {
             args = args.dropFirst()
             switch a {
