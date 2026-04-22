@@ -12,6 +12,7 @@
 		0587388607CB91081A166378 /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = AAA75F39EABB865E1D902188 /* MLXHuggingFace */; };
 		07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		08496228AA371E7E9190F493 /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
+		0AA041615E3E93AAE0FDEF38 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94333E6F9FCA8D53D381D08A /* Assets.xcassets */; };
 		0CFAA697E603F3DA76F850D1 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
 		0D3DFA7E4D37B077303CA421 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
@@ -25,6 +26,7 @@
 		1C3FBC6101275CFC8D09B96B /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		21EDA34B7573C85B7DB45EE2 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 3E2FE9FB9928746EDEDB1F23 /* MLXUtilsLibrary */; };
 		22D8B4100D754239A285761E /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79130F0C1B723177E34B9AD0 /* TTSService.swift */; };
+		236DADD09591197984D28DFB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94333E6F9FCA8D53D381D08A /* Assets.xcassets */; };
 		246D29E8329D20D3F194CCB8 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; };
 		2569A6718DB05620462B8C37 /* LogArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A07E5C8A32C8BF3B549551 /* LogArchive.swift */; };
 		286FE7F9C1D759B018281BA7 /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
@@ -46,6 +48,7 @@
 		548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		5AA8354ADF3A57116E84B014 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
+		5B5BC65586F1CB5B8B00E9B3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94333E6F9FCA8D53D381D08A /* Assets.xcassets */; };
 		5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */; };
 		5EA70DF0913B75281CCC3765 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 3AF1A35A8E7749DF485A0474 /* MLXLLM */; };
 		5ECED997884E2EF46FF2A099 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
@@ -78,8 +81,10 @@
 		9944BC51FF63E1E8ED7317B1 /* MCPZimKit in Frameworks */ = {isa = PBXBuildFile; productRef = 23FEAB22262304C043EBF45F /* MCPZimKit */; };
 		99782EFCA850E4FE60B60189 /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
 		9A29E69CBDDD6C5EF8182448 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = B5171F3BEEDD189FEC289536 /* Tokenizers */; };
+		9B23AC448DC9142E45771DAF /* PlacesWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */; };
 		9D7D536B527294D0608A48FA /* PastLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134630F1E37CE3F3032F5280 /* PastLogsView.swift */; };
 		9E7F7C0A5C3878FEB4CBAE6A /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = C03B799F981A3217BB089044 /* MLXHuggingFace */; };
+		9FD300C5CDA83AEC837EB321 /* PlacesWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */; };
 		A1A1F46F888E8A38EA6941AE /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A332602332894F8A97B72609 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
@@ -200,9 +205,11 @@
 		75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ZimfoContext+Adapter.swift"; sourceTree = "<group>"; };
 		79130F0C1B723177E34B9AD0 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CoreKiwix.xcframework; path = MCPZimChat/Frameworks/CoreKiwix.xcframework; sourceTree = "<group>"; };
+		7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlacesWebView.swift; sourceTree = "<group>"; };
 		8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MCPZimChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
 		937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalHarness.swift; sourceTree = "<group>"; };
+		94333E6F9FCA8D53D381D08A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsProvider.swift; sourceTree = "<group>"; };
 		9A3987865D32352E3132C5CD /* MCPZimChatMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MCPZimChatMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -350,6 +357,7 @@
 				94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */,
 				5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */,
 				134630F1E37CE3F3032F5280 /* PastLogsView.swift */,
+				7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */,
 				68BDA1E10556B87C57B41BFB /* RootView.swift */,
 				6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */,
 				B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */,
@@ -423,6 +431,7 @@
 		DE593B00E778728BC41106E9 /* MCPZimChat */ = {
 			isa = PBXGroup;
 			children = (
+				94333E6F9FCA8D53D381D08A /* Assets.xcassets */,
 				9FF024DDEF1F8B898451BF3B /* Info-Mac.plist */,
 				71F26EEF012F57C0CF856CC2 /* Info.plist */,
 				C7B765A66EE5E37E25348E19 /* MCPZimChat-iOS.entitlements */,
@@ -616,6 +625,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5B5BC65586F1CB5B8B00E9B3 /* Assets.xcassets in Resources */,
 				8A59F6836E4AE5845D7C81F4 /* CoreKiwix.xcframework in Resources */,
 				053E01092FFD0DCD51F94D8A /* Info-Mac.plist in Resources */,
 			);
@@ -625,6 +635,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0AA041615E3E93AAE0FDEF38 /* Assets.xcassets in Resources */,
 				99782EFCA850E4FE60B60189 /* CoreKiwix.xcframework in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -633,6 +644,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				236DADD09591197984D28DFB /* Assets.xcassets in Resources */,
 				C8BF56AA36C795A79844B1DA /* CoreKiwix.xcframework in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -676,6 +688,7 @@
 				5ECED997884E2EF46FF2A099 /* ModelProvider.swift in Sources */,
 				ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */,
 				9D7D536B527294D0608A48FA /* PastLogsView.swift in Sources */,
+				9FD300C5CDA83AEC837EB321 /* PlacesWebView.swift in Sources */,
 				6EE940AF26ADE1C9F6E1E48C /* RootView.swift in Sources */,
 				1AF01DC71F41BFA84E20663D /* RouteWebView.swift in Sources */,
 				E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */,
@@ -743,6 +756,7 @@
 				A332602332894F8A97B72609 /* ModelProvider.swift in Sources */,
 				FD7F2EF8D935C4D4B01A664B /* ObjCExceptionWrapper.m in Sources */,
 				1BD46DFA6CBFBB7FFE84FC8A /* PastLogsView.swift in Sources */,
+				9B23AC448DC9142E45771DAF /* PlacesWebView.swift in Sources */,
 				60C3938C951EE44EACDD57B9 /* RootView.swift in Sources */,
 				F285CF4AF2E92E604BBD35A7 /* RouteWebView.swift in Sources */,
 				07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */,

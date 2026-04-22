@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg-bubble-pin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F2A27A"></stop><stop offset="1" stop-color="#C8593A"></stop>
+    </linearGradient>
+    <radialGradient id="sheen-bubble-pin" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"></stop>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="clip-bubble-pin">
+      <rect x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip-bubble-pin)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg-bubble-pin)"></rect>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen-bubble-pin)"></rect>
+    <g transform="translate(143.5 143.5) scale(3.685)">
+      
+      <path d="M40 60 C40 40 56 28 80 28 H130 C154 28 170 44 170 64 V100 C170 120 154 136 130 136 H106 L86 158 V136 H80 C56 136 40 120 40 100 Z" fill="#F7F1E8"></path>
+      <circle cx="105" cy="80" r="18" fill="#C8593A"></circle>
+      <circle cx="105" cy="80" r="7" fill="#F7F1E8"></circle>
+      <circle cx="70" cy="80" r="6" fill="#F0C76A"></circle>
+      <circle cx="140" cy="80" r="6" fill="#F0C76A"></circle>
+    </g>
+  </g>
+</svg>

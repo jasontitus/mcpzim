@@ -1650,6 +1650,29 @@ public final class ChatSession {
         // a genuinely stuck loop terminates.
         let maxIters = 6
         for iter in 0..<maxIters {
+            // Preemptive memory-pressure guard. MLX's Metal backend
+            // doesn't surface command-buffer errors as Swift errors —
+            // when the GPU runs out of memory mid-eval the underlying
+            // C++ throws and the process terminates before our catch
+            // below can fire. Short-circuit BEFORE we kick off another
+            // prefill/sample if available memory has dropped below the
+            // safe-headroom threshold: surface a Swift error the user
+            // can read instead of an abort trap.
+            let availableMB = Double(os_proc_available_memory()) / (1024 * 1024)
+            let minHeadroomMB: Double = 700   // rough KV-cache + Metal scratch floor for a 4B 4-bit Qwen turn
+            if availableMB > 0, availableMB < minHeadroomMB {
+                debug(String(format:
+                    "runGenerationLoop: abort — only %.0f MB available, need ≥%.0f MB headroom before next generate() (protects against MLX abort_trap)",
+                    availableMB, minHeadroomMB
+                ), category: "Chat")
+                lastError = String(format:
+                    "Out of memory — only %.0f MB free, need %.0f MB to generate safely. "
+                    + "Try resetting the conversation or closing any open fullscreen maps.",
+                    availableMB, minHeadroomMB
+                )
+                return
+            }
+
             // Prompt shape per provider:
             //   • Gemma 4 → native Gemma system turn + tool DSL.
             //   • Everyone else → generic preamble + formatTranscript.

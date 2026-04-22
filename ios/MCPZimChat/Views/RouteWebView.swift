@@ -34,12 +34,26 @@ struct RouteWebView: View {
     let trace: ToolCallTrace
 
     @Environment(ChatSession.self) private var session
-    @State private var presentFullscreen: Bool = false
     @State private var presentDirections: Bool = false
-    /// Set when the user taps Drive/Walk/Bike. Passed into the fullscreen
-    /// map so the embedded streetzim viewer can jump straight into the
-    /// matching drive-mode HUD via `window.streetzimRouting.clickMode`.
-    @State private var pendingDriveMode: String? = nil
+    /// Presenting the fullscreen map + its optional drive-mode kickoff
+    /// via a single `Identifiable` item. Using
+    /// `.fullScreenCover(item:)` guarantees atomic state: the cover
+    /// only presents when the item transitions nil→non-nil, and the
+    /// same item instance carries the mode, so there's no way
+    /// SwiftUI could build the cover before `pendingDriveMode` was
+    /// written (which happens with separate `Bool` + `String?`
+    /// `@State` vars because the two writes aren't guaranteed to be
+    /// observed atomically by the `.fullScreenCover(isPresented:)`
+    /// modifier).
+    struct FullscreenIntent: Identifiable {
+        /// nil → plain expand (no drive mode), non-nil → enter drive /
+        /// walk / bike mode via the streetzim viewer hook.
+        let mode: String?
+        /// Stable id per intent so SwiftUI doesn't reuse the same cover
+        /// across mode changes. (Any fresh intent = fresh webview.)
+        let id = UUID()
+    }
+    @State private var fullscreenIntent: FullscreenIntent? = nil
 
     /// Use the session-level location snapshot directly — ChatSession
     /// already fetches it at launch and on each send, so we get a
@@ -104,8 +118,7 @@ struct RouteWebView: View {
                         // Placed bottom-left so it doesn't collide with
                         // MapLibre's top-right zoom (+/-) controls.
                         Button {
-                            pendingDriveMode = nil
-                            presentFullscreen = true
+                            fullscreenIntent = FullscreenIntent(mode: nil)
                         } label: {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.system(size: 14, weight: .semibold))
@@ -125,25 +138,25 @@ struct RouteWebView: View {
                     }
                 }
                 #if os(iOS)
-                .fullScreenCover(isPresented: $presentFullscreen) {
+                .fullScreenCover(item: $fullscreenIntent) { intent in
                     FullscreenMap(
                         spec: spec,
                         session: session,
-                        initialDriveMode: pendingDriveMode,
+                        initialDriveMode: intent.mode,
                         endpoints: routeEndpoints
                     ) {
-                        presentFullscreen = false
+                        fullscreenIntent = nil
                     }
                 }
                 #else
-                .sheet(isPresented: $presentFullscreen) {
+                .sheet(item: $fullscreenIntent) { intent in
                     FullscreenMap(
                         spec: spec,
                         session: session,
-                        initialDriveMode: pendingDriveMode,
+                        initialDriveMode: intent.mode,
                         endpoints: routeEndpoints
                     ) {
-                        presentFullscreen = false
+                        fullscreenIntent = nil
                     }
                 }
                 #endif
@@ -188,8 +201,7 @@ struct RouteWebView: View {
     @ViewBuilder
     private func modePillButton(title: String, mode: String, systemImage: String) -> some View {
         Button {
-            pendingDriveMode = mode
-            presentFullscreen = true
+            fullscreenIntent = FullscreenIntent(mode: mode)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
@@ -377,7 +389,13 @@ private struct FullscreenMap: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        // Bottom-leading X — the streetzim viewer's drive-mode HUD sits
+        // top-10px across the full width with `position: absolute`, so
+        // a top-leading iOS close button would sit right on top of the
+        // turn arrow + distance, hiding the HUD entirely (and making
+        // drive mode look like "just the route map"). Bottom-left stays
+        // clear of both the HUD and MapLibre's zoom controls (top-right).
+        ZStack(alignment: .bottomLeading) {
             WebViewContainer(
                 spec: spec,
                 session: session,
@@ -395,8 +413,8 @@ private struct FullscreenMap: View {
                     .background(.thinMaterial, in: Circle())
             }
             .accessibilityLabel("Close map")
-            .padding(.top, 12)
-            .padding(.leading, 12)
+            .padding(.bottom, 24)
+            .padding(.leading, 16)
         }
     }
 }
@@ -762,6 +780,16 @@ private func loadSpec(
     // (resources/viewer/index.html) to drive the viewer's own drive-mode
     // HUD. No-op if the hook isn't present (older ZIM without the patch)
     // or the graph hasn't finished loading within the timeout.
+    // Always log what loadSpec received so we can tell from iOS syslog
+    // whether a missing drive-mode kickoff is because initialDriveMode
+    // arrived nil, endpoints arrived nil, or something further inside
+    // the JS bailed. Logs via console.info so the WebView bridge picks
+    // it up alongside the other drive-mode diagnostics.
+    let modeDesc = initialDriveMode ?? "(nil)"
+    let endpointsDesc: String = endpoints == nil ? "(nil)" : "set"
+    let loadSpecLogJS = """
+          console.info("mcpzim loadSpec: initialDriveMode=\(modeDesc) endpoints=\(endpointsDesc)");
+    """
     let driveModeJS: String
     if let mode = initialDriveMode, let ep = endpoints {
         driveModeJS = """
@@ -769,6 +797,16 @@ private func loadSpec(
                 var mode = "\(mode)";
                 var o = [\(ep.origin.lat), \(ep.origin.lon)];
                 var d = [\(ep.dest.lat), \(ep.dest.lon)];
+                // One-shot guard. SwiftUI's `updateUIView` re-runs the
+                // whole injection on every session-state tick (location
+                // updates, streaming chat etc.), and the viewer's mode
+                // button *toggles* — re-firing would flip the drive
+                // HUD on/off every few seconds. Mark the window so
+                // only the first kickoff counts.
+                if (window.__mcpzimDriveKicked === mode) {
+                  return;
+                }
+                window.__mcpzimDriveKicked = mode;
                 console.info("mcpzim drive-mode: kickoff mode=" + mode
                   + " origin=" + o.join(",") + " dest=" + d.join(","));
                 // Fail-fast if the ZIM's viewer doesn't have the
@@ -782,7 +820,7 @@ private func loadSpec(
                 }
                 function hookCheck(tries) {
                   tries = tries || 0;
-                  if (hookPresent()) return proceed();
+                  if (hookPresent()) return pickPath();
                   if (tries > 20) {  // 2 s is plenty for script setup
                     console.warn("mcpzim drive-mode: window.streetzimRouting "
                       + "missing after 2 s — this ZIM was built before the "
@@ -791,6 +829,26 @@ private func loadSpec(
                     return;
                   }
                   setTimeout(function() { hookCheck(tries + 1); }, 100);
+                }
+                function pickPath() {
+                  // Prefer the atomic hook when the ZIM has it —
+                  // everything (loadGraph, setOrigin/setDest, await
+                  // route, driveMode.enter + UI sync) happens inside
+                  // the viewer's scope, no cross-bridge polling.
+                  if (typeof window.streetzimRouting.enterDriveMode === "function") {
+                    console.info("mcpzim drive-mode: using atomic enterDriveMode hook");
+                    window.streetzimRouting.enterDriveMode(mode, o[0], o[1], d[0], d[1])
+                      .then(function(r) {
+                        console.info("mcpzim drive-mode: entered via atomic hook, alreadyActive=" + r.alreadyActive);
+                      })
+                      .catch(function(e) {
+                        console.error("mcpzim drive-mode: atomic hook rejected:", e && e.message ? e.message : String(e));
+                      });
+                    return;
+                  }
+                  // Fallback for ZIMs built before the atomic hook —
+                  // orchestrate setOrigin/setDest/click ourselves.
+                  proceed();
                 }
                 function waitFor(test, cb, label, tries) {
                   tries = tries || 0;
@@ -849,10 +907,31 @@ private func loadSpec(
                         function() {
                           try {
                             window.streetzimRouting.clickMode(mode);
-                            console.info("mcpzim drive-mode entered: " + mode);
+                            console.info("mcpzim drive-mode: clickMode fired for " + mode);
                           } catch (e) {
                             console.error("mcpzim drive-mode: clickMode threw", e);
+                            return;
                           }
+                          // Verify drive mode actually activated — the
+                          // viewer's click handler bails silently if the
+                          // mode is already active (toggle) or if
+                          // lastRoute just became null. Log the HUD's
+                          // visibility 250 ms after the click so we can
+                          // tell the difference in the iOS syslog.
+                          setTimeout(function() {
+                            var hud = document.getElementById('drive-hud');
+                            var visible = !!(hud && hud.classList.contains('visible'));
+                            console.info("mcpzim drive-mode: 250ms post-click, hudVisible=" + visible);
+                            if (!visible) {
+                              console.warn("mcpzim drive-mode: HUD not visible — retrying click once");
+                              try { window.streetzimRouting.clickMode(mode); } catch (e) {}
+                              setTimeout(function() {
+                                var h2 = document.getElementById('drive-hud');
+                                var v2 = !!(h2 && h2.classList.contains('visible'));
+                                console.info("mcpzim drive-mode: post-retry hudVisible=" + v2);
+                              }, 200);
+                            }
+                          }, 250);
                         },
                         "hasRoute"
                       );
@@ -868,6 +947,7 @@ private func loadSpec(
     }
     let injectJS = """
     (function() {
+      \(loadSpecLogJS)
       var coords = \(spec.geoJSONCoords);
       function isMapReady() {
         var m = window.__mcpzimMap;

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg-stack" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F6D184"></stop><stop offset="1" stop-color="#D98646"></stop>
+    </linearGradient>
+    <radialGradient id="sheen-stack" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"></stop>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="clip-stack">
+      <rect x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip-stack)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg-stack)"></rect>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen-stack)"></rect>
+    <g transform="translate(143.5 143.5) scale(3.685)">
+      
+      <g transform="translate(100 106)">
+        <rect x="-60" y="-8" width="120" height="64" rx="14" fill="#9C4628" transform="rotate(-8)"></rect>
+        <rect x="-60" y="-28" width="120" height="64" rx="14" fill="#E0815E" transform="rotate(-2)"></rect>
+        <rect x="-60" y="-48" width="120" height="64" rx="14" fill="#F7F1E8" transform="rotate(4)"></rect>
+      </g>
+      <circle cx="135" cy="70" r="11" fill="#C8593A"></circle>
+    </g>
+  </g>
+</svg>

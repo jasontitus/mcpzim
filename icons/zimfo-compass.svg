@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg-compass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6A668"></stop><stop offset="1" stop-color="#A8482A"></stop>
+    </linearGradient>
+    <radialGradient id="sheen-compass" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"></stop>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="clip-compass">
+      <rect x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip-compass)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg-compass)"></rect>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen-compass)"></rect>
+    <g transform="translate(143.5 143.5) scale(3.685)">
+      
+      <circle cx="100" cy="96" r="64" fill="#F7F1E8"></circle>
+      <path d="M70 152 Q66 172 48 178 Q76 180 96 160 Z" fill="#F7F1E8"></path>
+      <path d="M100 46 L114 96 L100 146 L86 96 Z" fill="#F0C76A"></path>
+      <path d="M100 46 L114 96 L100 96 Z" fill="#9C4628"></path>
+      <path d="M100 146 L86 96 L100 96 Z" fill="#9C4628"></path>
+      <circle cx="100" cy="96" r="7" fill="#2A1E14"></circle>
+    </g>
+  </g>
+</svg>

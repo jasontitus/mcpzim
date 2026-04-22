@@ -189,15 +189,44 @@ GEMMA_SMOKE_MODE=prompt-experiment ./GemmaSmoke "x"
 
 ## Streetzim viewer hook (window.streetzimRouting)
 
-`RouteWebView.swift` injects JS that calls `window.streetzimRouting.setOrigin / setDest / clickMode` to jump the embedded streetzim viewer straight into Drive/Walk/Bike mode when the user taps a mode pill in a routing chat bubble. The hook is exposed at the end of `initRouting()` in `../streetzim/resources/viewer/index.html`. All the backing state (`lastRoute`, `modeBtns`, `setOriginFromLatLon`) lives inside that function, so the window object is the only seam.
+`RouteWebView.swift` and `PlacesWebView.swift` inject JS that calls into `window.streetzimRouting` on the embedded streetzim viewer to drive routing, drive-mode, multi-place pins, coverage rings, and camera/chrome. The hook is exposed at the end of `initRouting()` in `../streetzim/resources/viewer/index.html`. All the backing state (`lastRoute`, `modeBtns`, `setOriginFromLatLon`, `graph`) lives inside that function, so the window object is the only seam.
 
-Updating the hook requires rebuilding the streetzim ZIM so the patched `index.html` ships inside the ZIM blob the app reads. From `../streetzim/`:
+Current hook surface (`version: 3`):
+
+- `setOrigin(lat, lon, label)` / `setDest(lat, lon, label)` — geocode a coord to the nearest graph node, drop a marker, trigger route compute if both ends are set.
+- `loadGraph()` — kick off the lazy graph fetch (the viewer ordinarily does this on first toggle click).
+- `clickMode(mode)` — low-level, fires the routing-panel mode button click handler (toggles).
+- `enterDriveMode(mode, origLat, origLon, destLat, destLon)` — atomic: loadGraph → set origin+dest → await route → `driveMode.enter()` directly, sync go-row chrome. Returns a Promise. **Preferred path for host containers.**
+- `exitDriveMode()` / `switchDriveMode(newMode)` — explicit control.
+- `clearRoute()` — removes markers, line, go-row.
+- `showPlaces(places, opts)` / `clearPlaces()` — multi-pin display with popups + optional `fitBounds`. Each place: `{lat, lon, label, description?, color?}`.
+- `showRadiusRing({lat, lon, radiusKm, color?})` / `clearRadiusRing()` — dashed coverage circle for "near me" queries.
+- `flyTo({lat, lon, zoom, pitch, bearing, duration})` — camera control.
+- `setChromeVisibility({search, controls, panel})` — hide/show the viewer's own UI when the host overlays its own.
+- Getters: `graphReady`, `hasRoute`, `driveActive`, `lastEnteredMode`.
+
+Updating the hook requires rebuilding the streetzim ZIM so the patched `index.html` ships inside the ZIM blob the app reads:
 
 ```sh
-./build_world_and_us.sh          # or a narrower regional build script
+cd ../streetzim && ./build_world_and_us.sh          # or a narrower regional build script
 ```
 
-Until the rebuilt ZIM replaces the one on the device, `clickMode` calls will time out silently (the JS polls `window.streetzimRouting.graphReady` for 30 s then logs `mcpzim drive-mode: timeout waiting for graphReady` via the WebView console bridge and exits — the plain map still renders).
+Until the rebuilt ZIM replaces the one on the device, calls to missing-method branches time out silently (the iOS JS polls for 30 s and logs the timeout via the WebView console bridge — the plain map still renders). The iOS side always feature-detects (`typeof window.streetzimRouting.enterDriveMode === "function"`) and falls back to the older step-by-step path when a capability is missing, so the app never hard-fails on an older ZIM.
+
+The drive PWA at https://streetzim.web.app ships the same viewer via the predeploy `scripts/sync-drive-viewer.sh` — `firebase deploy --only hosting` from `../streetzim/` refreshes both without rebuilding ZIMs.
+
+## iOS chat-bubble map rendering (RouteWebView + PlacesWebView)
+
+Two parallel `WebView`-backed SwiftUI views render tool results against the streetzim viewer:
+
+- **`RouteWebView`** — triggered by `traceHasRoute` for `plan_driving_route`, `route_from_places`, `show_map`. Draws the polyline, exposes Drive/Walk/Bike pills that call `enterDriveMode` on tap.
+- **`PlacesWebView`** — triggered by `traceHasPlaces` for `near_named_place`, `near_places`, `nearby_stories`, `nearby_stories_at_place`. Parses the tool's `results` / `stories` array into `{lat, lon, label, description}` and renders via `showPlaces` + `showRadiusRing` around the search origin.
+
+Both live only for the **newest assistant message** (see `isLatestAssistant` in `ChatView.swift::MessageRow`). Older traces collapse to a `MapPlaceholder` chip — a live WKWebView + MapLibre instance is ~300–500 MB of Metal buffers, so stacking them across a dozen tool calls reliably trips the iPhone's 6 GB jetsam cap mid-generation.
+
+## Preemptive memory guard before MLX generate()
+
+MLX's Metal backend doesn't surface command-buffer errors as Swift errors — when the GPU runs out of memory mid-eval the underlying C++ throws and the process terminates before any Swift `catch` can fire. `ChatSession.runGenerationLoop` checks `os_proc_available_memory()` at the top of each iter and refuses to start a new prefill/sample if headroom is below ~700 MB, surfacing a chat error message instead of an `abort_trap`.
 
 ## Why this exists
 

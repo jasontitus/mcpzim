@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg-globe-chat" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEBE66"></stop><stop offset="1" stop-color="#C85A3A"></stop>
+    </linearGradient>
+    <radialGradient id="sheen-globe-chat" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"></stop>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="clip-globe-chat">
+      <rect x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip-globe-chat)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg-globe-chat)"></rect>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen-globe-chat)"></rect>
+    <g transform="translate(143.5 143.5) scale(3.685)">
+      
+      <circle cx="100" cy="96" r="62" fill="#F7F1E8"></circle>
+      <path d="M74 150 Q72 168 54 176 Q80 176 98 158 Z" fill="#F7F1E8"></path>
+      <ellipse cx="100" cy="96" rx="26" ry="62" fill="none" stroke="#C8593A" stroke-width="6"></ellipse>
+      <line x1="40" y1="96" x2="160" y2="96" stroke="#C8593A" stroke-width="6" stroke-linecap="round"></line>
+      <circle cx="126" cy="74" r="9" fill="#9C4628"></circle>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg-book-bubble" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F3CA7A"></stop><stop offset="1" stop-color="#E0815E"></stop>
+    </linearGradient>
+    <radialGradient id="sheen-book-bubble" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"></stop>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="clip-book-bubble">
+      <rect x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip-book-bubble)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg-book-bubble)"></rect>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen-book-bubble)"></rect>
+    <g transform="translate(143.5 143.5) scale(3.685)">
+      
+      <path d="M30 54 Q30 42 44 42 H96 V152 H44 Q30 152 30 140 Z" fill="#F7F1E8"></path>
+      <path d="M170 54 Q170 42 156 42 H104 V152 H156 Q170 152 170 140 Z" fill="#F7F1E8"></path>
+      <path d="M54 150 L58 172 L82 150 Z" fill="#F7F1E8"></path>
+      <rect x="96" y="42" width="8" height="110" fill="#C8593A" rx="2"></rect>
+      <rect x="44" y="64" width="42" height="6" rx="3" fill="#E0815E"></rect>
+      <rect x="44" y="80" width="46" height="6" rx="3" fill="#F0C76A"></rect>
+      <rect x="44" y="96" width="34" height="6" rx="3" fill="#E0815E"></rect>
+      <rect x="114" y="64" width="46" height="6" rx="3" fill="#F0C76A"></rect>
+      <rect x="114" y="80" width="42" height="6" rx="3" fill="#E0815E"></rect>
+      <rect x="114" y="96" width="38" height="6" rx="3" fill="#F0C76A"></rect>
+    </g>
+  </g>
+</svg>

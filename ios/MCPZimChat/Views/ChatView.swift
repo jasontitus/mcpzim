@@ -227,6 +227,12 @@ struct ChatView: View {
         let text = draft.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, !session.isGenerating else { return }
         draft = ""
+        // Retract the keyboard after send — the reply often includes a
+        // route map / hero image that covers the top 2/3 of the screen,
+        // and touches on the WKWebView get captured by MapLibre before
+        // `.scrollDismissesKeyboard(.immediately)` on the outer ScrollView
+        // can fire. User can tap the composer to bring it back.
+        inputFocused = false
         session.send(text)
     }
 }
@@ -270,13 +276,39 @@ private struct MessageRow: View {
                 bubble(fill: Color.accentColor.opacity(0.12))
             }
         case .assistant:
+            // A live WKWebView + MapLibre instance costs roughly 300–500
+            // MB of Metal buffers. Keeping one alive per scroll-past
+            // route/places trace blows the 6 GB jetsam cap under a
+            // long session. Restrict the inline webview to the newest
+            // assistant message — older ones collapse to a static
+            // "Open map" chip that full-screens on demand.
+            let isLatestAssistant: Bool = session
+                .messages.last(where: { $0.role == .assistant })?.id == message.id
             VStack(alignment: .leading, spacing: 6) {
                 // Map first — feels natural for routing answers, and
                 // the streaming text grows downward below it instead
                 // of pushing the map around as new sentences arrive.
                 ForEach(message.toolCalls) { trace in
                     if traceHasRoute(trace) {
-                        RouteWebView(trace: trace)
+                        if isLatestAssistant {
+                            RouteWebView(trace: trace)
+                        } else {
+                            MapPlaceholder(label: "Route map", systemImage: "map") {
+                                // No-op in the stub; the user has no
+                                // programmatic hook without rehydrating
+                                // the full RouteWebView state anyway.
+                            }
+                        }
+                    } else if traceHasPlaces(trace) {
+                        // Nearby-tool results carry a list of geocoded
+                        // places — render them as pins on the map with
+                        // a coverage-radius ring so the user sees the
+                        // spatial distribution, not just a prose list.
+                        if isLatestAssistant {
+                            PlacesWebView(trace: trace)
+                        } else {
+                            MapPlaceholder(label: "Places on map", systemImage: "mappin.and.ellipse") { }
+                        }
                     } else if Self.traceHasArticle(trace) {
                         // Any tool call that named a specific
                         // article — full fetch, section pull, or
@@ -617,6 +649,38 @@ private struct SourcesSection: View {
 
 #Preview {
     ChatView().environment(ChatSession())
+}
+
+/// Non-interactive stand-in shown for older-message route/places traces
+/// so scrolling back through the chat doesn't resurrect heavyweight
+/// WKWebView + MapLibre instances. Each live webview holds ~300–500 MB
+/// of Metal buffers; stacking them across a dozen tool calls reliably
+/// trips the iPhone's jetsam cap mid-generation. Freshest message still
+/// shows the live map — this placeholder is only for history.
+private struct MapPlaceholder: View {
+    let label: String
+    let systemImage: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+                Text("Open in newest message")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .disabled(true)
+    }
 }
 
 /// Claude-style "thinking" indicator. Three dots that fade in and
