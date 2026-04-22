@@ -974,12 +974,28 @@ public actor MCPToolAdapter {
         a: String, b: String, zim: String?
     ) async throws -> [String: Any]? {
         let candidates = ArticleHeuristics.relationshipCandidates(a: a, b: b)
+        let aKey = a.lowercased()
+        let bKey = b.lowercased()
         for candidate in candidates {
             do {
                 let resolved = try await ArticleHeuristics.sectionsByTitle(
                     service: service, title: candidate, zim: zim
                 )
-                let counterpart = candidate.lowercased().contains(a.lowercased()) ? b : a
+                // Verify the resolved article actually names BOTH
+                // subjects — the title-index fuzzy-match can drift
+                // into related-but-wrong articles (real capture:
+                // compare("London","Paris") → `Foreign relations of
+                // London` → resolved as `Foreign_relations_of_the
+                // _Mayor_of_London`, which is a mayor-office article,
+                // not a London/Paris relations piece). Skip anything
+                // that doesn't mention both subjects in the title.
+                let titleLower = resolved.title.lowercased()
+                let mentionsA = titleLower.contains(aKey)
+                    || aKey.split(separator: " ").contains { titleLower.contains($0) }
+                let mentionsB = titleLower.contains(bKey)
+                    || bKey.split(separator: " ").contains { titleLower.contains($0) }
+                guard mentionsA && mentionsB else { continue }
+                let counterpart = candidate.lowercased().contains(aKey) ? b : a
                 let picked = ArticleHeuristics.sectionsMentioning(
                     counterpart, in: resolved.sections, maxExtra: 3
                 )
