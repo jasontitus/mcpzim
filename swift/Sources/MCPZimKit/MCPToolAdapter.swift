@@ -524,6 +524,7 @@ public actor MCPToolAdapter {
     /// Dispatch a single tool call. `args` is the JSON object decoded from the
     /// host transport. Returns a JSON-encodable dictionary.
     public func dispatch(tool: String, args: [String: Any]) async throws -> [String: Any] {
+        let args = try await sanitizeOptionalZimArg(args)
         switch tool {
         case "list_libraries":
             let inv = try await service.inventory()
@@ -761,6 +762,62 @@ public actor MCPToolAdapter {
         default:
             throw ZimServiceError.notFound(tool)
         }
+    }
+
+    // MARK: - Defensive arg sanitization
+
+    /// Strip a hallucinated `zim` filename from `args` so an unknown
+    /// value falls back to "search all loaded ZIMs" instead of
+    /// returning an "unknown ZIM" error to the model.
+    ///
+    /// Real on-device capture (Qwen 3 4B 4-bit, dropped-request.log
+    /// follow-up): the model called `compare_articles` with
+    /// `zim="wikipediapedia_en_all maxi 2025-10.zim"` against a
+    /// real ZIM `wikipedia_en_all_maxi_2025-10.zim` — duplicated
+    /// "pedia", space instead of underscore. The exact-match check
+    /// downstream rejected it, the tool errored, and iter 1's prose
+    /// summary mangled the entity names while explaining why
+    /// nothing was found. Dropping the unknown arg lets the same
+    /// tool succeed by searching every loaded ZIM.
+    ///
+    /// We try exact match, then case-insensitive match. Anything
+    /// else gets removed — never substituted, since "close"
+    /// filenames could legitimately belong to different ZIMs (en
+    /// vs es, full vs nopic, …) and the wrong substitution would
+    /// be worse than no pin.
+    ///
+    /// Cost is one `service.inventory()` call per dispatch — but
+    /// only when a `zim` arg is actually present. Most calls
+    /// (which omit `zim`) short-circuit before the await.
+    private func sanitizeOptionalZimArg(
+        _ args: [String: Any]
+    ) async throws -> [String: Any] {
+        guard let z = args["zim"] as? String, !z.isEmpty else {
+            return args
+        }
+        let inv = try await service.inventory()
+        return Self.sanitizeZim(args, loadedZimNames: inv.zims.map(\.name))
+    }
+
+    /// Pure logic split out so tests can exercise it without
+    /// having to mock an async `inventory()` call. Same contract:
+    /// returns `args` untouched when `zim` is absent or matches a
+    /// loaded ZIM (exact, then case-insensitive); returns a copy
+    /// with the `zim` key removed otherwise.
+    static func sanitizeZim(
+        _ args: [String: Any], loadedZimNames: [String]
+    ) -> [String: Any] {
+        guard let z = args["zim"] as? String, !z.isEmpty else {
+            return args
+        }
+        if loadedZimNames.contains(z) { return args }
+        let zLower = z.lowercased()
+        if loadedZimNames.contains(where: { $0.lowercased() == zLower }) {
+            return args
+        }
+        var copy = args
+        copy.removeValue(forKey: "zim")
+        return copy
     }
 
     // MARK: - Dispatch helpers for composite tools

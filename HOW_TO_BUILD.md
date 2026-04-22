@@ -257,6 +257,43 @@ Each fast path also synthesises a reply in `IntentRouter.synthesize*` so the LLM
 
 Why polite prefixes matter: voice input routinely emits `"Give me directions to SF"`. Before the prefix strip, that fell to the LLM and Qwen 3.5 4B emitted malformed JSON (`{"name": "route_from_places",,"arguments": {...,,...,}}`) with 20% probability — a silent dropped turn after 15 s of waiting. See `dropped-request.log` for a capture.
 
+## Defensive `zim` arg sanitization
+
+`MCPToolAdapter.dispatch` strips a hallucinated `zim` filename
+before any tool runs. When the model passes a `zim` value that
+doesn't match (exact, then case-insensitive) any loaded ZIM
+filename, the arg is removed and the underlying tool falls back to
+"search all loaded ZIMs" — same behaviour as if the model had
+omitted the arg entirely.
+
+Real on-device capture (Qwen 3 4B 4-bit, see `dropped-request.log`
+follow-up):
+
+```
+compare_articles({
+  "titles": ["South Korea", "North Korea"],
+  "zim":    "wikipediapedia_en_all maxi 2025-10.zim"   ← hallucinated
+})
+```
+
+The actual loaded ZIM is `wikipedia_en_all_maxi_2025-10.zim`
+(no duplicated "pedia", underscores not spaces). Without the
+sanitiser, the tool returned an "unknown ZIM" error in 285 bytes,
+and iter 1 mangled the entity names ("south kri", "north kri")
+while writing prose about that error. With the sanitiser the same
+emission falls through to a successful all-ZIMs search.
+
+Pure logic in `MCPToolAdapter.sanitizeZim(_:loadedZimNames:)`,
+exercised by `SanitizeZimArgTests` (no async or stub plumbing
+required). The async wrapper `sanitizeOptionalZimArg` only awaits
+`service.inventory()` when a `zim` arg is actually present, so
+the typical no-`zim` dispatch path stays free.
+
+We never *substitute* a near-miss. A "close" filename could
+legitimately be a different ZIM (en vs es, full vs nopic, …) and
+the wrong substitution would be worse than no pin. Strip-only is
+the safer contract.
+
 ## Qwen tool-call JSON repair
 
 `QwenChatMLTemplate.repairJSON` (swift/Sources/MCPZimKit) runs as a second-chance decode whenever strict `JSONSerialization` rejects a `<tool_call>` body. Repairs observed in the wild on Qwen 3.5 4B 4-bit:
