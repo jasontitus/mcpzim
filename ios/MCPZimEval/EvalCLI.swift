@@ -14,12 +14,27 @@
 // Run:    build/.../MCPZimEvalCLI [--variant qwen] [--scenario compare]
 
 import Foundation
+import MCPZimKit
 
 @main
 struct EvalCLI {
     static func main() async {
         var opts = EvalHarness.RunOptions()
         var args = CommandLine.arguments.dropFirst()
+        // Short-circuit: probe modes run a single real-ZIM call + exit.
+        // Useful for diagnosing fast-path failures like the
+        // `articleByTitle` Title Case mismatch (2026-04-22) without
+        // round-tripping through phone install.
+        if args.first == "--probe-compare" {
+            _ = args.removeFirst()
+            await ProbeCompareCLI.run(args: Array(args))
+            return
+        }
+        if args.first == "--probe-article" {
+            _ = args.removeFirst()
+            await ProbeCompareCLI.runArticleProbe(args: Array(args))
+            return
+        }
         while let a = args.first {
             args = args.dropFirst()
             switch a {

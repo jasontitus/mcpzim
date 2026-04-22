@@ -376,6 +376,20 @@ public actor DefaultZimService: ZimService {
     /// Searches the ZIM's title index (libzim `suggestTitles`) which
     /// handles redirects and approximate matches. Default `section`
     /// is "lead" — a reasonable summary.
+    /// Capitalise the first letter of each space-separated word,
+    /// preserving the case of all non-initial letters. Used by
+    /// `articleByTitle` to build Title Case direct-path candidates
+    /// without running through `String.capitalized` (which lowercases
+    /// interior letters and breaks acronyms like "iPhone" → "Iphone").
+    static func wordCapitalize(_ s: String) -> String {
+        s.split(separator: " ", omittingEmptySubsequences: false)
+            .map { w -> String in
+                guard let first = w.first else { return String(w) }
+                return String(first).uppercased() + w.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+
     public func articleByTitle(title: String, zim: String?, section: String? = "lead")
         async throws -> (zim: String, path: String, title: String, section: ArticleSection)
     {
@@ -416,11 +430,24 @@ public actor DefaultZimService: ZimService {
         // Fall back to `searchTitles` only if every direct-path
         // variant misses.
         let underscored = withSpaces.replacingOccurrences(of: " ", with: "_")
+        // Wikipedia canonicalises article paths in Title Case
+        // (`A/North_Korea`, not `A/north_korea`). Voice input and the
+        // lowercase fast-path titles both miss the raw-case paths, and
+        // the `searchTitles` suggester fallback below is slower + has
+        // been observed to miss on big ZIMs. Try Title Case variants
+        // up-front so "north korea" still resolves without paying the
+        // suggester round-trip.
+        let titleCased = Self.wordCapitalize(withSpaces)
+        let titleCasedUnderscored = titleCased.replacingOccurrences(of: " ", with: "_")
         let directPaths: [String] = [
             "A/\(underscored)",
             underscored,
             "A/\(withSpaces)",
             withSpaces,
+            "A/\(titleCasedUnderscored)",
+            titleCasedUnderscored,
+            "A/\(titleCased)",
+            titleCased,
         ]
         for pair in candidates {
             for candidate in directPaths {

@@ -367,6 +367,123 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertTrue(s.contains("Pyongyang") || s.contains("East Asia"))
     }
 
+    // MARK: - Fast-path usability gating
+
+    func testCompareResultIsUsableForRelationsArticle() {
+        let ok: [String: Any] = [
+            "strategy": "dedicated_relations_article",
+            "sections": [["text": "some real content."]]
+        ]
+        XCTAssertTrue(IntentRouter.compareResultIsUsable(ok))
+    }
+
+    func testCompareResultIsUsableForTwoGoodArticles() {
+        let ok: [String: Any] = [
+            "articles": [
+                ["title": "A", "sections": [["text": "lead A"]]],
+                ["title": "B", "sections": [["text": "lead B"]]],
+            ]
+        ]
+        XCTAssertTrue(IntentRouter.compareResultIsUsable(ok))
+    }
+
+    func testCompareResultNotUsableWhenBothErrored() {
+        // This is the dropped-request scenario: tool dispatched OK,
+        // returned 200 bytes, but both articles came back with the
+        // "Could not fetch" error. The LLM should get a shot.
+        let bad: [String: Any] = [
+            "articles": [
+                ["title": "north", "error": "Could not fetch"],
+                ["title": "south korea", "error": "Could not fetch"],
+            ]
+        ]
+        XCTAssertFalse(IntentRouter.compareResultIsUsable(bad))
+    }
+
+    func testCompareResultNotUsableWhenOneErroredOneGood() {
+        // One-sided "comparison" isn't a comparison — LLM retry is
+        // more useful than rendering a lone article as if both
+        // subjects matched.
+        let partial: [String: Any] = [
+            "articles": [
+                ["title": "Xyz", "error": "Could not fetch"],
+                ["title": "Real", "sections": [["text": "lead"]]],
+            ]
+        ]
+        XCTAssertFalse(IntentRouter.compareResultIsUsable(partial))
+    }
+
+    func testCompareResultNotUsableOnTopLevelError() {
+        let e: [String: Any] = [
+            "error": "compare_articles needs at least two non-empty titles."
+        ]
+        XCTAssertFalse(IntentRouter.compareResultIsUsable(e))
+    }
+
+    func testArticleOverviewUsabilityChecks() {
+        let ok: [String: Any] = [
+            "title": "Palo Alto",
+            "sections": [["text": "Palo Alto is a charter city…"]]
+        ]
+        let missing: [String: Any] = [
+            "error": "title 'Xyz' not found in any Wikipedia ZIM"
+        ]
+        let emptySections: [String: Any] = [
+            "title": "Foo",
+            "sections": []
+        ]
+        XCTAssertTrue(IntentRouter.articleOverviewResultIsUsable(ok))
+        XCTAssertFalse(IntentRouter.articleOverviewResultIsUsable(missing))
+        XCTAssertFalse(IntentRouter.articleOverviewResultIsUsable(emptySections))
+    }
+
+    func testWhatIsHereUsabilityChecks() {
+        let ok: [String: Any] = ["nearest_named_place": "Civic Center"]
+        let noPlace: [String: Any] = ["nearest_named_place": ""]
+        let missing: [String: Any] = [
+            "error": "No named place within 1.5 km."
+        ]
+        XCTAssertTrue(IntentRouter.whatIsHereResultIsUsable(ok))
+        XCTAssertFalse(IntentRouter.whatIsHereResultIsUsable(noPlace))
+        XCTAssertFalse(IntentRouter.whatIsHereResultIsUsable(missing))
+    }
+
+    func testSynthesizeCompareRendersDedicatedRelationsArticle() {
+        // Verified on-device via `MCPZimEvalCLI --probe-compare`:
+        // compare_articles for ["north korea", "south korea"] against
+        // a real Wikipedia ZIM returns a `strategy:
+        // "dedicated_relations_article"` payload with top-level
+        // `sections`, NOT an `articles` array. Before the fix the
+        // synth fell through to "I couldn't find articles matching
+        // those titles" — a lie, since the tool succeeded and the
+        // relations article was right there.
+        let fullResult: [String: Any] = [
+            "strategy": "dedicated_relations_article",
+            "resolved_title": "North Korea – South Korea relations",
+            "path": "A/North_Korea_-_South_Korea_relations",
+            "zim": "wikipedia_en_all_maxi_2025-10.zim",
+            "requested": ["north korea", "south korea"],
+            "sections": [[
+                "title": "lead",
+                "text": "North Korea–South Korea relations are the "
+                    + "diplomatic, political, economic, and cultural "
+                    + "relations between the two Korean states on "
+                    + "either side of the Korean Demilitarized Zone."
+            ]]
+        ]
+        let s = IntentRouter.synthesizeCompareReply(
+            args: ["titles": ["north korea", "south korea"]],
+            fullResult: fullResult
+        )
+        XCTAssertTrue(s.contains("North Korea – South Korea relations"),
+                      "should name the resolved relations article: \(s)")
+        XCTAssertTrue(s.contains("diplomatic"),
+                      "should include the lead text snippet: \(s)")
+        XCTAssertFalse(s.contains("couldn't find"),
+                       "must not fall through to the not-found branch "
+                       + "when the relations article WAS found")
+    }
+
     func testSynthesizeCompareRequiresBothSubjectsToHaveContent() {
         // On-device repro: fast-path dispatched with
         // titles=["north","south korea"], tool returned one valid

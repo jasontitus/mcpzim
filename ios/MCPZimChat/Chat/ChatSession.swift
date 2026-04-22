@@ -1690,7 +1690,15 @@ public final class ChatSession {
             // prefill/sample if available memory has dropped below the
             // safe-headroom threshold: surface a Swift error the user
             // can read instead of an abort trap.
+            // `os_proc_available_memory()` is iOS-only. The macOS
+            // eval CLI links the same source tree but there's no
+            // jetsam cap to respect there — leave availableMB at 0
+            // so the guard below short-circuits.
+            #if os(iOS)
             let availableMB = Double(os_proc_available_memory()) / (1024 * 1024)
+            #else
+            let availableMB: Double = 0
+            #endif
             let minHeadroomMB: Double = 700   // rough KV-cache + Metal scratch floor for a 4B 4-bit Qwen turn
             if availableMB > 0, availableMB < minHeadroomMB {
                 debug(String(format:
@@ -2475,6 +2483,41 @@ public final class ChatSession {
             let routingTools: Set<String> = [
                 "route_from_places", "plan_driving_route",
             ]
+            // Fast-path usability gate — if the tool technically
+            // succeeded but didn't produce anything the user will
+            // find useful (no articles found, no place resolved),
+            // bail with `false` so the caller falls through to the
+            // LLM loop. Saves the user from a dead-end fast-path
+            // message when the model could at least try a different
+            // approach.
+            let usable: Bool = {
+                switch intent.toolName {
+                case "compare_articles":
+                    return IntentRouter.compareResultIsUsable(fullResult)
+                case "article_overview":
+                    return IntentRouter.articleOverviewResultIsUsable(fullResult)
+                case "what_is_here":
+                    return IntentRouter.whatIsHereResultIsUsable(fullResult)
+                default:
+                    // Places + routing tools have their own
+                    // empty-results handling in their synth.
+                    return true
+                }
+            }()
+            if !usable {
+                debug("fast-path result not usable — handing off to LLM",
+                      category: "Router")
+                // Drop the trace row we just recorded so the LLM's
+                // retry doesn't see a pre-populated tool call that
+                // would confuse its dispatch state.
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].toolCalls.removeAll()
+                    messages[idx].text = ""
+                }
+                return false
+            }
             if placesTools.contains(intent.toolName) {
                 let synth = IntentRouter.synthesizePlacesReply(
                     toolName: intent.toolName,

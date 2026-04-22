@@ -390,6 +390,50 @@ public enum IntentRouter {
         return String(format: "%.1f km", km)
     }
 
+    // MARK: - Fast-path usability checks
+    //
+    // Returning `false` signals to the caller that the tool technically
+    // succeeded (no exception) but didn't produce anything the user
+    // will find useful — e.g. compare_articles came back with no
+    // resolved articles AND no relations article, or article_overview
+    // returned a miss. The caller then clears the fast-path attempt
+    // and falls through to the LLM loop, which can at least try a
+    // different tool / different titles / freeform answer.
+
+    public static func compareResultIsUsable(_ fullResult: [String: Any]) -> Bool {
+        if let err = fullResult["error"] as? String, !err.isEmpty { return false }
+        // Dedicated relations article found — always useful.
+        if (fullResult["strategy"] as? String) == "dedicated_relations_article",
+           let sections = fullResult["sections"] as? [[String: Any]],
+           let first = sections.first,
+           !((first["text"] as? String) ?? "").isEmpty
+        {
+            return true
+        }
+        // Otherwise need at least two articles with real section text.
+        let articles = (fullResult["articles"] as? [[String: Any]]) ?? []
+        let good = articles.filter { a in
+            if let e = a["error"] as? String, !e.isEmpty { return false }
+            let sections = (a["sections"] as? [[String: Any]]) ?? []
+            let text = (sections.first?["text"] as? String) ?? ""
+            return !text.isEmpty
+        }
+        return good.count >= 2
+    }
+
+    public static func articleOverviewResultIsUsable(_ fullResult: [String: Any]) -> Bool {
+        if let err = fullResult["error"] as? String, !err.isEmpty { return false }
+        let sections = (fullResult["sections"] as? [[String: Any]]) ?? []
+        let text = (sections.first?["text"] as? String) ?? ""
+        return !text.isEmpty
+    }
+
+    public static func whatIsHereResultIsUsable(_ fullResult: [String: Any]) -> Bool {
+        if let err = fullResult["error"] as? String, !err.isEmpty { return false }
+        let place = (fullResult["nearest_named_place"] as? String) ?? ""
+        return !place.isEmpty
+    }
+
     // MARK: - Reply synthesis for non-places fast paths
 
     /// Caption for `article_overview` fast-path. Grabs the lead
@@ -423,6 +467,25 @@ public enum IntentRouter {
     ) -> String {
         if let err = fullResult["error"] as? String, !err.isEmpty {
             return err
+        }
+        // Relations-article fast path: compare_articles for a pair
+        // like (North Korea, South Korea) first probes for a
+        // dedicated Wikipedia relations article. When it hits, the
+        // result shape is different from the default side-by-side —
+        // top-level `sections` + `strategy == "dedicated_relations_article"`
+        // and no `articles` array. Render the lead of the relations
+        // article as the caption.
+        if let strategy = fullResult["strategy"] as? String,
+           strategy == "dedicated_relations_article"
+        {
+            let title = (fullResult["resolved_title"] as? String) ?? "these two"
+            let sections = (fullResult["sections"] as? [[String: Any]]) ?? []
+            let lead = (sections.first?["text"] as? String) ?? ""
+            let snippet = firstSentences(lead, maxChars: 320)
+            if snippet.isEmpty {
+                return "**\(title)** — see the article for details."
+            }
+            return "**\(title)** — \(snippet)"
         }
         let articles = (fullResult["articles"] as? [[String: Any]]) ?? []
         // Drop entries where the tool couldn't fetch the article — a

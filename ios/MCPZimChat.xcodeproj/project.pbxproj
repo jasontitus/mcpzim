@@ -85,6 +85,7 @@
 		9D7D536B527294D0608A48FA /* PastLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134630F1E37CE3F3032F5280 /* PastLogsView.swift */; };
 		9E7F7C0A5C3878FEB4CBAE6A /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = C03B799F981A3217BB089044 /* MLXHuggingFace */; };
 		9FD300C5CDA83AEC837EB321 /* PlacesWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */; };
+		A0F054FD94F4415F7502A573 /* ProbeCompareCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B38ED453CF29B878AB6F6AF /* ProbeCompareCLI.swift */; };
 		A1A1F46F888E8A38EA6941AE /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A332602332894F8A97B72609 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
@@ -186,6 +187,7 @@
 		2C313188252286C00B327D81 /* ModelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelProvider.swift; sourceTree = "<group>"; };
 		329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoIntents.swift; sourceTree = "<group>"; };
 		4B325A1633250C44B267166D /* SpeechRecognizerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizerService.swift; sourceTree = "<group>"; };
+		4B38ED453CF29B878AB6F6AF /* ProbeCompareCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeCompareCLI.swift; sourceTree = "<group>"; };
 		4C1E2487F517981835A37F64 /* swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = swift; path = ../swift; sourceTree = SOURCE_ROOT; };
 		4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimURLSchemeHandler.swift; sourceTree = "<group>"; };
 		52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalCLI.swift; sourceTree = "<group>"; };
@@ -334,6 +336,7 @@
 			children = (
 				52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */,
 				937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */,
+				4B38ED453CF29B878AB6F6AF /* ProbeCompareCLI.swift */,
 			);
 			path = MCPZimEval;
 			sourceTree = "<group>";
@@ -722,6 +725,7 @@
 				D46144F1C9865D70B6E0F298 /* Message.swift in Sources */,
 				C18272874D5C8E7B3F730008 /* MockProvider.swift in Sources */,
 				96F628EF2AF82D5A1505DA9A /* ModelProvider.swift in Sources */,
+				A0F054FD94F4415F7502A573 /* ProbeCompareCLI.swift in Sources */,
 				548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */,
 				5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */,
 				AE843C00BE5209BD3320E18B /* ZimfoContext.swift in Sources */,
