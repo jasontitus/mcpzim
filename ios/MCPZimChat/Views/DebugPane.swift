@@ -16,6 +16,7 @@ import UIKit
 struct DebugPaneView: View {
     @Environment(ChatSession.self) private var session
     @State private var justCopied = false
+    @State private var lastReportHash: String? = nil
 
     private var dateFormatter: DateFormatter {
         let df = DateFormatter()
@@ -123,6 +124,33 @@ struct DebugPaneView: View {
                 }
                 .buttonStyle(.plain)
                 .help(justCopied ? "Copied" : "Copy all debug entries")
+                Button {
+                    // Emit the bundled messages + debug log via
+                    // os.Logger so `ios/scripts/mcp-report.sh` on
+                    // Mac can pick it out of the idevicesyslog
+                    // buffer. Returns a short hash the UI flashes
+                    // so the user can tell me which one to fetch.
+                    let hash = session.emitDebugReport()
+                    lastReportHash = hash
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        if lastReportHash == hash { lastReportHash = nil }
+                    }
+                } label: {
+                    if let h = lastReportHash {
+                        Text("Sent · \(h)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.green)
+                    } else {
+                        HStack(spacing: 3) {
+                            Image(systemName: "paperplane")
+                            Text("Report")
+                        }
+                        .font(.caption)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Send a debug report over syslog. Reassemble on Mac with "
+                      + "ios/scripts/mcp-report.sh latest.")
                 Button("Clear") { session.debugEntries.removeAll() }
                     .font(.caption)
                     .buttonStyle(.plain)

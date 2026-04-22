@@ -239,6 +239,24 @@ device, prefer Qwen 3 4B (non-hybrid, same 9/9 eval score).
 
 MLX's Metal backend doesn't surface command-buffer errors as Swift errors — when the GPU runs out of memory mid-eval the underlying C++ throws and the process terminates before any Swift `catch` can fire. `ChatSession.runGenerationLoop` checks `os_proc_available_memory()` at the top of each iter and refuses to start a new prefill/sample if headroom is below ~700 MB, surfacing a chat error message instead of an `abort_trap`.
 
+## "Send Debug Report" button (debug pane)
+
+The debug pane has a **Report** button (next to Copy / Clear) that emits the current chat messages + live debug log through `os.Logger` as a base64-encoded chunked stream. When `ios/scripts/mcp-logs.sh` is running (required — that's the transport), the chunks land in `/tmp/mcp-syslog.log` and the reassembler script pulls them back out:
+
+```sh
+# after the user taps Report on the phone
+bash ios/scripts/mcp-report.sh latest
+#   → writes /tmp/mcpzim-debug-reports/<hash>.json, prints a preview
+```
+
+Other commands:
+- `mcp-report.sh list` — every `(hash, chunks, bytes, complete?)` tuple seen in the buffer.
+- `mcp-report.sh pull <HASH>` — reassemble a specific (older) report by hash.
+
+The button also clears `debugEntries` after emission so the next bad query produces a clean report. The button flashes `Sent · <HASH>` for ~2.5 s so the user can tell you which one to fetch ("crappy results, hash AB12").
+
+Wire format lives in `ios/MCPZimChat/Chat/DebugReport.swift`. The payload type (`SerializedDebugReport`) is Codable + flat, so `jq` works out of the box on the reassembled JSON.
+
 ## Fast-path intent routing (skip the LLM entirely)
 
 On Qwen 3.5 4B a single turn eats ~13 s of prefill before the first token streams. Queries that are already structurally identical to a tool call shouldn't pay that — we pattern-match them in `IntentRouter.classify()` (swift/Sources/MCPZimKit/IntentRouter.swift) and dispatch the tool directly. Current fast paths:

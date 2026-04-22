@@ -55,6 +55,7 @@
 		60C3938C951EE44EACDD57B9 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68BDA1E10556B87C57B41BFB /* RootView.swift */; };
 		650624C566ABA25FEA310B78 /* MockProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0775822A936033CF0B59DD4C /* MockProvider.swift */; };
 		6625E94A57D0998AB1B05671 /* DebugPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 267EDFBA28517128DC5EB6E5 /* DebugPane.swift */; };
+		6643DDA4A260E70B04474D8C /* DebugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821CC325A7537CE99306695C /* DebugReport.swift */; };
 		6AB7E66F0F9B50E3281B4F99 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C05D5166643856E4261880 /* Message.swift */; };
 		6B0637D6A676705D2580B068 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
 		6C9740917ACF6926C792C76E /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 46638BA231FC576C12459462 /* MLXLMCommon */; };
@@ -70,7 +71,9 @@
 		7DB08BA62F598A060EB40F39 /* DebugPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 267EDFBA28517128DC5EB6E5 /* DebugPane.swift */; };
 		7E259B163ABF78C66E1B5993 /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
 		81136ECC4D31022A8BC4A5E3 /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 9B48B29BED7ED8B0C06AFD3B /* MLXHuggingFace */; };
+		83C0423CC621164C37E98ACA /* DebugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821CC325A7537CE99306695C /* DebugReport.swift */; };
 		857AB4463B26C17EB39CF5F9 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */; };
+		86136E0023E6718920F529D8 /* ProbeE2ECLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E673F36C96015359C21E846 /* ProbeE2ECLI.swift */; };
 		88C1CD7617CD79E458F4C169 /* MCPZimChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB08857ED66D69CE7FD5FC2 /* MCPZimChatApp.swift */; };
 		8A59F6836E4AE5845D7C81F4 /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
 		8C042D8CCFB49FDC1EB85131 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 7976C21563542CA52D62A897 /* MLXLLM */; };
@@ -97,6 +100,7 @@
 		B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		B02A0D7A19EC22CA4345A940 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		B1A228CFEF62A3BB362ED387 /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
+		B4F1B56FC86AE1D5C3B4CA01 /* DebugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821CC325A7537CE99306695C /* DebugReport.swift */; };
 		B5AB4FB6D93A6F9C20C68B40 /* LocationFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7495A1AA64C657297341FF95 /* LocationFetcher.swift */; };
 		B8D9A7D450C7981AC144DB32 /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
 		BA5ECC4F7C675EBB99609961 /* EvalHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */; };
@@ -180,6 +184,7 @@
 		134630F1E37CE3F3032F5280 /* PastLogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PastLogsView.swift; sourceTree = "<group>"; };
 		149DA9870C0F015A888DD308 /* DeviceProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceProfile.swift; sourceTree = "<group>"; };
 		197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoIntentsTests.swift; sourceTree = "<group>"; };
+		1E673F36C96015359C21E846 /* ProbeE2ECLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeE2ECLI.swift; sourceTree = "<group>"; };
 		2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoRunner.swift; sourceTree = "<group>"; };
 		25A07E5C8A32C8BF3B549551 /* LogArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogArchive.swift; sourceTree = "<group>"; };
 		267EDFBA28517128DC5EB6E5 /* DebugPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugPane.swift; sourceTree = "<group>"; };
@@ -208,6 +213,7 @@
 		79130F0C1B723177E34B9AD0 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CoreKiwix.xcframework; path = MCPZimChat/Frameworks/CoreKiwix.xcframework; sourceTree = "<group>"; };
 		7C8171220D16FBE4E565CC61 /* PlacesWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlacesWebView.swift; sourceTree = "<group>"; };
+		821CC325A7537CE99306695C /* DebugReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugReport.swift; sourceTree = "<group>"; };
 		8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MCPZimChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
 		937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalHarness.swift; sourceTree = "<group>"; };
@@ -293,6 +299,7 @@
 			isa = PBXGroup;
 			children = (
 				6037251F9C513E4290F5DCB1 /* ChatSession.swift */,
+				821CC325A7537CE99306695C /* DebugReport.swift */,
 				A0C05D5166643856E4261880 /* Message.swift */,
 			);
 			path = Chat;
@@ -337,6 +344,7 @@
 				52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */,
 				937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */,
 				4B38ED453CF29B878AB6F6AF /* ProbeCompareCLI.swift */,
+				1E673F36C96015359C21E846 /* ProbeE2ECLI.swift */,
 			);
 			path = MCPZimEval;
 			sourceTree = "<group>";
@@ -672,6 +680,7 @@
 				497ACD8657D6264471963ECC /* ChatSession.swift in Sources */,
 				D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */,
 				6625E94A57D0998AB1B05671 /* DebugPane.swift in Sources */,
+				6643DDA4A260E70B04474D8C /* DebugReport.swift in Sources */,
 				B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */,
 				C76A8ECC4E114DFA06290F3F /* FoundationModelsNativeTools.swift in Sources */,
 				DF65D0F49519D238DE60C1E5 /* FoundationModelsProvider.swift in Sources */,
@@ -712,6 +721,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				286FE7F9C1D759B018281BA7 /* ChatSession.swift in Sources */,
+				83C0423CC621164C37E98ACA /* DebugReport.swift in Sources */,
 				FB4B16ED534F3874E6D0C437 /* DeviceProfile.swift in Sources */,
 				96A5442E958C239D945495B4 /* EvalCLI.swift in Sources */,
 				BA5ECC4F7C675EBB99609961 /* EvalHarness.swift in Sources */,
@@ -726,6 +736,7 @@
 				C18272874D5C8E7B3F730008 /* MockProvider.swift in Sources */,
 				96F628EF2AF82D5A1505DA9A /* ModelProvider.swift in Sources */,
 				A0F054FD94F4415F7502A573 /* ProbeCompareCLI.swift in Sources */,
+				86136E0023E6718920F529D8 /* ProbeE2ECLI.swift in Sources */,
 				548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */,
 				5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */,
 				AE843C00BE5209BD3320E18B /* ZimfoContext.swift in Sources */,
@@ -741,6 +752,7 @@
 				4B801BFA891D016E580EABDD /* ChatSession.swift in Sources */,
 				6B0637D6A676705D2580B068 /* ChatView.swift in Sources */,
 				7DB08BA62F598A060EB40F39 /* DebugPane.swift in Sources */,
+				B4F1B56FC86AE1D5C3B4CA01 /* DebugReport.swift in Sources */,
 				CA3F5AF9BEB7381081B9895B /* DeviceProfile.swift in Sources */,
 				6D7C51E18886D0389EA31EA2 /* FoundationModelsNativeTools.swift in Sources */,
 				3E5CBB6DF865493628BCFBEC /* FoundationModelsProvider.swift in Sources */,
