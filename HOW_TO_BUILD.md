@@ -245,10 +245,15 @@ On Qwen 3.5 4B a single turn eats ~13 s of prefill before the first token stream
 
 | Query shape | Tool | Notes |
 |---|---|---|
-| `<cat> near me / around here` | `near_places` | needs GPS; pattern is mutually-exclusive with the generic `<X> in <Y>` below |
+| `what is here` / `where am I` / `what's around me` | `what_is_here` | no args — MCP adapter fills `lat`/`lon` from `hostStateProvider` at dispatch time |
+| `<cat> near me / around here` | `near_places` | needs GPS; ordered AFTER `what_is_here` so "what is around me" doesn't land here with `kind="what is"` |
 | `[polite]? directions/route/navigate to <X>` | `route_from_places` | `polite` accepts `give me`, `show me`, `get me`, `find me`, `tell me`, `please`, `can/could/would/will you`, `I need / I want / I'd like` |
 | `[polite]? how do I get to <X>` / `take me to <X>` | `route_from_places` | same polite stripping |
 | `<cat> in/near/at/around <Y>` | `near_named_place` | skips when the query starts with an interrogative (`what`, `where`, `how`, …) so `"where can I find bars in SF"` still falls to the LLM for phrasing |
+| `compare <A> and/vs/versus/with/to <B>` | `compare_articles` | exactly the Case-2 dropped turn from the log (Qwen 3.5 emitted `" "` splice); fast-path sidesteps it |
+| `tell me about <X>` / `what is X` / `who is/was X` / `give me an overview of X` | `article_overview` | last in the chain so specific patterns win first; guarded against navigational pronouns (`my`, `this`, `here`) so `"what is my next turn"` still falls to the LLM |
+
+Each fast path also synthesises a reply in `IntentRouter.synthesize*` so the LLM can be skipped entirely — see `testSynthesize*` for the expected shapes. The caption alone isn't the full answer on article/compare queries (no narrated prose), but skipping 15 s of prefill + the malformed-JSON risk is worth the stylistic downgrade. Follow-up work: wire the article sheet to open automatically on `article_overview` / `compare_articles` so the user gets the full body alongside the caption.
 
 Why polite prefixes matter: voice input routinely emits `"Give me directions to SF"`. Before the prefix strip, that fell to the LLM and Qwen 3.5 4B emitted malformed JSON (`{"name": "route_from_places",,"arguments": {...,,...,}}`) with 20% probability — a silent dropped turn after 15 s of waiting. See `dropped-request.log` for a capture.
 

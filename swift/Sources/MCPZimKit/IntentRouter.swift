@@ -78,6 +78,18 @@ public enum IntentRouter {
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
 
+        // "what is here" / "where am I" → what_is_here.
+        // No args — the MCP adapter fills lat/lon from the host's GPS
+        // fix at dispatch time via `hostStateProvider`. Runs BEFORE
+        // `<cat> near me` because "what is around me" would otherwise
+        // match that pattern with kind="what is" and then fail for
+        // lack of location.
+        if matches(lower, pattern:
+            #"^(?:what(?:'s|\s+is)\s+here|where\s+am\s+i|what(?:'s|\s+is)\s+(?:around|near)\s+(?:me|here)|what\s+do\s+you\s+see)$"#)
+        {
+            return DirectIntent(toolName: "what_is_here", args: [:])
+        }
+
         // "<category> near me" / "<category> around here" — use GPS.
         // We match FIRST, then require the location. If the pattern
         // matched but we don't have a location, we must NOT fall
@@ -141,6 +153,52 @@ public enum IntentRouter {
             }
         }
 
+        // "compare <A> and|vs|with|to <B>" → compare_articles. Two-entity
+        // pattern; Qwen 3.5 4B was the observed culprit that dropped this
+        // turn with a malformed `" "Foo"` splice (see
+        // dropped-request.log Case 2). The tool handles 2–4 titles —
+        // we surface two; the model never needed to run.
+        if let m = match(lower, pattern:
+            #"^compare\s+(.+?)\s+(?:and|vs\.?|versus|with|to)\s+(.+)$"#)
+        {
+            let a = m[0]
+            let b = m[1]
+            return DirectIntent(toolName: "compare_articles", args: [
+                "titles": .array([.string(a), .string(b)])
+            ])
+        }
+
+        // "tell me about X" / "what is X" / "who is/was X" /
+        // "give me an overview of X" → article_overview. Runs LAST
+        // so that `what_is_here`, directions, `compare`, and places
+        // patterns win first. Subject starting with a route/demonstrative
+        // pronoun ("my", "this", "here", …) is almost always a
+        // navigational query ("what is my next turn") that wants the
+        // LLM, not an article — bail so the model gets it. Articles
+        // that don't exist in the loaded ZIMs come back as a clean
+        // "no article" miss, which is still faster than a 15 s
+        // prefill + possibly-malformed tool call.
+        if let m = match(lower, pattern:
+            #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
+        {
+            let subject = m[0].trimmingCharacters(in: .whitespaces)
+            let firstWord = subject
+                .split(separator: " ", maxSplits: 1)
+                .first.map(String.init) ?? ""
+            let navPronouns: Set<String> = [
+                "my", "our", "your", "here", "now", "next",
+                "this", "that", "these", "those", "it"
+            ]
+            if navPronouns.contains(firstWord) { return nil }
+            // Subject must have at least one content character — "what
+            // is" with nothing after would match `.+` on the trailing
+            // "?!." the caller stripped. Guard against that.
+            if subject.isEmpty { return nil }
+            return DirectIntent(toolName: "article_overview", args: [
+                "title": .string(subject)
+            ])
+        }
+
         return nil
     }
 
@@ -191,6 +249,19 @@ public enum IntentRouter {
                 of: p, with: "", options: .regularExpression)
         }
         return out
+    }
+
+    /// Boolean "does this text match the pattern" helper — used by
+    /// the `what_is_here` check where we don't care about captures,
+    /// just whether the pattern fires. `match()` returns nil for
+    /// capture-less patterns because `numberOfRanges < 2`, so it's
+    /// unsuitable here.
+    private static func matches(_ text: String, pattern: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return false
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.firstMatch(in: text, options: [], range: range) != nil
     }
 
     /// Light regex helper — returns only the capture groups (not the
@@ -272,5 +343,126 @@ public enum IntentRouter {
             return "\(Int(km)) km"
         }
         return String(format: "%.1f km", km)
+    }
+
+    // MARK: - Reply synthesis for non-places fast paths
+
+    /// Caption for `article_overview` fast-path. Grabs the lead
+    /// section's first sentence or two so the bubble carries a real
+    /// answer instead of a stub — no LLM needed.
+    public static func synthesizeArticleOverviewReply(
+        args: [String: Any], fullResult: [String: Any]
+    ) -> String {
+        let title = (fullResult["title"] as? String)
+            ?? (args["title"] as? String) ?? "this topic"
+        if let err = fullResult["error"] as? String, !err.isEmpty {
+            return "I don't have an article on “\(title)” in the loaded ZIMs."
+        }
+        if let sections = fullResult["sections"] as? [[String: Any]],
+           let lead = sections.first,
+           let text = (lead["text"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty
+        {
+            return firstSentences(text, maxChars: 260)
+        }
+        return "Here's what I have on \(title)."
+    }
+
+    /// Caption for `compare_articles` fast-path. Leads with the first
+    /// sentence of each article so the two subjects are actually
+    /// introduced; the full side-by-side payload lands in the trace /
+    /// map bubble below.
+    public static func synthesizeCompareReply(
+        args: [String: Any], fullResult: [String: Any]
+    ) -> String {
+        if let err = fullResult["error"] as? String, !err.isEmpty {
+            return err
+        }
+        let articles = (fullResult["articles"] as? [[String: Any]]) ?? []
+        let lines: [String] = articles.prefix(3).compactMap { a in
+            let t = (a["title"] as? String) ?? ""
+            let sections = (a["sections"] as? [[String: Any]]) ?? []
+            let text = (sections.first?["text"] as? String) ?? ""
+            let snippet = firstSentences(text, maxChars: 160)
+            if t.isEmpty, snippet.isEmpty { return nil }
+            if snippet.isEmpty { return t }
+            return "**\(t)** — \(snippet)"
+        }
+        if !lines.isEmpty {
+            return lines.joined(separator: "\n\n")
+        }
+        let titles = (args["titles"] as? [String]) ?? []
+        if titles.count >= 2 {
+            let head = titles.dropLast().joined(separator: ", ")
+            let tail = titles.last ?? ""
+            return "Comparing \(head) and \(tail). Results below."
+        }
+        return "Comparison below."
+    }
+
+    /// Caption for `what_is_here` fast-path. Describes the resolved
+    /// place + admin area; if the tool attached a Wikipedia summary,
+    /// appends the first sentence of that.
+    public static func synthesizeWhatIsHereReply(
+        fullResult: [String: Any]
+    ) -> String {
+        if let err = fullResult["error"] as? String, !err.isEmpty {
+            return err
+        }
+        let place = (fullResult["nearest_named_place"] as? String) ?? ""
+        let area = (fullResult["admin_area"] as? String) ?? ""
+        let distRaw = (fullResult["distance_m"] as? Int)
+            ?? (fullResult["distance_m"] as? NSNumber)?.intValue ?? 0
+        if place.isEmpty {
+            return "I couldn't identify a named place near your location."
+        }
+        var line = "You're"
+        if distRaw <= 100 {
+            line += " in \(place)"
+        } else if distRaw < 1000 {
+            line += " \(distRaw) m from \(place)"
+        } else {
+            line += String(format: " %.1f km from %@",
+                           Double(distRaw) / 1000.0, place)
+        }
+        if !area.isEmpty, area.lowercased() != place.lowercased() {
+            line += " (\(area))"
+        }
+        line += "."
+        if let summary = fullResult["wiki_summary"] as? String,
+           !summary.isEmpty
+        {
+            line += " " + firstSentences(summary, maxChars: 200)
+        }
+        return line
+    }
+
+    /// Trim `text` to at most one or two complete sentences (up to
+    /// `maxChars`). Keeps the ending punctuation when we cut on a
+    /// sentence boundary; falls back to a hard cut + ellipsis if no
+    /// boundary appears within budget.
+    static func firstSentences(_ text: String, maxChars: Int) -> String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return "" }
+        if t.count <= maxChars { return t }
+        // Scan for the last sentence terminator inside the budget.
+        let limitIdx = t.index(t.startIndex, offsetBy: maxChars)
+        var lastTerm: String.Index?
+        var i = t.startIndex
+        while i < limitIdx {
+            let c = t[i]
+            if c == "." || c == "!" || c == "?" {
+                let next = t.index(after: i)
+                if next == t.endIndex || t[next].isWhitespace {
+                    lastTerm = next
+                }
+            }
+            i = t.index(after: i)
+        }
+        if let end = lastTerm {
+            return String(t[..<end]).trimmingCharacters(in: .whitespaces)
+        }
+        return String(t[..<limitIdx]).trimmingCharacters(in: .whitespaces) + "…"
     }
 }

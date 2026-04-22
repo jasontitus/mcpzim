@@ -2485,6 +2485,21 @@ public final class ChatSession {
             } else if routingTools.contains(intent.toolName) {
                 let synth = Self.synthesizeRoutingReply(from: fullResult)
                 updateAssistant(synth.isEmpty ? "Route below." : synth)
+            } else if intent.toolName == "article_overview" {
+                let synth = IntentRouter.synthesizeArticleOverviewReply(
+                    args: dictArgs, fullResult: fullResult
+                )
+                updateAssistant(synth.isEmpty ? "Results below." : synth)
+            } else if intent.toolName == "compare_articles" {
+                let synth = IntentRouter.synthesizeCompareReply(
+                    args: dictArgs, fullResult: fullResult
+                )
+                updateAssistant(synth.isEmpty ? "Comparison below." : synth)
+            } else if intent.toolName == "what_is_here" {
+                let synth = IntentRouter.synthesizeWhatIsHereReply(
+                    fullResult: fullResult
+                )
+                updateAssistant(synth.isEmpty ? "Location below." : synth)
             } else {
                 updateAssistant("Results below.")
             }
