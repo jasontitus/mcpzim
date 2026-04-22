@@ -1675,6 +1675,25 @@ public final class ChatSession {
                 turns.append(ChatTurn(role: msg.role.asChatTurnRole, text: msg.text))
             }
         }
+        // The last message is the empty assistant placeholder the
+        // provider template's open-assistant tag resumes into — we
+        // normally drop it with `dropLast` so it doesn't get rendered
+        // twice. But the fast-path injector may have pre-populated
+        // tool round-trips on it (compare_articles / article_overview
+        // dispatched without the LLM's iter 0, now the LLM just has
+        // to summarise). Include those round-trips here so the
+        // rebuilt prompt ends in `<tool_response>…</tool_response>`
+        // and the model's next emission is the prose.
+        if let last = messages.last, last.role == .assistant {
+            for rt in last.toolRoundTrips {
+                if !rt.assistantEmission.isEmpty {
+                    turns.append(ChatTurn(role: .assistant, text: rt.assistantEmission))
+                }
+                if !rt.toolResponseTurn.isEmpty {
+                    turns.append(ChatTurn(role: .tool, text: rt.toolResponseTurn))
+                }
+            }
+        }
 
         // Up to 6 tool loops per user turn — enough for small models
         // that burn iterations exploring (small search → wrong zim →
@@ -2528,16 +2547,48 @@ public final class ChatSession {
             } else if routingTools.contains(intent.toolName) {
                 let synth = Self.synthesizeRoutingReply(from: fullResult)
                 updateAssistant(synth.isEmpty ? "Route below." : synth)
-            } else if intent.toolName == "article_overview" {
-                let synth = IntentRouter.synthesizeArticleOverviewReply(
-                    args: dictArgs, fullResult: fullResult
+            } else if intent.toolName == "article_overview"
+                   || intent.toolName == "compare_articles"
+            {
+                // The fast path dispatches the tool (saving iter 0's
+                // ~13 s prefill-and-decide cost), then hands off to
+                // the LLM to generate the prose. Synthesising a
+                // caption ourselves works for simple places / routing
+                // replies — a map bubble below carries the real
+                // answer — but for compare / article_overview the
+                // reply IS the prose, and the LLM needs to see the
+                // tool result and summarise it.
+                //
+                // We inject a synthetic round-trip (assistant
+                // tool-call emission + tool response) into the
+                // transcript in the model's native wire format, then
+                // return `false` so the caller falls through to
+                // `runGenerationLoop`. That loop rebuilds the prompt,
+                // sees the round-trip already done, and the model's
+                // next emission is the summarising prose — no
+                // second-tool-call round.
+                let template = selectedModel.template
+                let assistantEmission = template.formatToolCall(
+                    name: intent.toolName, arguments: dictArgs
                 )
-                updateAssistant(synth.isEmpty ? "Results below." : synth)
-            } else if intent.toolName == "compare_articles" {
-                let synth = IntentRouter.synthesizeCompareReply(
-                    args: dictArgs, fullResult: fullResult
+                let trimmed = Self.trimForModel(
+                    toolName: intent.toolName,
+                    result: fullResult,
+                    articleCapKB: self.articleCapKB
                 )
-                updateAssistant(synth.isEmpty ? "Comparison below." : synth)
+                let toolResponse = template.formatToolResponse(
+                    name: intent.toolName, payload: trimmed
+                )
+                recordToolRoundTrip(
+                    assistantEmission: assistantEmission,
+                    toolResponse: toolResponse
+                )
+                // Leave the assistant bubble empty — `runGenerationLoop`
+                // will stream the prose into it.
+                updateAssistant("")
+                debug("fast-path injected \(intent.toolName) round-trip → LLM will summarise",
+                      category: "Router")
+                return false
             } else if intent.toolName == "what_is_here" {
                 let synth = IntentRouter.synthesizeWhatIsHereReply(
                     fullResult: fullResult

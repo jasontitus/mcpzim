@@ -120,6 +120,16 @@ public protocol ModelTemplate: Sendable {
     /// strict streaming version.
     func firstToolCallAfterClip(in buffer: String) -> ToolCallMatch?
 
+    /// Render an assistant tool-call emission in the model's native
+    /// wire format — inverse of `firstToolCall`. Used by the fast-path
+    /// dispatcher when it wants to inject a synthetic round-trip
+    /// (classifier-chosen tool + adapter-dispatched result) into the
+    /// transcript so the next generate() pass summarises the tool's
+    /// output instead of re-emitting the tool call. Keeping this
+    /// template-owned means the emission matches byte-for-byte what
+    /// the model would have produced — no LCP drift at the KV cache.
+    func formatToolCall(name: String, arguments: [String: Any]) -> String
+
     /// Render a tool-response turn to feed back to the model. Ends with
     /// the assistant-open tag so the next `generate(...)` resumes in
     /// assistant mode.
@@ -193,6 +203,10 @@ public struct Gemma4Template: ModelTemplate {
     public func firstToolCall(in buffer: String) -> ToolCallMatch? {
         guard let m = Gemma4ToolCallParser.firstCall(in: buffer) else { return nil }
         return ToolCallMatch(range: m.range, name: m.name, arguments: m.arguments)
+    }
+
+    public func formatToolCall(name: String, arguments: [String: Any]) -> String {
+        Gemma4ToolFormat.formatToolCall(name: name, arguments: arguments)
     }
 
     public func formatToolResponse(name: String, payload: [String: Any]) -> String {

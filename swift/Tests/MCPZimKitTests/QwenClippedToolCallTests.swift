@@ -218,6 +218,44 @@ final class QwenClippedToolCallTests: XCTestCase {
                        "an intentional whitespace value must not be clobbered")
     }
 
+    // MARK: - formatToolCall round-trip
+    //
+    // The fast-path injector needs to emit a synthetic tool-call in
+    // the model's native wire format so iter 0 of runGenerationLoop
+    // sees a completed round-trip and generates prose (not another
+    // tool_call). The contract: what we format, we must be able to
+    // parse back.
+
+    func testFormatToolCallRoundTripsThroughFirstToolCall() {
+        let name = "compare_articles"
+        let args: [String: Any] = [
+            "titles": ["North Korea", "South Korea"]
+        ]
+        let emission = tpl.formatToolCall(name: name, arguments: args)
+        // The emission must be wrapped in <tool_call>...</tool_call>
+        // so the transcript renderer doesn't accidentally double-wrap
+        // and the streaming parser finds it on round-trip.
+        XCTAssertTrue(emission.hasPrefix("<tool_call>"),
+                      "missing <tool_call> open marker: \(emission)")
+        XCTAssertTrue(emission.contains("</tool_call>"),
+                      "missing </tool_call> close marker: \(emission)")
+        let m = tpl.firstToolCall(in: emission)
+        XCTAssertNotNil(m, "emission must be parseable by firstToolCall")
+        XCTAssertEqual(m?.name, "compare_articles")
+        XCTAssertEqual(m?.arguments["titles"] as? [String],
+                       ["North Korea", "South Korea"])
+    }
+
+    func testFormatToolCallHandlesEmptyArgs() {
+        let emission = tpl.formatToolCall(
+            name: "what_is_here", arguments: [:]
+        )
+        let m = tpl.firstToolCall(in: emission)
+        XCTAssertNotNil(m)
+        XCTAssertEqual(m?.name, "what_is_here")
+        XCTAssertTrue((m?.arguments ?? [:]).isEmpty)
+    }
+
     // MARK: - Reasoning strip
 
     func testStripReasoningRemovesClosedThinkSpan() {

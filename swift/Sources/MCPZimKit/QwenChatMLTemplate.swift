@@ -312,6 +312,23 @@ public struct QwenChatMLTemplate: ModelTemplate {
         return out
     }
 
+    public func formatToolCall(name: String, arguments: [String: Any]) -> String {
+        // ChatML tool-call emission — the `<tool_call>…</tool_call>`
+        // block wrapped around a JSON object. Matches what
+        // `firstToolCall(in:)` parses back. No leading `<|im_start|>`
+        // here — the caller injects this as the body of an assistant
+        // turn, and the transcript renderer wraps it.
+        let body: [String: Any] = [
+            "name": name,
+            "arguments": arguments,
+        ]
+        let data = (try? JSONSerialization.data(
+            withJSONObject: body, options: [.sortedKeys]
+        )) ?? Data()
+        let json = String(data: data, encoding: .utf8) ?? "{}"
+        return "<tool_call>\n\(json)\n</tool_call>"
+    }
+
     public func formatToolResponse(name: String, payload: [String: Any]) -> String {
         // Tool-response turn body. ChatSession wraps this in a `tool`
         // ChatTurn; `renderTranscript` emits it as a user-role ChatML
