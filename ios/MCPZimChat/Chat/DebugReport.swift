@@ -39,6 +39,33 @@ private let reportLog = Logger(
     category: "DebugReport"
 )
 
+/// Gist-upload configuration lives in UserDefaults so the user can
+/// paste their PAT once on device and forget about it. When unset,
+/// `emitDebugReport()` falls back to syslog-only transport and the
+/// Mac-side pickup works only if `mcp-logs.sh` is streaming.
+public enum DebugReportConfig {
+    private static let tokenKey = "debug.report.githubToken"
+
+    /// Short-lived GitHub PAT with `gist` scope. Stored in
+    /// UserDefaults — personal-dev only; don't ship the app
+    /// publicly with this in place.
+    public static var githubToken: String? {
+        get { UserDefaults.standard.string(forKey: tokenKey) }
+        set {
+            let defaults = UserDefaults.standard
+            if let v = newValue, !v.isEmpty {
+                defaults.set(v, forKey: tokenKey)
+            } else {
+                defaults.removeObject(forKey: tokenKey)
+            }
+        }
+    }
+
+    /// Marker included in the gist description so the Mac picker can
+    /// filter the user's gists down to just our reports.
+    public static let gistMarker = "mcpzim-debug-report"
+}
+
 /// On-disk / on-wire model. Deliberately flat + Codable so the Mac
 /// reassembler doesn't need any of our Swift types to parse it —
 /// `jq` + a browser work fine.
@@ -143,11 +170,91 @@ extension ChatSession {
         let endLine = "[DebugReport END hash=\(hash) chunks=\(idx)]"
         reportLog.notice("\(endLine, privacy: .public)")
 
+        // If a GitHub PAT is configured, POST the same JSON as a
+        // gist so the Mac can pull it from anywhere (not just when
+        // `mcp-logs.sh` is running). The syslog transport stays as
+        // the fallback for offline / missing-token scenarios.
+        let gistTask: Task<String?, Never>? = {
+            guard let token = DebugReportConfig.githubToken,
+                  !token.isEmpty, !json.isEmpty
+            else { return nil }
+            return Task.detached { [hash] in
+                await ChatSession.uploadAsGist(json: json, hash: hash, token: token)
+            }
+        }()
+        if gistTask != nil {
+            Task { [weak self] in
+                if let url = await gistTask?.value {
+                    await MainActor.run {
+                        self?.debug("gist: \(url)", category: "DebugReport")
+                    }
+                }
+            }
+        }
+
         // Clear the debug log so the next bad query produces a clean
         // report. We keep the messages themselves — the user may want
         // to retry within the same conversation.
         debugEntries.removeAll()
         return hash
+    }
+
+    /// POST the serialized report to gist.github.com. Returns the
+    /// gist's html_url on success, nil on any error (logged but not
+    /// surfaced — the syslog transport is always in effect too).
+    ///
+    /// Gists expose a multi-file shape; we store the report under
+    /// `report.json` so `gh gist view --filename report.json` works
+    /// without guessing.
+    nonisolated private static func uploadAsGist(
+        json: Data, hash: String, token: String
+    ) async -> String? {
+        guard let content = String(data: json, encoding: .utf8) else { return nil }
+        struct GistFile: Encodable {
+            let content: String
+        }
+        struct GistBody: Encodable {
+            let description: String
+            let `public`: Bool
+            let files: [String: GistFile]
+        }
+        let body = GistBody(
+            description: "\(DebugReportConfig.gistMarker) \(hash)",
+            public: false,   // secret (unlisted) — still URL-shareable
+            files: ["report.json": GistFile(content: content)]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let payload = try? encoder.encode(body) else { return nil }
+        var req = URLRequest(url: URL(string: "https://api.github.com/gists")!)
+        req.httpMethod = "POST"
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        req.setValue("MCPZimChat/1 DebugReport", forHTTPHeaderField: "User-Agent")
+        req.httpBody = payload
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else {
+                let body = String(data: data, encoding: .utf8) ?? "?"
+                let msg = "gist upload failed: \(body)"
+                reportLog.error("\(msg, privacy: .public)")
+                return nil
+            }
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let url = obj["html_url"] as? String
+            {
+                let line = "[DebugReport GIST hash=\(hash) url=\(url)]"
+                reportLog.notice("\(line, privacy: .public)")
+                return url
+            }
+            return nil
+        } catch {
+            reportLog.error("gist upload threw: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     private func shortHash(_ data: Data) -> String {

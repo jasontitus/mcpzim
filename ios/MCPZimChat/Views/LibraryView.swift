@@ -135,6 +135,32 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Debug report") {
+                @Bindable var bindable = session
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("GitHub PAT (gist scope)")
+                    SecureField("ghp_…", text: Binding(
+                        get: { DebugReportConfig.githubToken ?? "" },
+                        set: { DebugReportConfig.githubToken = $0 }
+                    ))
+                    .textContentType(.password)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.footnote.monospaced())
+                    Text("When set, the debug-pane Report button also uploads the "
+                         + "session as a secret gist to your GitHub account so you "
+                         + "can fetch it from anywhere. Unset → syslog-only "
+                         + "(requires `mcp-logs.sh` running on Mac).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let token = DebugReportConfig.githubToken, !token.isEmpty {
+                        Text("✓ token set (\(token.count) chars)")
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+
             Section("Providers") {
                 @Bindable var bindable = session
                 Toggle(isOn: $bindable.enableAppleFMBinding) {

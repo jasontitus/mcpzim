@@ -6,15 +6,22 @@
 # ios/MCPZimChat/Chat/DebugReport.swift for the wire format.
 #
 # Usage:
-#   mcp-report.sh latest       # reassemble the newest complete report
-#   mcp-report.sh list         # print every (hash, time, chunk count) tuple seen
-#   mcp-report.sh pull HASH    # reassemble the report with a specific hash
+#   mcp-report.sh latest       # reassemble the newest LOCAL report (from syslog buffer)
+#   mcp-report.sh list         # print every local (hash, time, chunk count) tuple seen
+#   mcp-report.sh pull HASH    # reassemble a specific local report
+#   mcp-report.sh cloud        # fetch the newest gist-uploaded report via `gh` (works anywhere)
+#   mcp-report.sh cloud list   # list all uploaded gist reports (newest first)
+#   mcp-report.sh cloud pull ID    # fetch a specific gist by ID
 #
-# Requires ios/scripts/mcp-logs.sh to be tailing (it populates
-# /tmp/mcp-syslog.log, which is the buffer we scan). If your Mac
-# hasn't been streaming the phone's logs the report line never
-# arrived and no script can recover it — restart mcp-logs.sh and
-# ask the user to tap Report again.
+# The "cloud" mode requires the user to have pasted a GitHub PAT
+# with `gist` scope into Library → Debug report on device AND `gh
+# auth login` on this Mac. The iOS side uploads as SECRET gists
+# (unlisted but URL-shareable) with description prefix
+# `mcpzim-debug-report`; this script filters on that prefix so
+# unrelated gists in the user's account are ignored.
+#
+# Local modes require ios/scripts/mcp-logs.sh to be tailing (it
+# populates /tmp/mcp-syslog.log).
 
 set -euo pipefail
 
@@ -92,7 +99,77 @@ PY
 
 cmd="${1:-latest}"
 
+cloud_marker="mcpzim-debug-report"
+
+cloud_list() {
+  # Filter gists by description prefix. --limit 100 covers any
+  # plausible backlog; bump via environment if needed.
+  gh gist list --limit "${GIST_LIMIT:-100}" 2>/dev/null \
+    | awk -v m="$cloud_marker" '
+        {
+          # gh gist list format (TSV): ID\tDESC\tFILE_COUNT\tVISIBILITY\tUPDATED_AT
+          if (index($0, m) > 0) print $0
+        }
+      '
+}
+
+cloud_pull() {
+  local gid="$1"
+  local out_json="$OUT/gist-$gid.json"
+  mkdir -p "$OUT"
+  # --filename=report.json matches what the iOS side uploads (see
+  # DebugReport.swift's `uploadAsGist`).
+  gh gist view "$gid" --filename report.json > "$out_json" 2>/dev/null \
+    || gh gist view "$gid" --raw > "$out_json"
+  echo "wrote: $out_json"
+  python3 - "$out_json" <<'PY'
+import json, sys
+try:
+    j = json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.stderr.write(f"parse failed: {e}\n"); sys.exit(1)
+print(f"generatedAt:     {j.get('generatedAt')}")
+print(f"appBuild:        {j.get('appBuild')}  deviceTier: {j.get('deviceTier')}")
+print(f"selectedModelId: {j.get('selectedModelId')}")
+print(f"messages:        {len(j.get('messages', []))}")
+print(f"debugEntries:    {len(j.get('debugEntries', []))}")
+print()
+print("— last 5 debug entries —")
+for e in j.get('debugEntries', [])[-5:]:
+    print(f"  [{e.get('category','?')}] {e.get('message','')[:120]}")
+print()
+print("— messages —")
+for m in j.get('messages', []):
+    txt = (m.get('text','') or '').replace('\n',' ')[:120]
+    tools = ",".join(t.get('name','?') for t in m.get('toolCalls', []))
+    print(f"  [{m.get('role','?')}] {txt}  {('['+tools+']') if tools else ''}")
+PY
+}
+
 case "$cmd" in
+  cloud)
+    sub="${2:-latest}"
+    case "$sub" in
+      list)
+        cloud_list
+        ;;
+      pull)
+        [ $# -ge 3 ] || usage
+        cloud_pull "$3"
+        ;;
+      latest|"")
+        gid=$(cloud_list | awk '{print $1}' | head -n 1)
+        if [ -z "$gid" ]; then
+          echo "no cloud reports found — is the iOS PAT set + did the user tap Report?" >&2
+          exit 1
+        fi
+        cloud_pull "$gid"
+        ;;
+      *)
+        usage
+        ;;
+    esac
+    ;;
   list)
     scan_reports | sort -t$'\t' -k4,4
     ;;
