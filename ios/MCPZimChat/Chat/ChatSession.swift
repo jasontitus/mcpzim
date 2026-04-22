@@ -2771,31 +2771,32 @@ public final class ChatSession {
             // AND memory: on-device repro showed two full articles
             // (15–30 KB of raw text) jetsam'd the app mid-summary.
             //
-            // Keep ONLY the lead section, truncated to ~first
-            // paragraph (80 words ≈ 500 chars ≈ 100 tokens). At two
-            // articles that's ~200 extra tokens of prompt — well
-            // under any threshold, and the model still has the core
-            // facts to compare. Word-based truncation (vs char-based)
-            // keeps words and trailing punctuation intact so the
-            // model doesn't see "...founded in 19" or mid-entity
+            // Keep ONLY the lead section, truncated to ~160 words
+            // (≈1000 chars ≈ 200 tokens). At two articles that's
+            // ~400 extra tokens of prompt — safely under any
+            // threshold, with enough room for a second or third
+            // paragraph of the lead so the model has real
+            // comparable material. Word-based truncation (vs char-
+            // based) keeps words and trailing punctuation intact so
+            // the model doesn't see "...founded in 19" or mid-entity
             // mangling at the boundary. The relations-article shape
             // (top-level `sections`) gets the same treatment.
-            let leadWordCap = 80
+            let leadWordCap = 160
             func keepLeadOnly(_ sections: [[String: Any]]) -> [[String: Any]] {
                 guard let lead = sections.first else { return [] }
                 var trimmedLead = lead
                 if let text = lead["text"] as? String {
-                    // Prefer first paragraph; if the paragraph is
-                    // itself long, cap at `leadWordCap` whole words.
-                    let para = text
-                        .components(separatedBy: "\n\n")
-                        .first ?? text
-                    let words = para.split(separator: " ",
+                    // Run word-based cap across the whole lead — not
+                    // just the first paragraph. At 160 words we
+                    // typically land inside paragraph 2 or 3, which
+                    // for most Wikipedia leads is exactly the "enough
+                    // context to actually compare" sweet spot.
+                    let words = text.split(separator: " ",
                                            omittingEmptySubsequences: false)
                     let truncated = words.count > leadWordCap
                     let out = truncated
                         ? words.prefix(leadWordCap).joined(separator: " ") + "…"
-                        : para
+                        : text
                     trimmedLead["text"] = out
                     if truncated || sections.count > 1 {
                         trimmedLead["truncated"] = true
