@@ -34,6 +34,17 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
         self.hasFullTextIndex = archive.hasFulltextIndex
         self.hasTitleIndex = archive.hasTitleIndex
         self.hasRoutingData = archive.hasEntry("routing-data/graph.bin")
+        // Cap libzim's per-archive cluster cache. The default (~32 MB in
+        // recent libzim) suits Wikipedia's small article clusters, but
+        // streetzim packs its entire 700 MB routing graph into a single
+        // huge cluster — without a cap that cluster would linger in the
+        // LRU long after `SZRGGraph.parse` is done with it, pinning
+        // ~700 MB of resident memory we already extracted everything
+        // we need from. Set the cap small enough that post-read eviction
+        // happens promptly; reads still pay full peak during the single
+        // `getData()` call, but steady-state drops back to arrays-only.
+        let cacheCapBytes: UInt = 64 * 1024 * 1024   // 64 MB
+        archive.setClusterCacheMaxSizeBytes(cacheCapBytes)
     }
 
     public let metadata: ZimMetadata

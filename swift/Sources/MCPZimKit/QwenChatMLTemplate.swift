@@ -47,11 +47,27 @@ public struct QwenChatMLTemplate: ModelTemplate {
     /// ChatML uses `<|im_end|>` as the universal turn-close marker.
     public var stopMarkers: [String] { ["<|im_end|>"] }
 
+    public var logCategory: String { "Qwen" }
+
     public func formatSystemTurn(
         systemMessage: String, tools: [ModelToolDeclaration]
     ) -> String {
         var out = "<|im_start|>system\n"
         out += systemMessage
+        // `/no_think` is Qwen 3's built-in soft switch that disables
+        // the `<think>…</think>` reasoning scratchpad for this turn (and,
+        // when in the system prompt, every subsequent turn). Without it
+        // Qwen happily spends 300+ tokens deliberating "should I call
+        // nearby_places or something else… or maybe…" before emitting
+        // the actual tool call — burning KV cache (~hundreds of MB at
+        // 6k-token prompts) and adding multi-second latency per turn.
+        // We strip any CLOSED `<think>…</think>` in `stripReasoning`
+        // anyway, but the tokens still paid cache memory before the
+        // strip. Disabling at the source is cheaper than cleaning up
+        // after. Keep as the final marker before the close tag so a
+        // per-turn `/think` directive in a user message can still flip
+        // it back on if we ever need richer reasoning (e.g. math).
+        out += "\n\n/no_think"
         if !tools.isEmpty {
             out += "\n\n# Tools\n\n"
             out += "You may call one or more functions to assist with the user query.\n\n"
@@ -95,7 +111,18 @@ public struct QwenChatMLTemplate: ModelTemplate {
             out += "<|im_start|>\(role)\n\(t.text)<|im_end|>\n"
         }
         // Open the assistant turn so generation picks up in assistant mode.
-        out += "<|im_start|>assistant\n"
+        // On Qwen 3.5 (and later) the model's own chat template injects
+        // `<think>\n\n</think>\n\n` right after the assistant open when
+        // `enable_thinking=False` — an empty reasoning block that tells
+        // the model "I've finished thinking, now answer". We mirror that
+        // here because Qwen 3.5 ignores Qwen 3's `/no_think` soft
+        // directive (which we still leave in the system turn as a
+        // belt-and-braces for Qwen 3). Qwen 3 accepts the empty block
+        // as well — it reads as a finished reasoning span and skips
+        // its own `<think>…</think>`. Net effect across both families:
+        // no reasoning scratchpad in the generated output, cutting
+        // ~hundreds of tokens of KV per turn.
+        out += "<|im_start|>assistant\n<think>\n\n</think>\n\n"
         return out
     }
 
@@ -107,16 +134,83 @@ public struct QwenChatMLTemplate: ModelTemplate {
         let bodyStart = openMarker.upperBound
         let body = String(buffer[bodyStart..<closeMarker.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        // Some Qwen variants (Qwen 3.5 especially) emit JSON shapes
+        // that don't quite match our prompt's "{name, arguments}"
+        // template. Observed in the wild:
+        //   {"name": "foo", "arguments": {...}}           ← canonical
+        //   {"function": "foo", "arguments": {...}}       ← Qwen 3.5 flat
+        //   {"function": {"name": "foo", "arguments": {...}}} ← nested
+        //   {"function": {"arguments": {...}}}            ← broken (no name)
+        // Try canonical first, then fall back to each alternate shape.
+        // Tolerate a trailing or interior comma and a missing closing
+        // brace from clipped Qwen output by attempting a one-shot
+        // brace-balance repair before the second decode pass.
+        guard let obj = Self.decodeObject(body) ?? Self.decodeObject(Self.repairJSON(body))
         else { return nil }
-        guard let name = obj["name"] as? String,
-              let args = obj["arguments"] as? [String: Any]
-        else { return nil }
-        return ToolCallMatch(
-            range: openMarker.lowerBound..<closeMarker.upperBound,
-            name: name, arguments: args
-        )
+
+        // 1) canonical {"name": …, "arguments": …}
+        if let name = obj["name"] as? String,
+           let args = obj["arguments"] as? [String: Any]
+        {
+            return ToolCallMatch(
+                range: openMarker.lowerBound..<closeMarker.upperBound,
+                name: name, arguments: args
+            )
+        }
+        // 2) Qwen 3.5 flat: {"function": "name", "arguments": {…}}
+        if let name = obj["function"] as? String,
+           let args = obj["arguments"] as? [String: Any]
+        {
+            return ToolCallMatch(
+                range: openMarker.lowerBound..<closeMarker.upperBound,
+                name: name, arguments: args
+            )
+        }
+        // 3) Qwen 3.5 nested: {"function": {"name": …, "arguments": …}}
+        if let inner = obj["function"] as? [String: Any],
+           let name = inner["name"] as? String,
+           let args = inner["arguments"] as? [String: Any]
+        {
+            return ToolCallMatch(
+                range: openMarker.lowerBound..<closeMarker.upperBound,
+                name: name, arguments: args
+            )
+        }
+        // 4) Qwen 3.5 OpenAI-ish:
+        //    {"type": "function", "arguments": {"name": "X", "arguments": {…}}}
+        //    The `name` + real `arguments` are nested one level deeper
+        //    inside the outer `arguments`. Observed in the wild on
+        //    `principled-intelligence/Qwen3.5-4B-text-only` bf16 for
+        //    the `restaurants_in_sf` scenario.
+        if obj["type"] as? String == "function",
+           let inner = obj["arguments"] as? [String: Any],
+           let name = inner["name"] as? String,
+           let args = inner["arguments"] as? [String: Any]
+        {
+            return ToolCallMatch(
+                range: openMarker.lowerBound..<closeMarker.upperBound,
+                name: name, arguments: args
+            )
+        }
+        return nil
+    }
+
+    private static func decodeObject(_ s: String) -> [String: Any]? {
+        guard let data = s.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Qwen 3.5 sometimes clips a generation mid-object, leaving
+    /// e.g. `{"function": {"name": "foo", "arguments": {…}` without
+    /// the trailing `}` needed to close the outer wrapper. Balance the
+    /// braces before giving the JSON decoder one more shot. Cheap
+    /// best-effort — if the clipped span is deeper than one missing
+    /// brace, we just return nil from the caller.
+    private static func repairJSON(_ s: String) -> String {
+        let opens = s.filter { $0 == "{" }.count
+        let closes = s.filter { $0 == "}" }.count
+        guard opens > closes else { return s }
+        return s + String(repeating: "}", count: opens - closes)
     }
 
     /// Qwen 3's reasoning mode wraps its scratchpad in `<think>…</think>`

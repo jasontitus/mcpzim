@@ -587,13 +587,37 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        // Some text-only Qwen 3.5 checkpoints (e.g.
+        // `principled-intelligence/Qwen3.5-*-text-only`) keep the
+        // `model.language_model.*` key prefix inherited from the
+        // vision-capable parent even though there's no vision tower.
+        // The outer `Qwen35Model` already handles that rewrite, but
+        // when `qwen3_5_text` is registered straight to this text-only
+        // class via `LLMModelFactory`, we land here with unsanitized
+        // keys. Normalize them here so both the vision-wrapped and
+        // flat layouts load.
+        var weights = weights
+        if weights.keys.contains(where: { $0.hasPrefix("model.language_model.") }) {
+            var rewritten: [String: MLXArray] = [:]
+            for (k, v) in weights {
+                if k.hasPrefix("vision_tower") || k.hasPrefix("model.visual") {
+                    continue
+                }
+                var key = k
+                if key.hasPrefix("model.language_model.") {
+                    key = "model." + key.dropFirst("model.language_model.".count)
+                }
+                rewritten[key] = v
+            }
+            weights = rewritten
+        }
         let hasMTPWeights = weights.keys.contains { $0.contains("mtp.") }
         let hasUnsanitizedConv1d = weights.contains { key, value in
             key.contains("conv1d.weight") && value.dim(-1) != 1
         }
         let shouldShiftNormWeights = hasMTPWeights || hasUnsanitizedConv1d
 
-        var weights = weights.filter { !$0.key.contains("mtp.") }
+        weights = weights.filter { !$0.key.contains("mtp.") }
 
         if configuration.tieWordEmbeddings {
             weights["lm_head.weight"] = nil

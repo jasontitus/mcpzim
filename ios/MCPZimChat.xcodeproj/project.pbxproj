@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0221A3CC27F893F52F50456F /* FoundationModelsNativeTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */; };
 		053E01092FFD0DCD51F94D8A /* Info-Mac.plist in Resources */ = {isa = PBXBuildFile; fileRef = 9FF024DDEF1F8B898451BF3B /* Info-Mac.plist */; };
 		0587388607CB91081A166378 /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = AAA75F39EABB865E1D902188 /* MLXHuggingFace */; };
 		07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
@@ -15,26 +16,37 @@
 		0D3DFA7E4D37B077303CA421 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		10FF797EA9AC81D9E7AB7A85 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C05D5166643856E4261880 /* Message.swift */; };
-		1333E4C1DAA2F8B84EB6D92C /* MultiModelEvalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */; };
 		1552DF61BEE685667DC21E18 /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
+		18AAF98E6BB5668D2464E031 /* LogArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A07E5C8A32C8BF3B549551 /* LogArchive.swift */; };
+		195A361EA7F2F73ECE06E638 /* ZimfoRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */; };
 		1AF01DC71F41BFA84E20663D /* RouteWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */; };
 		1AFD789EC30E7E771837F4AD /* VoiceChatController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */; };
+		1BD46DFA6CBFBB7FFE84FC8A /* PastLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134630F1E37CE3F3032F5280 /* PastLogsView.swift */; };
+		1C3FBC6101275CFC8D09B96B /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		21EDA34B7573C85B7DB45EE2 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 3E2FE9FB9928746EDEDB1F23 /* MLXUtilsLibrary */; };
 		22D8B4100D754239A285761E /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79130F0C1B723177E34B9AD0 /* TTSService.swift */; };
 		246D29E8329D20D3F194CCB8 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; };
+		2569A6718DB05620462B8C37 /* LogArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A07E5C8A32C8BF3B549551 /* LogArchive.swift */; };
+		286FE7F9C1D759B018281BA7 /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
 		2B06752A95E47D38D1E794E0 /* VoiceChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */; };
+		2F1E1FEB8ACA41EF8F715E1F /* LocationFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7495A1AA64C657297341FF95 /* LocationFetcher.swift */; };
 		2FDFC126506F934041D5B973 /* ZimfoRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */; };
+		31CE2A7CFC75560E42826C1B /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = EBF6F9DAB8CD17AD868F990E /* MLXLMCommon */; };
 		3569A18ECEA25DFFA02E346C /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
 		38C77B4EF968848BB9665767 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */; };
 		3954B88FDE1B89124784C1CF /* MCPZimKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4E12D282336A335C69AF41FE /* MCPZimKit */; };
 		3C72C6C746E0B238AE9C04A6 /* LocationFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7495A1AA64C657297341FF95 /* LocationFetcher.swift */; };
 		3E5CBB6DF865493628BCFBEC /* FoundationModelsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */; };
+		40C50E921311E3EC1F8CCB9F /* MCPZimKit in Frameworks */ = {isa = PBXBuildFile; productRef = CFB2395B1BAE021E83CA01A8 /* MCPZimKit */; };
 		497ACD8657D6264471963ECC /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
 		4B801BFA891D016E580EABDD /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6037251F9C513E4290F5DCB1 /* ChatSession.swift */; };
 		532EF86EA533402790F7F10F /* GemmaToolEmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */; };
+		533C82B70BDA8931E0DC32CF /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		5369533E7A4AC1E924B5F602 /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
+		548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		5AA8354ADF3A57116E84B014 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
+		5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */; };
 		5EA70DF0913B75281CCC3765 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 3AF1A35A8E7749DF485A0474 /* MLXLLM */; };
 		5ECED997884E2EF46FF2A099 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		60C3938C951EE44EACDD57B9 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68BDA1E10556B87C57B41BFB /* RootView.swift */; };
@@ -58,45 +70,63 @@
 		857AB4463B26C17EB39CF5F9 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */; };
 		88C1CD7617CD79E458F4C169 /* MCPZimChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB08857ED66D69CE7FD5FC2 /* MCPZimChatApp.swift */; };
 		8A59F6836E4AE5845D7C81F4 /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
+		8C042D8CCFB49FDC1EB85131 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 7976C21563542CA52D62A897 /* MLXLLM */; };
 		92A825DC132CF07CA068D76E /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
+		96A5442E958C239D945495B4 /* EvalCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */; };
+		96F628EF2AF82D5A1505DA9A /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		991D9CAB46EC9BE2B190C2BB /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */; };
 		9944BC51FF63E1E8ED7317B1 /* MCPZimKit in Frameworks */ = {isa = PBXBuildFile; productRef = 23FEAB22262304C043EBF45F /* MCPZimKit */; };
 		99782EFCA850E4FE60B60189 /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
 		9A29E69CBDDD6C5EF8182448 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = B5171F3BEEDD189FEC289536 /* Tokenizers */; };
+		9D7D536B527294D0608A48FA /* PastLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134630F1E37CE3F3032F5280 /* PastLogsView.swift */; };
+		9E7F7C0A5C3878FEB4CBAE6A /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = C03B799F981A3217BB089044 /* MLXHuggingFace */; };
 		A1A1F46F888E8A38EA6941AE /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A332602332894F8A97B72609 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		A3F8DDA8CE492A709D73CDBC /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
 		A54A973CBA0A78BA50B9F26F /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
 		ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */ = {isa = PBXBuildFile; fileRef = 582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */; };
+		AE843C00BE5209BD3320E18B /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
 		AF2A0E2D772718AFC1B1AF20 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
 		B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		B02A0D7A19EC22CA4345A940 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
+		B1A228CFEF62A3BB362ED387 /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
 		B5AB4FB6D93A6F9C20C68B40 /* LocationFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7495A1AA64C657297341FF95 /* LocationFetcher.swift */; };
+		B8D9A7D450C7981AC144DB32 /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
+		BA5ECC4F7C675EBB99609961 /* EvalHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */; };
+		C18272874D5C8E7B3F730008 /* MockProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0775822A936033CF0B59DD4C /* MockProvider.swift */; };
 		C2B48D2EEC8B7417DD00A4E3 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 39C4A10192E9907FF2399AF5 /* Tokenizers */; };
+		C37079D8350EE1487FFB57B3 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 395E56236B7FABCBC09D8A22 /* HuggingFace */; };
 		C7166CA09E3B480F491B77C4 /* MockProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0775822A936033CF0B59DD4C /* MockProvider.swift */; };
 		C76A8ECC4E114DFA06290F3F /* FoundationModelsNativeTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */; };
 		C773F4CD7498B53B2A0CB3E7 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */; };
 		C7EA6C316695E384E84D6FFF /* MCPZimChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB08857ED66D69CE7FD5FC2 /* MCPZimChatApp.swift */; };
+		C8BF56AA36C795A79844B1DA /* CoreKiwix.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = EEC0815A218EB9C521BED4BE /* CoreKiwix.xcframework */; };
 		C9AFDA297646DDAD66FEE56A /* ZimfoRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */; };
 		CA3F5AF9BEB7381081B9895B /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		CE739BBD78E30B102A53F8C8 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79130F0C1B723177E34B9AD0 /* TTSService.swift */; };
 		CF4C4D6916DCD55F90003229 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 627D27FCFC19D35BACEC4DB2 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D46144F1C9865D70B6E0F298 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C05D5166643856E4261880 /* Message.swift */; };
 		D4C6FA388511ADE3EEF2F1F2 /* ZimfoContext+Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */; };
+		D4DF5A386843890406EFC924 /* LogArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A07E5C8A32C8BF3B549551 /* LogArchive.swift */; };
 		D545A04576364A00D190809D /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = F57CDF84A48A33BBD022CF1C /* MLXUtilsLibrary */; };
+		D5BA2D72BF66C5E29E87FBF4 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 5E83B350638473AE0CD57BB9 /* Tokenizers */; };
 		D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
 		DAB96DD245708E6AD02ED7E7 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = B6F8A6F28E87B9F454782D51 /* HuggingFace */; };
+		DC19A1CA500A7E5308E0505F /* FoundationModelsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */; };
 		DC31AA377E56FEC379F716AE /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		DEE474FDE1C8EB10036FC46E /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 36DC7A228BE4E4873218936A /* MLXLLM */; };
 		DF65D0F49519D238DE60C1E5 /* FoundationModelsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */; };
 		E18395D889A1ACFD60C1F226 /* KokoroAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */; };
+		E1FB76DEEBFB837F5D6F65A6 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
 		E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		E799CDAC1E31F24F18413D9D /* VoiceChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */; };
 		E8429766D83FB7A9E83BD30E /* ZimfoIntentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */; };
 		EA80F310F58B8C7072C29E67 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
 		EB794946A933269998AC09F8 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A035447C78F57AFCE9AF658D /* MLXLMCommon */; };
 		F285CF4AF2E92E604BBD35A7 /* RouteWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */; };
+		FB4B16ED534F3874E6D0C437 /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		FD7F2EF8D935C4D4B01A664B /* ObjCExceptionWrapper.m in Sources */ = {isa = PBXBuildFile; fileRef = 582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */; };
 /* End PBXBuildFile section */
 
@@ -141,9 +171,11 @@
 		106C21CFBBAE9B3D4B8D84C3 /* kokoro-ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "kokoro-ios"; path = "LocalPackages/kokoro-ios"; sourceTree = SOURCE_ROOT; };
 		116832B8A2B3ECF4C441DFC5 /* mlx-swift-lm */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mlx-swift-lm"; path = "LocalPackages/mlx-swift-lm"; sourceTree = SOURCE_ROOT; };
 		119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeroMediaView.swift; sourceTree = "<group>"; };
+		134630F1E37CE3F3032F5280 /* PastLogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PastLogsView.swift; sourceTree = "<group>"; };
 		149DA9870C0F015A888DD308 /* DeviceProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceProfile.swift; sourceTree = "<group>"; };
 		197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoIntentsTests.swift; sourceTree = "<group>"; };
 		2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoRunner.swift; sourceTree = "<group>"; };
+		25A07E5C8A32C8BF3B549551 /* LogArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogArchive.swift; sourceTree = "<group>"; };
 		267EDFBA28517128DC5EB6E5 /* DebugPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugPane.swift; sourceTree = "<group>"; };
 		2B7FE3FA8B63BF9DBD844158 /* MCPZimChatMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MCPZimChatMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2C313188252286C00B327D81 /* ModelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelProvider.swift; sourceTree = "<group>"; };
@@ -151,6 +183,7 @@
 		4B325A1633250C44B267166D /* SpeechRecognizerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizerService.swift; sourceTree = "<group>"; };
 		4C1E2487F517981835A37F64 /* swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = swift; path = ../swift; sourceTree = SOURCE_ROOT; };
 		4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimURLSchemeHandler.swift; sourceTree = "<group>"; };
+		52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalCLI.swift; sourceTree = "<group>"; };
 		5814FC5C00DC7003BA980822 /* ConversationalEvalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationalEvalTests.swift; sourceTree = "<group>"; };
 		582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjCExceptionWrapper.m; sourceTree = "<group>"; };
 		5F09000EF5528CAD3D37E2DF /* VoiceChatController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatController.swift; sourceTree = "<group>"; };
@@ -158,6 +191,7 @@
 		5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
 		6037251F9C513E4290F5DCB1 /* ChatSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSession.swift; sourceTree = "<group>"; };
 		68BDA1E10556B87C57B41BFB /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		69BED8384D0E858DE623092B /* MCPZimEvalCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = MCPZimEvalCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		6AB08857ED66D69CE7FD5FC2 /* MCPZimChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPZimChatApp.swift; sourceTree = "<group>"; };
 		6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteWebView.swift; sourceTree = "<group>"; };
 		6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsNativeTools.swift; sourceTree = "<group>"; };
@@ -166,9 +200,9 @@
 		75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ZimfoContext+Adapter.swift"; sourceTree = "<group>"; };
 		79130F0C1B723177E34B9AD0 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CoreKiwix.xcframework; path = MCPZimChat/Frameworks/CoreKiwix.xcframework; sourceTree = "<group>"; };
-		7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiModelEvalTests.swift; sourceTree = "<group>"; };
 		8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MCPZimChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
+		937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalHarness.swift; sourceTree = "<group>"; };
 		94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsProvider.swift; sourceTree = "<group>"; };
 		9A3987865D32352E3132C5CD /* MCPZimChatMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MCPZimChatMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -218,6 +252,20 @@
 				246D29E8329D20D3F194CCB8 /* KokoroSwift in Frameworks */,
 				21EDA34B7573C85B7DB45EE2 /* MLXUtilsLibrary in Frameworks */,
 				7E259B163ABF78C66E1B5993 /* CoreKiwix.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F9634301364A0B0F09BC47E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				40C50E921311E3EC1F8CCB9F /* MCPZimKit in Frameworks */,
+				8C042D8CCFB49FDC1EB85131 /* MLXLLM in Frameworks */,
+				31CE2A7CFC75560E42826C1B /* MLXLMCommon in Frameworks */,
+				9E7F7C0A5C3878FEB4CBAE6A /* MLXHuggingFace in Frameworks */,
+				D5BA2D72BF66C5E29E87FBF4 /* Tokenizers in Frameworks */,
+				C37079D8350EE1487FFB57B3 /* HuggingFace in Frameworks */,
+				B8D9A7D450C7981AC144DB32 /* CoreKiwix.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -274,6 +322,15 @@
 			path = AppIntents;
 			sourceTree = "<group>";
 		};
+		474F3EF508F24B4290A48B81 /* MCPZimEval */ = {
+			isa = PBXGroup;
+			children = (
+				52CC1FDF76D168C1BA8178B8 /* EvalCLI.swift */,
+				937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */,
+			);
+			path = MCPZimEval;
+			sourceTree = "<group>";
+		};
 		58BE8C2C927F97535107FCC7 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -292,6 +349,7 @@
 				119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */,
 				94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */,
 				5F55FBB9FA36EE4EB576196D /* ModelPickerView.swift */,
+				134630F1E37CE3F3032F5280 /* PastLogsView.swift */,
 				68BDA1E10556B87C57B41BFB /* RootView.swift */,
 				6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */,
 				B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */,
@@ -316,6 +374,7 @@
 			isa = PBXGroup;
 			children = (
 				149DA9870C0F015A888DD308 /* DeviceProfile.swift */,
+				25A07E5C8A32C8BF3B549551 /* LogArchive.swift */,
 				F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */,
 				75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */,
 			);
@@ -345,7 +404,6 @@
 			children = (
 				5814FC5C00DC7003BA980822 /* ConversationalEvalTests.swift */,
 				DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */,
-				7E4F19DAA16957053E6F2C18 /* MultiModelEvalTests.swift */,
 				197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */,
 			);
 			path = MCPZimChatMacTests;
@@ -357,6 +415,7 @@
 				8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */,
 				9A3987865D32352E3132C5CD /* MCPZimChatMac.app */,
 				2B7FE3FA8B63BF9DBD844158 /* MCPZimChatMacTests.xctest */,
+				69BED8384D0E858DE623092B /* MCPZimEvalCLI */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -386,6 +445,7 @@
 			children = (
 				DE593B00E778728BC41106E9 /* MCPZimChat */,
 				D19A6D682A73332F1E0077E2 /* MCPZimChatMacTests */,
+				474F3EF508F24B4290A48B81 /* MCPZimEval */,
 				58BE8C2C927F97535107FCC7 /* Packages */,
 				203C7A050D540B6E7D0F8E8D /* Frameworks */,
 				DB9B7FFD978191DDE5008833 /* Products */,
@@ -451,6 +511,31 @@
 			productReference = 9A3987865D32352E3132C5CD /* MCPZimChatMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		CFB05F6C91DE73155B47CD65 /* MCPZimEvalCLI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C4C5D6F3F3F8F3FC10313C21 /* Build configuration list for PBXNativeTarget "MCPZimEvalCLI" */;
+			buildPhases = (
+				E921CADB50B03EE1D1C269B5 /* Sources */,
+				EDC1184B4C1E1FC702374947 /* Resources */,
+				F9634301364A0B0F09BC47E0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MCPZimEvalCLI;
+			packageProductDependencies = (
+				CFB2395B1BAE021E83CA01A8 /* MCPZimKit */,
+				7976C21563542CA52D62A897 /* MLXLLM */,
+				EBF6F9DAB8CD17AD868F990E /* MLXLMCommon */,
+				C03B799F981A3217BB089044 /* MLXHuggingFace */,
+				5E83B350638473AE0CD57BB9 /* Tokenizers */,
+				395E56236B7FABCBC09D8A22 /* HuggingFace */,
+			);
+			productName = MCPZimEvalCLI;
+			productReference = 69BED8384D0E858DE623092B /* MCPZimEvalCLI */;
+			productType = "com.apple.product-type.tool";
+		};
 		D2A4B299CAF114122B2894FF /* MCPZimChatMacTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4EAEEEFB3757C5E70DEB6569 /* Build configuration list for PBXNativeTarget "MCPZimChatMacTests" */;
@@ -486,6 +571,10 @@
 						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
+					CFB05F6C91DE73155B47CD65 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
 					D2A4B299CAF114122B2894FF = {
 						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
@@ -517,6 +606,7 @@
 				95D3E644B6C76C2F047DED57 /* MCPZimChat */,
 				B074BDCBFEB2E7ABEFBBC97A /* MCPZimChatMac */,
 				D2A4B299CAF114122B2894FF /* MCPZimChatMacTests */,
+				CFB05F6C91DE73155B47CD65 /* MCPZimEvalCLI */,
 			);
 		};
 /* End PBXProject section */
@@ -539,6 +629,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EDC1184B4C1E1FC702374947 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C8BF56AA36C795A79844B1DA /* CoreKiwix.xcframework in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -548,7 +646,6 @@
 			files = (
 				6DDC0A1A00428E2129F5DCF6 /* ConversationalEvalTests.swift in Sources */,
 				532EF86EA533402790F7F10F /* GemmaToolEmissionTests.swift in Sources */,
-				1333E4C1DAA2F8B84EB6D92C /* MultiModelEvalTests.swift in Sources */,
 				E8429766D83FB7A9E83BD30E /* ZimfoIntentsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -571,12 +668,14 @@
 				DC31AA377E56FEC379F716AE /* LibzimBridge.mm in Sources */,
 				0D3DFA7E4D37B077303CA421 /* LibzimReader.swift in Sources */,
 				3C72C6C746E0B238AE9C04A6 /* LocationFetcher.swift in Sources */,
+				D4DF5A386843890406EFC924 /* LogArchive.swift in Sources */,
 				88C1CD7617CD79E458F4C169 /* MCPZimChatApp.swift in Sources */,
 				6AB7E66F0F9B50E3281B4F99 /* Message.swift in Sources */,
 				650624C566ABA25FEA310B78 /* MockProvider.swift in Sources */,
 				857AB4463B26C17EB39CF5F9 /* ModelPickerView.swift in Sources */,
 				5ECED997884E2EF46FF2A099 /* ModelProvider.swift in Sources */,
 				ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */,
+				9D7D536B527294D0608A48FA /* PastLogsView.swift in Sources */,
 				6EE940AF26ADE1C9F6E1E48C /* RootView.swift in Sources */,
 				1AF01DC71F41BFA84E20663D /* RouteWebView.swift in Sources */,
 				E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */,
@@ -589,6 +688,32 @@
 				3569A18ECEA25DFFA02E346C /* ZimfoContext.swift in Sources */,
 				55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */,
 				2FDFC126506F934041D5B973 /* ZimfoRunner.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E921CADB50B03EE1D1C269B5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				286FE7F9C1D759B018281BA7 /* ChatSession.swift in Sources */,
+				FB4B16ED534F3874E6D0C437 /* DeviceProfile.swift in Sources */,
+				96A5442E958C239D945495B4 /* EvalCLI.swift in Sources */,
+				BA5ECC4F7C675EBB99609961 /* EvalHarness.swift in Sources */,
+				0221A3CC27F893F52F50456F /* FoundationModelsNativeTools.swift in Sources */,
+				DC19A1CA500A7E5308E0505F /* FoundationModelsProvider.swift in Sources */,
+				B1A228CFEF62A3BB362ED387 /* Gemma4Provider.swift in Sources */,
+				533C82B70BDA8931E0DC32CF /* LibzimBridge.mm in Sources */,
+				1C3FBC6101275CFC8D09B96B /* LibzimReader.swift in Sources */,
+				2F1E1FEB8ACA41EF8F715E1F /* LocationFetcher.swift in Sources */,
+				2569A6718DB05620462B8C37 /* LogArchive.swift in Sources */,
+				D46144F1C9865D70B6E0F298 /* Message.swift in Sources */,
+				C18272874D5C8E7B3F730008 /* MockProvider.swift in Sources */,
+				96F628EF2AF82D5A1505DA9A /* ModelProvider.swift in Sources */,
+				548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */,
+				5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */,
+				AE843C00BE5209BD3320E18B /* ZimfoContext.swift in Sources */,
+				E1FB76DEEBFB837F5D6F65A6 /* ZimfoIntents.swift in Sources */,
+				195A361EA7F2F73ECE06E638 /* ZimfoRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -610,12 +735,14 @@
 				D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */,
 				B02A0D7A19EC22CA4345A940 /* LibzimReader.swift in Sources */,
 				B5AB4FB6D93A6F9C20C68B40 /* LocationFetcher.swift in Sources */,
+				18AAF98E6BB5668D2464E031 /* LogArchive.swift in Sources */,
 				C7EA6C316695E384E84D6FFF /* MCPZimChatApp.swift in Sources */,
 				10FF797EA9AC81D9E7AB7A85 /* Message.swift in Sources */,
 				C7166CA09E3B480F491B77C4 /* MockProvider.swift in Sources */,
 				C773F4CD7498B53B2A0CB3E7 /* ModelPickerView.swift in Sources */,
 				A332602332894F8A97B72609 /* ModelProvider.swift in Sources */,
 				FD7F2EF8D935C4D4B01A664B /* ObjCExceptionWrapper.m in Sources */,
+				1BD46DFA6CBFBB7FFE84FC8A /* PastLogsView.swift in Sources */,
 				60C3938C951EE44EACDD57B9 /* RootView.swift in Sources */,
 				F285CF4AF2E92E604BBD35A7 /* RouteWebView.swift in Sources */,
 				07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */,
@@ -667,6 +794,30 @@
 				SWIFT_OBJC_BRIDGING_HEADER = MCPZimChat/Libzim/LibzimBridge.h;
 				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1D0262730E947933190F856A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"MCPZimChat/Frameworks\"",
+				);
+				INFOPLIST_FILE = MCPZimChat/Frameworks/CoreKiwix.xcframework/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.mcpzim.MCPZimEvalCLI;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = MCPZimChat/Libzim/LibzimBridge.h;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 			};
 			name = Debug;
 		};
@@ -919,6 +1070,30 @@
 			};
 			name = Debug;
 		};
+		EADB68F2D2DCBDF621A8CAA2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"MCPZimChat/Frameworks\"",
+				);
+				INFOPLIST_FILE = MCPZimChat/Frameworks/CoreKiwix.xcframework/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.mcpzim.MCPZimEvalCLI;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = MCPZimChat/Libzim/LibzimBridge.h;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -954,6 +1129,15 @@
 			buildConfigurations = (
 				13D813EE8F637957F0CEC2A2 /* Debug */,
 				BDD00E43904D99BF0563AE47 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C4C5D6F3F3F8F3FC10313C21 /* Build configuration list for PBXNativeTarget "MCPZimEvalCLI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D0262730E947933190F856A /* Debug */,
+				EADB68F2D2DCBDF621A8CAA2 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -1015,6 +1199,11 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = MLXLLM;
 		};
+		395E56236B7FABCBC09D8A22 /* HuggingFace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 62E8AFA272C2AB32C77F8565 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
+			productName = HuggingFace;
+		};
 		39C4A10192E9907FF2399AF5 /* Tokenizers */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = CADBCB32581D76115FC78463 /* XCRemoteSwiftPackageReference "swift-transformers" */;
@@ -1037,9 +1226,18 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = MCPZimKit;
 		};
+		5E83B350638473AE0CD57BB9 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CADBCB32581D76115FC78463 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
+		};
 		627D27FCFC19D35BACEC4DB2 /* KokoroSwift */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = KokoroSwift;
+		};
+		7976C21563542CA52D62A897 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXLLM;
 		};
 		9B48B29BED7ED8B0C06AFD3B /* MLXHuggingFace */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1063,10 +1261,22 @@
 			package = 62E8AFA272C2AB32C77F8565 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
 			productName = HuggingFace;
 		};
+		C03B799F981A3217BB089044 /* MLXHuggingFace */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXHuggingFace;
+		};
 		C9D62A3FFA8A8E1052D233AF /* HuggingFace */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 62E8AFA272C2AB32C77F8565 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
 			productName = HuggingFace;
+		};
+		CFB2395B1BAE021E83CA01A8 /* MCPZimKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MCPZimKit;
+		};
+		EBF6F9DAB8CD17AD868F990E /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXLMCommon;
 		};
 		F57CDF84A48A33BBD022CF1C /* MLXUtilsLibrary */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -245,15 +245,18 @@ public actor MCPToolAdapter {
             MCPTool(
                 name: "search",
                 description:
-                    "Keyword full-text search across every loaded ZIM, intended "
-                    + "for ENCYCLOPEDIC lookups (Wikipedia-style). This is plain "
-                    + "FTS — pass SHORT KEYWORDS (article titles, proper nouns), "
-                    + "not full sentences or questions. "
+                    "Keyword full-text search across every loaded ZIM — use "
+                    + "ONLY when you don't already know the article's title. "
+                    + "If the user named the entity (\"tell me about Palo "
+                    + "Alto\", \"read the HP Garage article\") call "
+                    + "`article_overview` / `narrate_article` DIRECTLY with "
+                    + "`title` set to the entity — don't waste a round-trip "
+                    + "on search first. Pass SHORT KEYWORDS (article titles, "
+                    + "proper nouns), not full sentences. "
                     + "Good: `query=\"Aspirin\"`, `query=\"Marie Curie\"`. "
                     + "Bad: `query=\"what is aspirin used for\"`. "
                     + "For LOCATION questions (\"what's in X\", \"near X\", "
-                    + "\"around X\") prefer `near_named_place` instead — it "
-                    + "returns coordinates and a category breakdown. Returns "
+                    + "\"around X\") prefer `near_named_place`. Returns "
                     + "paths, titles, AND a ~200-char snippet from each hit's "
                     + "lead paragraph. READ THE SNIPPETS before picking — the "
                     + "top BM25 match isn't always the topically-closest one "
@@ -296,14 +299,18 @@ public actor MCPToolAdapter {
             MCPTool(
                 name: "get_article_by_title",
                 description:
-                    "Fetch a Wikipedia article by its title (or by the wiki "
-                    + "tag returned in `near_places` results, e.g. "
-                    + "\"en:HP Garage\"). Finds the article via the ZIM's "
-                    + "title index (handles redirects, approximate matches) "
-                    + "and returns the requested `section` (default \"lead\"). "
-                    + "Use this to summarize places returned by "
-                    + "`near_places(has_wiki=true)` — pass each hit's "
-                    + "`wikipedia` field verbatim as `title`.",
+                    "LOW-LEVEL title-index lookup that returns just ONE "
+                    + "section (default lead). Use ONLY for the narrow "
+                    + "cases the composite tools don't cover — e.g. "
+                    + "pulling a specific non-lead section when you "
+                    + "already know the section title. "
+                    + "DO NOT use this for: "
+                    + "\"tell me about X\" → use `article_overview`. "
+                    + "\"read me the article about X\" → use `narrate_article`. "
+                    + "\"compare X and Y\" → use `compare_articles`. "
+                    + "Accepts bare titles (\"Palo Alto\") or wiki tags "
+                    + "(\"en:Palo Alto\"). Handles redirects + approximate "
+                    + "matches via the ZIM's title index.",
                 inputSchemaJSON: Self.articleByTitleSchema
             ),
             MCPTool(
@@ -324,51 +331,56 @@ public actor MCPToolAdapter {
             MCPTool(
                 name: "article_overview",
                 description:
-                    "Fetch an article's lead plus a few major narrative sections — "
-                    + "the right tool for \"tell me about X\" / \"give me an "
-                    + "overview of X\". Automatically skips boilerplate (References, "
-                    + "See also, External links, …) and prefers sections named "
-                    + "History / Overview / Background / Description / Geography / "
-                    + "Culture / Economy, filling remaining slots with the longest "
-                    + "remaining sections. Prefer this over `list_article_sections` "
-                    + "+ N×`get_article_section`.",
+                    "THE tool for SINGLE-ENTITY encyclopedic queries — "
+                    + "one subject, one article: \"tell me about X\", "
+                    + "\"what is X\", \"give me an overview of X\", \"who "
+                    + "is X\". Pass `title` DIRECTLY with the entity name — "
+                    + "DO NOT `search` first or use `get_article_by_title`. "
+                    + "Returns the lead plus a few major narrative sections "
+                    + "(skips boilerplate References / See also / External "
+                    + "links, prefers History / Overview / Background / "
+                    + "Description / Geography / Culture / Economy). "
+                    + "**NEVER call this for questions mentioning TWO or "
+                    + "more entities** (\"A vs B\", \"how have A and B\", "
+                    + "\"relations between X and Y\", \"compare X with Y\", "
+                    + "\"difference between X and Y\") — those ALWAYS go to "
+                    + "`compare_articles` in a single call with "
+                    + "`titles: [A, B]`. NOT for \"where am I\" (use "
+                    + "`what_is_here`). NOT for \"read me the article "
+                    + "aloud\" (use `narrate_article`).",
                 inputSchemaJSON: Self.articleOverviewSchema
             ),
             MCPTool(
                 name: "compare_articles",
                 description:
-                    "Pull the same section (or lead + top sections) from 2–4 "
-                    + "articles at once, aligned so a side-by-side comparison "
-                    + "reads cleanly. Use this for \"how is X different from Y\" / "
-                    + "\"compare X and Y\". Omit `section` to get each article's "
-                    + "lead + its two biggest narrative sections; pass `section` "
-                    + "to align on a named topic (e.g. section=\"History\").",
+                    "THE tool for ANY two-entity question: comparisons "
+                    + "(\"how is X different from Y\", \"compare X and Y\"), "
+                    + "relations (\"how have A and B gotten along\", "
+                    + "\"relations between A and B\"), diffs, contrasts. "
+                    + "Pass `titles: [A, B]` (2–4 entities). Internally "
+                    + "probes for a dedicated Wikipedia relations article "
+                    + "(\"A–B relations\", \"Foreign relations of A\") "
+                    + "when exactly 2 titles are given — for e.g. "
+                    + "countries / organizations that have one — and "
+                    + "returns that. Otherwise pulls each entity's lead + "
+                    + "top narrative sections in a side-by-side payload. "
+                    + "Pass `section` to align on a named topic "
+                    + "(e.g. `section=\"History\"`). Use this instead of "
+                    + "calling `article_overview` twice.",
                 inputSchemaJSON: Self.compareArticlesSchema
-            ),
-            MCPTool(
-                name: "article_relationship",
-                description:
-                    "Pull the prose that describes how two entities relate. First "
-                    + "probes dedicated Wikipedia relations articles ("
-                    + "\"A–B relations\", \"Foreign relations of A\", "
-                    + "\"History of A–B relations\"), then falls back to a "
-                    + "\"Foreign relations\" section on each entity's own article. "
-                    + "Use for \"how have A and B gotten along\" / \"relations "
-                    + "between A and B\" / \"history of A–B\". Returns the lead "
-                    + "plus sections naming the counterpart.",
-                inputSchemaJSON: Self.articleRelationshipSchema
             ),
             MCPTool(
                 name: "narrate_article",
                 description:
-                    "Return the full article body cleaned for narration ("
-                    + "headings announced as sentences, citation markers stripped, "
-                    + "boilerplate sections dropped). The host reads this text "
-                    + "directly to the user without further model generation — "
-                    + "it's the \"read that to me\" / \"read the full article\" "
-                    + "path. Prefer over `article_overview` when the user "
-                    + "explicitly asks for the full piece. Supports any loaded "
-                    + "Wikipedia-family ZIM.",
+                    "THE tool for \"read me the article\" / \"read aloud\" / "
+                    + "\"recite the article about X\" / \"read the full piece\". "
+                    + "Pass `title` directly. Returns the full article body "
+                    + "cleaned for narration (headings announced as sentences, "
+                    + "citation markers stripped, boilerplate sections dropped). "
+                    + "The host streams this text directly to TTS — NO "
+                    + "follow-up model generation. Use this, NOT "
+                    + "`get_article_by_title`, when the user wants to HEAR "
+                    + "the article. Supports any loaded Wikipedia-family ZIM.",
                 inputSchemaJSON: Self.narrateArticleSchema
             ),
         ]
@@ -459,12 +471,17 @@ public actor MCPToolAdapter {
                 MCPTool(
                     name: "what_is_here",
                     description:
-                        "Answer \"where am I?\" / \"what neighborhood is this?\". "
-                        + "Reverse-geocodes to the nearest named place (admin / "
-                        + "neighborhood / city) and, if that place has a "
-                        + "Wikipedia article, pulls its lead paragraph. Omit "
-                        + "lat/lon to use the host's current GPS fix; pass "
-                        + "explicit lat/lon for a named-coord variant.",
+                        "Answer ONLY these exact questions: \"where am I?\" / "
+                        + "\"what neighborhood is this?\" / \"what city am "
+                        + "I in?\". Reverse-geocodes the USER'S CURRENT GPS "
+                        + "to the nearest named place (admin / neighborhood "
+                        + "/ city) and pulls its Wikipedia lead if there is "
+                        + "one. DO NOT use for \"tell me about <named "
+                        + "place>\" — the user names a place, not their "
+                        + "current location — call `article_overview` with "
+                        + "`title=<place>` instead. Omit `origin` to use the "
+                        + "host's GPS; pass explicit `origin=\"lat,lon\"` "
+                        + "only for a named-coord variant.",
                     inputSchemaJSON: Self.whatIsHereSchema
                 ),
                 MCPTool(
@@ -706,7 +723,17 @@ public actor MCPToolAdapter {
         case "compare_articles":
             return try await dispatchCompareArticles(args: args)
         case "article_relationship":
-            return try await dispatchArticleRelationship(args: args)
+            // Retired 2026-04-21: folded into `compare_articles`. Kept
+            // the dispatch case so any model trained on the old schema
+            // (or an old ChatSession transcript replay) still reaches
+            // the right code — we just funnel the args through the
+            // compare handler, which probes for a dedicated relations
+            // article before falling back to side-by-side comparison.
+            var forwarded = args
+            if let a = args["a"] as? String, let b = args["b"] as? String {
+                forwarded["titles"] = [a, b]
+            }
+            return try await dispatchCompareArticles(args: forwarded)
         case "narrate_article":
             return try await dispatchNarrateArticle(args: args)
         case "nearby_stories":
@@ -774,6 +801,22 @@ public actor MCPToolAdapter {
         let section = (args["section"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let zim = args["zim"] as? String
+
+        // Special-case: if the caller gave us exactly two titles and
+        // didn't pin a specific section, first probe for a dedicated
+        // Wikipedia relations article ("A–B relations", "Foreign
+        // relations of A", etc.). For country/organization pairs that
+        // have one, the relations article is a much richer answer than
+        // stitching two independent ledes together. Only triggers when
+        // the probe actually hits — otherwise we fall straight through
+        // to the original side-by-side path, so comparisons like
+        // "Elon Musk vs Jeff Bezos" (no relations article exists) don't
+        // pay a wasted round-trip.
+        if trimmed.count == 2, (section == nil || section?.isEmpty == true) {
+            if let relations = try? await probeRelationsArticle(
+                a: trimmed[0], b: trimmed[1], zim: zim
+            ) { return relations }
+        }
 
         let svc = service
         let articles: [[String: Any]] = try await withThrowingTaskGroup(of: (Int, [String: Any]).self) { group in
@@ -850,23 +893,21 @@ public actor MCPToolAdapter {
         ] as [String: Any]
     }
 
-    private func dispatchArticleRelationship(args: [String: Any]) async throws -> [String: Any] {
-        let a = (args["a"] as? String) ?? ""
-        let b = (args["b"] as? String) ?? ""
-        let zim = args["zim"] as? String
-        guard !a.isEmpty, !b.isEmpty else {
-            return ["error": "article_relationship requires both `a` and `b` to be non-empty."]
-        }
+    /// Shared helper used by `compare_articles` when given exactly
+    /// two titles: probe for a dedicated Wikipedia relations article
+    /// ("A–B relations", "Foreign relations of A", …) and return its
+    /// lead + counterpart-mentioning sections. Returns nil (via
+    /// throwing) if no such article exists, which the caller treats
+    /// as the signal to fall back to side-by-side comparison.
+    private func probeRelationsArticle(
+        a: String, b: String, zim: String?
+    ) async throws -> [String: Any]? {
         let candidates = ArticleHeuristics.relationshipCandidates(a: a, b: b)
-        // Probe candidates sequentially with fast-fail — first hit wins. We
-        // can't race these because each extra probe is ~free on a miss
-        // (title index lookup) but doubles resident cost on a hit.
         for candidate in candidates {
             do {
                 let resolved = try await ArticleHeuristics.sectionsByTitle(
                     service: service, title: candidate, zim: zim
                 )
-                // Prefer sections that actually mention the counterpart.
                 let counterpart = candidate.lowercased().contains(a.lowercased()) ? b : a
                 let picked = ArticleHeuristics.sectionsMentioning(
                     counterpart, in: resolved.sections, maxExtra: 3
@@ -876,8 +917,7 @@ public actor MCPToolAdapter {
                     "resolved_title": resolved.title,
                     "zim": resolved.zim,
                     "path": resolved.path,
-                    "a": a,
-                    "b": b,
+                    "requested": [a, b],
                     "sections": picked.map { s -> [String: Any] in
                         [
                             "title": s.title.isEmpty ? "lead" : s.title,
@@ -890,45 +930,7 @@ public actor MCPToolAdapter {
                 continue
             }
         }
-        // Fallback: pull the "Foreign relations" section from each
-        // entity's own article. Either may miss — we include whatever
-        // we find and flag what we didn't.
-        var fallback: [[String: Any]] = []
-        var missing: [String] = []
-        for entity in [a, b] {
-            do {
-                let hit = try await service.articleByTitle(
-                    title: entity, zim: zim, section: "Foreign relations"
-                )
-                fallback.append([
-                    "entity": entity,
-                    "title": hit.title,
-                    "zim": hit.zim,
-                    "path": hit.path,
-                    "section": hit.section.title.isEmpty
-                        ? "lead" : hit.section.title,
-                    "text": hit.section.text,
-                    "bytes": hit.section.bytes,
-                ])
-            } catch {
-                missing.append(entity)
-            }
-        }
-        if fallback.isEmpty {
-            return [
-                "error": "Could not find a dedicated \(a)–\(b) relations article "
-                    + "or a \"Foreign relations\" section on either entity.",
-                "probed_titles": candidates,
-            ]
-        }
-        var out: [String: Any] = [
-            "strategy": "foreign_relations_sections",
-            "a": a,
-            "b": b,
-            "results": fallback,
-        ]
-        if !missing.isEmpty { out["missing"] = missing }
-        return out
+        return nil
     }
 
     private func dispatchNarrateArticle(args: [String: Any]) async throws -> [String: Any] {

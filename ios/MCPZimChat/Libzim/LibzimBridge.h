@@ -48,6 +48,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) BOOL hasTitleIndex;
 @property (readonly) int32_t articleCount;
 
+/// Cap this archive's cluster cache (libzim's LRU of decompressed
+/// zstd clusters) at `sizeInBytes`. Clusters larger than the cap get
+/// dropped immediately after the Blob wrapping their content is
+/// released — so a one-shot read of a 700 MB streetzim `graph.bin`
+/// doesn't leave 700 MB sitting in libzim's cache forever.
+- (void)setClusterCacheMaxSizeBytes:(NSUInteger)sizeInBytes;
+@property (readonly) NSUInteger clusterCacheCurrentSizeBytes;
+@property (readonly) NSUInteger clusterCacheMaxSizeBytes;
+
 @end
 
 NS_ASSUME_NONNULL_END

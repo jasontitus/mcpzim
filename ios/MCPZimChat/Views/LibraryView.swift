@@ -105,6 +105,14 @@ struct LibraryView: View {
                 Text("When on, a log strip appears below the chat showing tool dispatches, per-turn memory, and model timing. Turn off for a clean UI.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                NavigationLink {
+                    PastLogsView()
+                } label: {
+                    Label("Past logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Text("Each launch writes a timestamped log to disk so you can read it (and Share / AirDrop it) after a crash, even if the debug pane cleared.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Routing") {

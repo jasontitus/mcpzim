@@ -36,12 +36,51 @@ struct RouteWebView: View {
     @Environment(ChatSession.self) private var session
     @State private var presentFullscreen: Bool = false
     @State private var presentDirections: Bool = false
+    /// Set when the user taps Drive/Walk/Bike. Passed into the fullscreen
+    /// map so the embedded streetzim viewer can jump straight into the
+    /// matching drive-mode HUD via `window.streetzimRouting.clickMode`.
+    @State private var pendingDriveMode: String? = nil
 
     /// Use the session-level location snapshot directly — ChatSession
     /// already fetches it at launch and on each send, so we get a
     /// free blue dot on every map without each view re-requesting GPS.
     private var userLocation: (lat: Double, lon: Double)? {
         session.currentLocation
+    }
+
+    /// Origin / destination parsed out of the tool result. Set when the
+    /// router emits `{"origin": {"lat": …}, "destination": {"lat": …}}`;
+    /// falls back to the polyline's first + last points when the routing
+    /// tool didn't carry explicit origin/dest fields (e.g. `show_map`
+    /// single-point traces have no endpoints to drive from).
+    private var routeEndpoints: (origin: (lat: Double, lon: Double),
+                                 dest: (lat: Double, lon: Double))? {
+        guard let data = trace.rawResult.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let o = json["origin"] as? [String: Any],
+           let d = json["destination"] as? [String: Any],
+           let oLat = (o["lat"] as? NSNumber)?.doubleValue,
+           let oLon = (o["lon"] as? NSNumber)?.doubleValue,
+           let dLat = (d["lat"] as? NSNumber)?.doubleValue,
+           let dLon = (d["lon"] as? NSNumber)?.doubleValue
+        {
+            return ((oLat, oLon), (dLat, dLon))
+        }
+        if let poly = json["polyline"] as? [[Double]],
+           poly.count >= 2,
+           let first = poly.first, first.count >= 2,
+           let last = poly.last, last.count >= 2
+        {
+            return ((first[0], first[1]), (last[0], last[1]))
+        }
+        return nil
+    }
+
+    /// Only show Drive/Walk/Bike for traces that have real origin+dest —
+    /// `show_map` one-point pins don't have a route to enter drive mode on.
+    private var supportsDriveMode: Bool {
+        trace.name != "show_map" && routeEndpoints != nil
     }
 
     /// Full turn-by-turn list pulled from the tool's untrimmed result.
@@ -57,45 +96,28 @@ struct RouteWebView: View {
 
     var body: some View {
         if let spec = resolveSpec(userLocation: userLocation) {
-            WebViewContainer(spec: spec, session: session)
-                .frame(height: 360)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(alignment: .bottomLeading) {
-                    // Placed bottom-left so it doesn't collide with
-                    // MapLibre's top-right zoom (+/-) controls.
-                    Button {
-                        presentFullscreen = true
-                    } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .padding(8)
-                            .background(.thinMaterial, in: Circle())
-                    }
-                    .accessibilityLabel("Expand map")
-                    .padding(8)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    // Directions list — only when the route tool returned
-                    // non-empty turn_by_turn. For `show_map` this stays
-                    // hidden since there's nothing to step through.
-                    if !turnByTurn.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                WebViewContainer(spec: spec, session: session)
+                    .frame(height: 480)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .bottomLeading) {
+                        // Placed bottom-left so it doesn't collide with
+                        // MapLibre's top-right zoom (+/-) controls.
                         Button {
-                            presentDirections = true
+                            pendingDriveMode = nil
+                            presentFullscreen = true
                         } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "list.bullet")
-                                Text("Directions")
-                            }
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(.thinMaterial, in: Capsule())
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 14, weight: .semibold))
+                                .padding(8)
+                                .background(.thinMaterial, in: Circle())
                         }
-                        .accessibilityLabel("Full directions")
+                        .accessibilityLabel("Expand map")
                         .padding(8)
                     }
-                }
-                .padding(.top, 4)
+                    .padding(.top, 4)
+                if supportsDriveMode { driveModeRow }
+            }
                 .onAppear {
                     // Nudge the session if we still don't have a fix.
                     if session.currentLocation == nil {
@@ -104,13 +126,23 @@ struct RouteWebView: View {
                 }
                 #if os(iOS)
                 .fullScreenCover(isPresented: $presentFullscreen) {
-                    FullscreenMap(spec: spec, session: session) {
+                    FullscreenMap(
+                        spec: spec,
+                        session: session,
+                        initialDriveMode: pendingDriveMode,
+                        endpoints: routeEndpoints
+                    ) {
                         presentFullscreen = false
                     }
                 }
                 #else
                 .sheet(isPresented: $presentFullscreen) {
-                    FullscreenMap(spec: spec, session: session) {
+                    FullscreenMap(
+                        spec: spec,
+                        session: session,
+                        initialDriveMode: pendingDriveMode,
+                        endpoints: routeEndpoints
+                    ) {
                         presentFullscreen = false
                     }
                 }
@@ -121,6 +153,54 @@ struct RouteWebView: View {
                     }
                 }
         }
+    }
+
+    /// Drive / Walk / Bike + Directions buttons. Each of the three mode
+    /// buttons pops the fullscreen viewer and injects JS that calls
+    /// `window.streetzimRouting.setOrigin/setDest/clickMode` so the
+    /// viewer's own drive-mode HUD takes over. Directions opens our
+    /// turn-by-turn sheet.
+    @ViewBuilder private var driveModeRow: some View {
+        HStack(spacing: 8) {
+            modePillButton(title: "Drive", mode: "drive", systemImage: "car.fill")
+            modePillButton(title: "Walk",  mode: "walk",  systemImage: "figure.walk")
+            modePillButton(title: "Bike",  mode: "bike",  systemImage: "bicycle")
+            Spacer(minLength: 0)
+            if !turnByTurn.isEmpty {
+                Button {
+                    presentDirections = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "list.bullet")
+                        Text("Directions")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.thinMaterial, in: Capsule())
+                }
+                .accessibilityLabel("Full directions")
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+
+    @ViewBuilder
+    private func modePillButton(title: String, mode: String, systemImage: String) -> some View {
+        Button {
+            pendingDriveMode = mode
+            presentFullscreen = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                Text(title)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.accentColor.opacity(0.18), in: Capsule())
+        }
+        .accessibilityLabel("\(title) mode")
     }
 
     struct Spec: Equatable {
@@ -291,11 +371,19 @@ private struct DirectionsListView: View {
 private struct FullscreenMap: View {
     let spec: RouteWebView.Spec
     let session: ChatSession
+    let initialDriveMode: String?
+    let endpoints: (origin: (lat: Double, lon: Double),
+                    dest: (lat: Double, lon: Double))?
     let onDismiss: () -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            WebViewContainer(spec: spec, session: session)
+            WebViewContainer(
+                spec: spec,
+                session: session,
+                initialDriveMode: initialDriveMode,
+                endpoints: endpoints
+            )
                 .edgesIgnoringSafeArea(.all)
             Button {
                 onDismiss()
@@ -318,12 +406,21 @@ import AppKit
 private struct WebViewContainer: NSViewRepresentable {
     let spec: RouteWebView.Spec
     let session: ChatSession
+    var initialDriveMode: String? = nil
+    var endpoints: (origin: (lat: Double, lon: Double),
+                    dest: (lat: Double, lon: Double))? = nil
 
     func makeNSView(context: Context) -> WKWebView {
-        makeWebView(spec: spec, session: session)
+        makeWebView(
+            spec: spec, session: session,
+            initialDriveMode: initialDriveMode, endpoints: endpoints
+        )
     }
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        reloadIfNeeded(nsView, spec: spec)
+        reloadIfNeeded(
+            nsView, spec: spec,
+            initialDriveMode: initialDriveMode, endpoints: endpoints
+        )
     }
 }
 #else
@@ -331,12 +428,21 @@ import UIKit
 private struct WebViewContainer: UIViewRepresentable {
     let spec: RouteWebView.Spec
     let session: ChatSession
+    var initialDriveMode: String? = nil
+    var endpoints: (origin: (lat: Double, lon: Double),
+                    dest: (lat: Double, lon: Double))? = nil
 
     func makeUIView(context: Context) -> WKWebView {
-        makeWebView(spec: spec, session: session)
+        makeWebView(
+            spec: spec, session: session,
+            initialDriveMode: initialDriveMode, endpoints: endpoints
+        )
     }
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        reloadIfNeeded(uiView, spec: spec)
+        reloadIfNeeded(
+            uiView, spec: spec,
+            initialDriveMode: initialDriveMode, endpoints: endpoints
+        )
     }
 }
 #endif
@@ -378,7 +484,13 @@ private final class RouteWebCoordinator: NSObject, WKNavigationDelegate, WKScrip
 }
 
 @MainActor
-private func makeWebView(spec: RouteWebView.Spec, session: ChatSession) -> WKWebView {
+private func makeWebView(
+    spec: RouteWebView.Spec,
+    session: ChatSession,
+    initialDriveMode: String? = nil,
+    endpoints: (origin: (lat: Double, lon: Double),
+                dest: (lat: Double, lon: Double))? = nil
+) -> WKWebView {
     let config = WKWebViewConfiguration()
     let handler = ZimURLSchemeHandler(
         lookup: { zimName in
@@ -513,17 +625,29 @@ private func makeWebView(spec: RouteWebView.Spec, session: ChatSession) -> WKWeb
     }
     webView.navigationDelegate = coordinator
     objc_setAssociatedObject(webView, &coordinatorKey, coordinator, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    loadSpec(webView, spec: spec)
+    loadSpec(
+        webView, spec: spec,
+        initialDriveMode: initialDriveMode, endpoints: endpoints
+    )
     return webView
 }
 
 private var coordinatorKey: UInt8 = 0
 
 @MainActor
-private func reloadIfNeeded(_ webView: WKWebView, spec: RouteWebView.Spec) {
+private func reloadIfNeeded(
+    _ webView: WKWebView,
+    spec: RouteWebView.Spec,
+    initialDriveMode: String? = nil,
+    endpoints: (origin: (lat: Double, lon: Double),
+                dest: (lat: Double, lon: Double))? = nil
+) {
     let expected = "zim://\(spec.zimName)/\(spec.mainPath)"
     if webView.url?.absoluteString != expected {
-        loadSpec(webView, spec: spec)
+        loadSpec(
+            webView, spec: spec,
+            initialDriveMode: initialDriveMode, endpoints: endpoints
+        )
         return
     }
     // URL matched — map is already loading/loaded in this webview.
@@ -591,7 +715,13 @@ private func userDotOnlyJS(lat: Double, lon: Double) -> String {
 }
 
 @MainActor
-private func loadSpec(_ webView: WKWebView, spec: RouteWebView.Spec) {
+private func loadSpec(
+    _ webView: WKWebView,
+    spec: RouteWebView.Spec,
+    initialDriveMode: String? = nil,
+    endpoints: (origin: (lat: Double, lon: Double),
+                dest: (lat: Double, lon: Double))? = nil
+) {
     // Stage the overlay JS before kicking off navigation so it fires on
     // `didFinish`. Waits for the viewer's MapLibre instance (the global
     // `map`) to exist, then adds a GeoJSON source + line layer.
@@ -625,6 +755,67 @@ private func loadSpec(_ webView: WKWebView, spec: RouteWebView.Spec) {
         """
     } else {
         userDotJS = ""
+    }
+    // Drive-mode kickoff — only if the user tapped Drive/Walk/Bike AND
+    // the route has real origin/destination coords. Calls into the
+    // `window.streetzimRouting` hook exposed by the streetzim viewer
+    // (resources/viewer/index.html) to drive the viewer's own drive-mode
+    // HUD. No-op if the hook isn't present (older ZIM without the patch)
+    // or the graph hasn't finished loading within the timeout.
+    let driveModeJS: String
+    if let mode = initialDriveMode, let ep = endpoints {
+        driveModeJS = """
+              // Kick off the streetzim viewer's drive mode. All three
+              // stages (graph ready → set origin+dest → route computed →
+              // click mode button) are polled with a bounded retry so
+              // a slow graph load doesn't wedge this on a fast timer.
+              (function() {
+                var mode = "\(mode)";
+                var o = [\(ep.origin.lat), \(ep.origin.lon)];
+                var d = [\(ep.dest.lat), \(ep.dest.lon)];
+                function waitFor(test, cb, label, tries) {
+                  tries = tries || 0;
+                  try {
+                    if (test()) return cb();
+                  } catch (e) {}
+                  if (tries > 300) {
+                    console.warn("mcpzim drive-mode: timeout waiting for " + label);
+                    return;
+                  }
+                  setTimeout(function() { waitFor(test, cb, label, tries + 1); }, 100);
+                }
+                waitFor(
+                  function() {
+                    return window.streetzimRouting
+                        && window.streetzimRouting.graphReady;
+                  },
+                  function() {
+                    try {
+                      window.streetzimRouting.setOrigin(o[0], o[1], "Start");
+                      window.streetzimRouting.setDest(d[0], d[1], "Destination");
+                    } catch (e) {
+                      console.error("mcpzim drive-mode: setOrigin/setDest threw", e);
+                      return;
+                    }
+                    waitFor(
+                      function() { return window.streetzimRouting.hasRoute; },
+                      function() {
+                        try {
+                          window.streetzimRouting.clickMode(mode);
+                          console.info("mcpzim drive-mode entered:", mode);
+                        } catch (e) {
+                          console.error("mcpzim drive-mode: clickMode threw", e);
+                        }
+                      },
+                      "hasRoute"
+                    );
+                  },
+                  "graphReady"
+                );
+              })();
+        """
+    } else {
+        driveModeJS = ""
     }
     let injectJS = """
     (function() {
@@ -717,6 +908,7 @@ private func loadSpec(_ webView: WKWebView, spec: RouteWebView.Spec) {
           }
           \(userDotJS)
           frameRoute(m);
+          \(driveModeJS)
           // MapLibre wipes layers whenever the style reloads — which
           // happens on zoom crossings and vector-tile style changes.
           // Re-add our overlay on every styledata/sourcedata so the

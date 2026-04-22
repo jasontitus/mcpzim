@@ -68,11 +68,21 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         huggingFaceRepo: String = "mlx-community/gemma-4-e2b-it-4bit",
         approximateMemoryMB: Int = 2600,
         template: any ModelTemplate = Gemma4Template(),
-        replyTokensFloor: Int? = nil
+        replyTokensFloor: Int? = nil,
+        localWeightsDirectory: URL? = nil
     ) {
         self.id = id
         self.displayName = displayName
-        self.modelConfiguration = ModelConfiguration(id: huggingFaceRepo)
+        // Honor a local directory override when provided — used for
+        // models we've quantized locally via `mlx_lm.convert` that
+        // aren't published to HF. The directory variant skips HubClient
+        // entirely and loads straight from disk; `huggingFaceRepo` is
+        // kept around for display / diagnostics.
+        if let dir = localWeightsDirectory {
+            self.modelConfiguration = ModelConfiguration(directory: dir)
+        } else {
+            self.modelConfiguration = ModelConfiguration(id: huggingFaceRepo)
+        }
         self.approximateMemoryMB = approximateMemoryMB
         self.template = template
         self.replyTokensFloor = replyTokensFloor
@@ -151,12 +161,36 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         let tokens32 = tokens.map { Int32($0) }
         debug("primeCache: encoded \(tokens32.count) tokens — prefilling…")
         try await container.perform { context in
+            // On iPhone: quantize the post-prefill KV cache to 4-bit
+            // groupwise. On Qwen, `Qwen3Attention` already goes through
+            // `attentionWithCacheUpdate` which routes to the quantized
+            // path when the cache is `QuantizedKVCache`. On Gemma 4,
+            // our vendored mlx-swift-lm `Gemma4Text` patch handles the
+            // same routing. Mac stays FP16 (Mac has the RAM; quant's
+            // only win is on memory-constrained devices).
+            //
+            // Subtlety that bit us in v1 of this fix: `TokenIterator`'s
+            // init takes `cache` BY VALUE (Swift array). Its internal
+            // `maybeQuantizeKVCache(&self.cache, …)` replaces
+            // `self.cache[i]` with a fresh `QuantizedKVCache`, but our
+            // outer `kvCache` array still holds the ORIGINAL
+            // `KVCacheSimple` element (a class reference that was
+            // mutated in-place during prefill — so it's grown to full
+            // FP16 state). When the iterator is discarded the quantized
+            // version drops with it and we keep the FP16 blob, which
+            // is the opposite of what we want. Fix: after `prepare()`
+            // has filled `kvCache[*]` via the shared-class mutation,
+            // explicitly run `maybeQuantizeKVCache` on our own array.
+            let useQuant = DeviceProfile.current.useQuantizedKVCache
             let params = GenerateParameters(
                 maxTokens: 0,                 // no generation
+                kvBits: useQuant ? 4 : nil,
+                kvGroupSize: 64,
+                quantizedKVStart: 0,
                 temperature: 0.0, topP: 1.0,
                 prefillStepSize: 128
             )
-            let kvCache = context.model.newCache(parameters: params)
+            var kvCache = context.model.newCache(parameters: params)
             let input = LMInput(tokens: MLXArray(tokens32))
             // Constructing a TokenIterator runs the full prefill via
             // `model.prepare(...)` + one `step(...)` over the remaining
@@ -166,6 +200,17 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
             _ = try TokenIterator(
                 input: input, model: context.model, cache: kvCache, parameters: params
             )
+            if useQuant {
+                // Swap each `KVCacheSimple` (full-attention layers) for
+                // its `.toQuantized(...)` counterpart. `RotatingKVCache`
+                // (sliding layers) isn't supported upstream yet and gets
+                // left alone by the library's dispatch. Measures ~4×
+                // smaller on iPhone for the prefilled KV.
+                MLXLMCommon.maybeQuantizeKVCache(
+                    cache: &kvCache,
+                    kvBits: 4, kvGroupSize: 64, quantizedKVStart: 0
+                )
+            }
             self.promptKVCache = kvCache
             self.cachedTokens = tokens32
             self.generatedTokensThisTurn = []
@@ -241,7 +286,10 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
 
     private func debug(_ s: String) {
         debugSink?(s)
-        print("[Gemma4] \(s)")
+        // Tag with the model family — this class hosts both Gemma 4
+        // and Qwen (different templates) so a hard-coded "[Gemma4]"
+        // is actively misleading in the Qwen case.
+        print("[\(template.logCategory)] \(s)")
     }
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
@@ -337,8 +385,25 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     }
 
     public func unload() async {
+        // Aggressively drop every MLX-held reference so the next
+        // picker choice can claim the memory the departing model
+        // held. Without this, ARC releases the `container` lazily,
+        // the KV-cache mirror keeps MLXArrays alive, and the Metal
+        // buffer pool hoards intermediates up to `mlxCacheLimitMB` —
+        // all of which compound on the NEW model's load-time peak
+        // and can tip an iPhone into jetsam.
         container = nil
+        promptKVCache = nil
+        cachedTokens = []
+        generatedTokensThisTurn = []
+        // Drain GPU work then release pool buffers. Safe here
+        // because by the time `unload()` is called we've already
+        // bailed out of the tool-loop and nobody else is issuing
+        // MLX work against this container.
+        Stream.defaultStream(.gpu).synchronize()
+        MLX.GPU.clearCache()
         set(.notLoaded)
+        debug("unloaded + drained MLX pool")
     }
 
     public func generate(prompt: String, parameters: GenerationParameters) -> AsyncThrowingStream<String, Error> {
@@ -412,7 +477,23 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         let inputTokens: [Int32]
                         let kvCache: [KVCache]
                         let hit: Bool
-                        if common == cached.count, common > 0, let existing, !existing.isEmpty {
+                        // Hybrid attention (Qwen 3.5 family, Qwen 3 Next,
+                        // Jamba, FalconH1, etc.) mixes `MambaCache` with
+                        // `KVCacheSimple` layer-by-layer. MLX's "feed a
+                        // partial prefix, keep the old cache" path has a
+                        // shape bug on the KV-cache layers in that setup
+                        // — the first follow-up turn hits
+                        // `broadcast_shapes (…128,256) vs (…129,256)`
+                        // and aborts. Workaround: force full prefill any
+                        // time the cache contains a MambaCache, so the
+                        // new turn starts from a fresh newCache() and
+                        // the broken reuse path never runs. Costs the
+                        // first-token latency we'd have saved; avoids a
+                        // SIGABRT.
+                        let cacheIsHybrid = existing?.contains(where: { $0 is MambaCache }) ?? false
+                        if common == cached.count, common > 0, let existing, !existing.isEmpty,
+                           !cacheIsHybrid
+                        {
                             // Cache is a clean prefix — feed just the
                             // new tokens and keep the cache going.
                             kvCache = existing

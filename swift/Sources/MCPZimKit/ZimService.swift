@@ -1021,6 +1021,7 @@ public actor DefaultZimService: ZimService {
 
     private func loadGraph(pair: (name: String, reader: ZimReader)) throws -> SZRGGraph {
         if let cached = graphs[pair.name] { return cached }
+        let memStart = MemoryStats.physFootprintMB()
         log("loading routing-data/graph.bin from \(pair.name)…")
         let entry = try timed("read graph.bin") {
             try pair.reader.read(path: "routing-data/graph.bin")
@@ -1031,6 +1032,12 @@ public actor DefaultZimService: ZimService {
         // and edge distances. Saves ~600 MB on country-scale graphs. Any
         // client that wants precise polylines can reparse with decodeGeoms=true.
         let g = try timed("parse graph") { try SZRGGraph.parse(entry.content, decodeGeoms: false) }
+        let memAfter = MemoryStats.physFootprintMB()
+        let est = g.estimatedBytes
+        log(String(
+            format: "graph: %d nodes · %d edges · est=%.0f MB · Δmem=%+.0f MB (parse→steady)",
+            g.numNodes, g.numEdges, Double(est) / 1_048_576, memAfter - memStart
+        ))
         graphs[pair.name] = g
         return g
     }

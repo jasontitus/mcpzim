@@ -30,7 +30,23 @@ struct ChatView: View {
                         ForEach(session.messages) { m in
                             MessageRow(message: m).id(m.id)
                         }
+                        // Claude-style "thinking" indicator. Shows
+                        // while the session is generating and the
+                        // last assistant message has no visible
+                        // text yet — either the placeholder hasn't
+                        // been appended, or the raw text contains
+                        // only `<tool_call>…</tool_call>` markup
+                        // that gets stripped for display (mid tool
+                        // round-trip). Auto-hides once real prose
+                        // arrives so it doesn't clash with the
+                        // streaming bubble.
+                        if session.isGenerating, showThinkingIndicator {
+                            ThinkingIndicator()
+                                .id("thinking")
+                                .transition(.opacity)
+                        }
                     }
+                    .animation(.easeInOut(duration: 0.2), value: session.isGenerating)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 }
@@ -124,6 +140,19 @@ struct ChatView: View {
         }
     }
 
+    /// True when the last message either isn't an assistant turn yet, or
+    /// is an assistant turn whose *rendered* text is empty — i.e. the raw
+    /// buffer contains only `<tool_call>…</tool_call>` markup that
+    /// `MessageRow.displayText` strips. Checking the raw `text.isEmpty`
+    /// wasn't enough: a tool-call round-trip leaves raw-non-empty but
+    /// display-empty, so without this we'd hide the dots and show a
+    /// blank gray bubble instead.
+    private var showThinkingIndicator: Bool {
+        guard let last = session.messages.last else { return true }
+        if last.role != .assistant { return true }
+        return MessageRow.displayText(last.text, role: .assistant).isEmpty
+    }
+
     private var stateLabel: String {
         switch session.modelState {
         case .notLoaded: return "not loaded"
@@ -157,19 +186,22 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .submitLabel(.send)
                 .onSubmit(send)
-                // Prewarm the model session the first time the user
-                // actually types a character — auto-focus on launch
-                // doesn't count. Previously we hooked `inputFocused`,
-                // which meant a fresh launch would fire primeCache
-                // before the app had even loaded its working set. On a
-                // 12 GB iPhone 17 Pro Max the combined weights + ZIM
-                // graph + primeCache prefill peak crossed 4.9 GB and
-                // iOS jetsammed us (freeze_skip_reason: out-of-slots).
-                // Gating on "user has typed" keeps the "warm while
-                // typing" win but avoids the cold-launch spike.
-                .onChange(of: draft) { old, new in
-                    if old.isEmpty && !new.isEmpty {
-                        session.prewarmSelectedModel()
+                // SwiftUI's `.onSubmit(send)` doesn't fire when
+                // `TextField(..., axis: .vertical)` is set — the return
+                // key on the software keyboard inserts a newline
+                // instead, even with `.submitLabel(.send)` advertising
+                // the blue send arrow. Compensate by watching for the
+                // newline ourselves: if `draft` ever ends with `\n`,
+                // treat it as the user tapping Send, drop the
+                // newline, and submit. Matches how iOS Messages +
+                // most chat apps behave. `send()` clears `draft` so
+                // we don't re-fire on the same keystroke.
+                .onChange(of: draft) { _, newValue in
+                    if newValue.hasSuffix("\n") {
+                        draft = String(newValue.dropLast())
+                        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty, !session.isGenerating else { return }
+                        send()
                     }
                 }
             Button {
@@ -254,15 +286,23 @@ private struct MessageRow: View {
                         HeroMediaView(trace: trace)
                     }
                 }
-                ZStack(alignment: .topTrailing) {
-                    bubble(fill: Color.gray.opacity(0.15))
-                    if !message.text.isEmpty {
-                        copyButton
-                            .padding(6)
+                // Skip the assistant bubble entirely while there's no
+                // visible text yet. We check the *displayed* text (after
+                // stripping tool-call markup) rather than the raw
+                // `message.text`, because during a tool round-trip the
+                // raw text is full of `<tool_call>…</tool_call>` markers
+                // that `displayText` removes — which would leave us
+                // drawing a full-padding gray capsule around an empty
+                // Text, stacked above the ThinkingIndicator.
+                let displayed = Self.displayText(message.text, role: .assistant)
+                if !displayed.isEmpty {
+                    ZStack(alignment: .topTrailing) {
+                        bubble(fill: Color.gray.opacity(0.15))
+                        copyButton.padding(6)
                     }
                 }
                 if let elapsed = message.elapsed,
-                   !message.text.isEmpty,
+                   !displayed.isEmpty,
                    !session.isGenerating || message.id != session.messages.last?.id
                 {
                     Text(Self.formatElapsed(elapsed))
@@ -303,7 +343,7 @@ private struct MessageRow: View {
     /// `<|tool_call>call:search{query:<|"|>pizza`) before the closing
     /// sentinel arrives. Nuke anything from the first opener to the
     /// end of the string so the chat never flashes raw template text.
-    private static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
+    fileprivate static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
         guard role == .assistant else { return raw }
         var t = raw
         // Closed blocks (all the canonical spellings).
@@ -577,4 +617,46 @@ private struct SourcesSection: View {
 
 #Preview {
     ChatView().environment(ChatSession())
+}
+
+/// Claude-style "thinking" indicator. Three dots that fade in and
+/// out in sequence while the model is prefilling / sampling an empty
+/// response. Mirrors the visual weight of a normal assistant bubble
+/// so the layout doesn't jump when the real stream takes over.
+struct ThinkingIndicator: View {
+    /// Seconds per full sine cycle. Controls how fast the "walking dots"
+    /// travel. 1.2 s feels energetic without being jittery.
+    private let cycle: Double = 1.2
+
+    var body: some View {
+        // TimelineView re-evaluates its body on the display link so we
+        // can derive each dot's opacity from the wall clock, no manual
+        // @State / withAnimation dance. Using `.animation` schedule
+        // lets SwiftUI pick the right redraw cadence (~60 Hz).
+        TimelineView(.animation) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 6) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 8, height: 8)
+                        .opacity(dotOpacity(index: i, at: t))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.gray.opacity(0.15), in: Capsule())
+        }
+        .accessibilityLabel("Thinking")
+    }
+
+    /// Each dot gets a sine-wave opacity curve offset by 1/3 of the
+    /// cycle so they "walk" left-to-right. Range [0.25, 1.0] keeps
+    /// the trailing dots visible rather than blinking to invisible.
+    private func dotOpacity(index i: Int, at t: Double) -> Double {
+        let phase = (t / cycle).truncatingRemainder(dividingBy: 1.0)
+        let offset = Double(i) / 3.0
+        let wave = (sin((phase + offset) * 2 * .pi) + 1) / 2 // 0…1
+        return 0.25 + 0.75 * wave
+    }
 }

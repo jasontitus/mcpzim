@@ -120,6 +120,33 @@ The jetsam-summary line is the one to read first. A healthy MCPZim sample on an 
 
 If `mem` / `peaks` complain about no syslog buffer, check `mcp-logs.sh status` and restart the streamer (the `idevicesyslog` USB transport drops silently after a device disconnect — the script's `running` flag is stale; only `bytes` growing over time confirms forwarding).
 
+## MCPZimEvalCLI (multi-model eval matrix)
+
+Headless macOS executable that runs `EvalHarness` — the full multi-model × scenario scorecard — in its own clean process. Replaces the old `MCPZimChatMacTests/MultiModelEvalTests.swift` XCTest target: that setup injected the test bundle into `MCPZimChatMac.app`, stood up a second `ChatSession` inside the app's `@main` process, and crashed MLX's `slice_update` when both sessions raced on the GPU.
+
+```sh
+cd ios
+xcodegen generate   # only if you edited project.yml
+xcodebuild -project MCPZimChat.xcodeproj \
+  -scheme MCPZimEvalCLI \
+  -destination 'platform=macOS' \
+  -configuration Debug \
+  -skipMacroValidation \
+  build
+
+# Binary lands in DerivedData alongside MCPZimChatMac.
+BIN=~/Library/Developer/Xcode/DerivedData/MCPZimChat-*/Build/Products/Debug/MCPZimEvalCLI
+$BIN --help
+$BIN                                    # full matrix (all cached variants × all scenarios)
+$BIN --variant qwen3-4b                 # filter variants by substring (repeatable)
+$BIN --scenario restaurants_in_sf       # filter scenarios by substring (repeatable)
+$BIN --variant gemma4 --scenario compare_musk_bezos   # combine filters
+```
+
+Exit codes: 0 = every scenario had at least one passing variant; 1 = some scenario failed on every variant; 2 = no matching variant weights cached (or argv error); 3 = harness threw.
+
+Scenarios + fixtures live in `ios/MCPZimEval/EvalHarness.swift`. Add a new scenario by extending `EvalHarness.scenarios` and dropping a fixture builder.
+
 ## gemma-smoke (headless macOS CLI)
 
 A standalone CLI harness at `tools/gemma-smoke/` for iterating on the Gemma-4 + MCPZim prompt stack on Mac. Does NOT run via `swift run` — MLX can't find its `.metallib` because `swift build` skips the Metal compile step that Xcode's build system runs. Build with xcodebuild and run the produced binary directly:
@@ -159,6 +186,18 @@ GEMMA_SMOKE_MODE=prompt-experiment ./GemmaSmoke "x"
 ```
 
 `prompt-experiment` reports `LCP vs primed` / `LCP vs cached` / `hit=YES|no` for each layout in `tools/gemma-smoke/Sources/GemmaSmoke/PromptExperiment.swift`. Add a new `Layout<X>` function and register it in `run()`'s `for (label, runner)` list to test a candidate; no iOS rebuild needed.
+
+## Streetzim viewer hook (window.streetzimRouting)
+
+`RouteWebView.swift` injects JS that calls `window.streetzimRouting.setOrigin / setDest / clickMode` to jump the embedded streetzim viewer straight into Drive/Walk/Bike mode when the user taps a mode pill in a routing chat bubble. The hook is exposed at the end of `initRouting()` in `../streetzim/resources/viewer/index.html`. All the backing state (`lastRoute`, `modeBtns`, `setOriginFromLatLon`) lives inside that function, so the window object is the only seam.
+
+Updating the hook requires rebuilding the streetzim ZIM so the patched `index.html` ships inside the ZIM blob the app reads. From `../streetzim/`:
+
+```sh
+./build_world_and_us.sh          # or a narrower regional build script
+```
+
+Until the rebuilt ZIM replaces the one on the device, `clickMode` calls will time out silently (the JS polls `window.streetzimRouting.graphReady` for 30 s then logs `mcpzim drive-mode: timeout waiting for graphReady` via the WebView console bridge and exits — the plain map still renders).
 
 ## Why this exists
 

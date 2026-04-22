@@ -25,6 +25,34 @@ inline NSString *ToNS(const std::string &s) {
                                     length:s.size()
                                   encoding:NSUTF8StringEncoding] ?: @"";
 }
+
+/// Wrap a `zim::Blob`'s decompressed bytes as `NSData` **without copying**.
+///
+/// libzim's `item.getData()` returns a `zim::Blob` that shares the
+/// underlying decompressed-cluster buffer (internally refcounted). The
+/// naive `[NSData dataWithBytes:length:]` allocates a fresh buffer and
+/// memcpys every byte — which on a 709 MB streetzim `graph.bin` spiked
+/// resident memory by ~700 MB purely for the copy, on top of what
+/// libzim's cluster cache and the routing-graph parser already needed
+/// (3.6 GB transient on-device).
+///
+/// Instead: heap-allocate a `shared_ptr<zim::Blob>` so we can capture
+/// it by value in the NSData deallocator block (blocks can't capture
+/// raw C++ references). NSData uses the blob's buffer directly; the
+/// deallocator runs when the NSData is released and drops our hold on
+/// the blob, which in turn releases its cluster reference. Zero-copy
+/// across the C++/Obj-C boundary, correct lifetime management on both
+/// sides.
+inline NSData *NSDataFromBlob(const zim::Blob &blob) {
+    auto heldBlob = std::make_shared<zim::Blob>(blob);
+    void *bytes = (void *)heldBlob->data();
+    NSUInteger length = (NSUInteger)heldBlob->size();
+    return [[NSData alloc] initWithBytesNoCopy:bytes
+                                        length:length
+                                   deallocator:^(void *, NSUInteger) {
+                                       (void)heldBlob;  // retain until NSData dies
+                                   }];
+}
 }
 
 #pragma mark - ZimEntryBridge
@@ -137,8 +165,7 @@ inline NSString *ToNS(const std::string &s) {
         if (!_archive->hasEntryByPath(p)) return nil;
         auto entry = _archive->getEntryByPath(p);
         auto item = entry.getItem(/*followRedirect=*/true);
-        auto blob = item.getData();
-        NSData *data = [NSData dataWithBytes:blob.data() length:(NSUInteger)blob.size()];
+        NSData *data = NSDataFromBlob(item.getData());
         return [[ZimEntryBridge alloc] initWithPath:ToNS(entry.getPath())
                                               title:ToNS(entry.getTitle())
                                            mimetype:ToNS(item.getMimetype())
@@ -154,8 +181,7 @@ inline NSString *ToNS(const std::string &s) {
         if (!_archive->hasMainEntry()) return nil;
         auto entry = _archive->getMainEntry();
         auto item = entry.getItem(/*followRedirect=*/true);
-        auto blob = item.getData();
-        NSData *data = [NSData dataWithBytes:blob.data() length:(NSUInteger)blob.size()];
+        NSData *data = NSDataFromBlob(item.getData());
         // Use the ITEM's path (post-redirect target, e.g. "index.html"),
         // not the entry's (pre-redirect, e.g. "mainPage") — otherwise a
         // ZIM whose main entry is a redirect yields an unusable path
@@ -224,6 +250,27 @@ inline NSString *ToNS(const std::string &s) {
 - (int32_t)articleCount {
     if (!_archive) return 0;
     try { return (int32_t)_archive->getEntryCount(); } catch (...) { return 0; }
+}
+
+- (void)setClusterCacheMaxSizeBytes:(NSUInteger)sizeInBytes {
+    // libzim's cluster cache is PROCESS-WIDE (global, shared across
+    // every open `zim::Archive`) — the setter / getters live at
+    // namespace scope in `<zim/archive.h>`, not as methods on the
+    // Archive class. That means every ZIM reader ends up competing
+    // for the same LRU budget, and the last caller's cap wins.
+    // Setting it low (e.g. 64 MB) is still the right default for us:
+    // it evicts the streetzim 700 MB graph.bin cluster promptly
+    // without hurting Wikipedia reads (small article clusters fit
+    // comfortably).
+    try { zim::setClusterCacheMaxSize((size_t)sizeInBytes); } catch (...) {}
+}
+
+- (NSUInteger)clusterCacheCurrentSizeBytes {
+    try { return (NSUInteger)zim::getClusterCacheCurrentSize(); } catch (...) { return 0; }
+}
+
+- (NSUInteger)clusterCacheMaxSizeBytes {
+    try { return (NSUInteger)zim::getClusterCacheMaxSize(); } catch (...) { return 0; }
 }
 
 @end

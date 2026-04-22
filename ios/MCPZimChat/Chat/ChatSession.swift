@@ -159,7 +159,23 @@ public final class ChatSession {
         // print() only lands in Xcode's console when attached, which
         // we aren't when the app crashes/hangs on-device.
         chatLog.notice("[\(category, privacy: .public)] \(decorated, privacy: .public)")
+        // Persistent on-disk archive. Survives crashes / jetsam so
+        // Settings → Past Logs can show the last N runs for
+        // post-mortem + Share (AirDrop to Mac, Mail, Save to Files).
+        let tsFormatter = ChatSession.logTimestampFormatter
+        let ts = tsFormatter.string(from: entry.timestamp)
+        LogArchive.shared.append("\(ts) [\(category)] \(decorated)")
     }
+
+    /// Shared formatter for persistent log rows. Isolated statically
+    /// so we don't rebuild it on every debug() call.
+    private static let logTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 
     @ObservationIgnored private var stateObservationTask: Task<Void, Never>?
 
@@ -181,6 +197,47 @@ public final class ChatSession {
         case failed(String)
     }
     public var setupState: SetupState = .pending
+
+    /// Guards `runLaunchSequence()` so SwiftUI's `.task` firing twice
+    /// (common with NavigationStack view re-identification) doesn't
+    /// double-open the library, double-rebuild the ZIM service, or
+    /// double-warm the streetzim routing graph (+2 GB temporarily on
+    /// each load). Always read/written on the main actor.
+    @ObservationIgnored private var launchSequenceRan = false
+
+    /// Single idempotent entry point for RootView's `.task`. SwiftUI
+    /// can fire `.task` more than once across a NavigationStack's
+    /// lifecycle (e.g., the Library push re-identifies the root and
+    /// re-fires the closure); without this guard we were opening the
+    /// library twice, rebuilding the ZIM service twice, and loading
+    /// the streetzim graph.bin (~700 MB → +2 GB resident) twice.
+    @MainActor
+    public func runLaunchSequence() async {
+        guard !launchSequenceRan else {
+            debug("launch sequence already ran; skipping", category: "App")
+            return
+        }
+        launchSequenceRan = true
+        await scanDocumentsFolder()
+        await restoreExternalBookmarks()
+        LocationFetcher.requestAuthorizationIfNeeded()
+        LocationFetcher.start()
+        refreshLocationIfStale()
+        prewarmBackgroundCaches()
+        await runSetupIfNeeded()
+        // Prewarm the KV cache with the system-turn + tool-declaration
+        // prefix now. Re-added 2026-04-21 after a brief rollback: the
+        // 2.6 GB of KV tensors this allocates gets allocated EITHER WAY
+        // as soon as the user sends their first real query, so
+        // postponing doesn't lower the steady-state peak — it just
+        // delays it. Prewarming at launch means the first `send()`
+        // finds a warm cache and skips the ~18 s cold prefill. The
+        // real fix for the "cache gets dropped after one turn" symptom
+        // isn't to skip the prewarm; it's to make the memory-warning
+        // handler stop nuking the cache on the first iOS gripe (see
+        // the handler at `didReceiveMemoryWarningNotification`).
+        prewarmGemmaKVCacheIfIdle()
+    }
 
     /// Warm the expensive start-up caches off the user's hot path.
     /// Called from `RootView` at launch. Intentionally concurrent —
@@ -235,18 +292,18 @@ public final class ChatSession {
         let exists = FileManager.default.fileExists(atPath: cacheURL.path)
         let size = (try? FileManager.default.attributesOfItem(atPath: cacheURL.path)[.size] as? Int64) ?? 0
         debug("setup: cacheURL=\(cacheURL.path) exists=\(exists) size=\(size) bytes",
-              category: "Gemma4")
+              category: selectedModel.template.logCategory)
         if exists {
             setupState = .running(stage: "Restoring saved prompt cache…", progress: nil)
             do {
                 try await gemma.loadPromptCache(from: cacheURL)
                 setupState = .ready
                 debug("loaded prompt cache from disk (key=\(cacheKey.prefix(12))…)",
-                      category: "Gemma4")
+                      category: selectedModel.template.logCategory)
                 return
             } catch {
                 debug("disk cache load failed: \(error) — will re-prewarm",
-                      category: "Gemma4")
+                      category: selectedModel.template.logCategory)
                 try? FileManager.default.removeItem(at: cacheURL)
             }
         }
@@ -255,10 +312,10 @@ public final class ChatSession {
             try await warmPromptCacheOnce(gemma: gemma)
             try await gemma.savePromptCache(to: cacheURL, keyHint: cacheKey)
             debug("prewarmed + saved prompt cache (key=\(cacheKey.prefix(12))…)",
-                  category: "Gemma4")
+                  category: selectedModel.template.logCategory)
             setupState = .ready
         } catch {
-            debug("prompt-cache warmup failed: \(error)", category: "Gemma4")
+            debug("prompt-cache warmup failed: \(error)", category: selectedModel.template.logCategory)
             // Fall through — user can still chat, just without the
             // cache benefit.
             setupState = .ready
@@ -400,7 +457,7 @@ public final class ChatSession {
             }
             guard case .ready = modelState else {
                 debug("prompt-cache warmup: model not ready in 20 s, skipping",
-                      category: "Gemma4")
+                      category: selectedModel.template.logCategory)
                 return
             }
         }
@@ -412,7 +469,7 @@ public final class ChatSession {
         // header + all tool declarations land inside it.
         guard let adapter else {
             debug("prompt-cache warmup: no tool adapter yet, skipping",
-                  category: "Gemma4")
+                  category: selectedModel.template.logCategory)
             return
         }
         let registry = await adapter.registry
@@ -432,9 +489,9 @@ public final class ChatSession {
             }
             let dt = Date().timeIntervalSince(started)
             debug(String(format: "prewarmed prompt cache in %.2fs", dt),
-                  category: "Gemma4")
+                  category: selectedModel.template.logCategory)
         } catch {
-            debug("prompt-cache warmup failed: \(error)", category: "Gemma4")
+            debug("prompt-cache warmup failed: \(error)", category: selectedModel.template.logCategory)
         }
     }
 
@@ -863,6 +920,21 @@ public final class ChatSession {
             approximateMemoryMB: 2200,
             template: QwenChatMLTemplate()
         )
+        // Qwen 3.5 4B 4-bit. Hybrid-attention sibling of Qwen 3 —
+        // full-attention every 4th layer, linear/SSM on the others
+        // (via our vendored mlx-swift-lm's `Qwen35TextModel`). Scored
+        // 9/9 on the evaluator matrix matching Qwen 3 4B's perfect
+        // score, with slightly smaller per-turn KV growth thanks to
+        // the mostly-linear layers. Same `QwenChatMLTemplate` +
+        // `/no_think` directive — our tool-call parser accepts all
+        // four JSON shapes Qwen 3.5 emits.
+        let qwen35_4b = Gemma4Provider(
+            id: "qwen35-4b-4bit",
+            displayName: "Qwen 3.5 4B (4-bit)",
+            huggingFaceRepo: "mlx-community/Qwen3.5-4B-MLX-4bit",
+            approximateMemoryMB: 2400,
+            template: QwenChatMLTemplate()
+        )
         let qwen3_1_7b = Gemma4Provider(
             id: "qwen3-1-7b-4bit",
             displayName: "Qwen 3 1.7B (4-bit)",
@@ -876,7 +948,7 @@ public final class ChatSession {
             // budget so it can reliably finish both reasoning + tool.
             replyTokensFloor: 1024
         )
-        var providers: [any ModelProvider] = [gemma, gemmaText, qwen3_4b, qwen3_1_7b]
+        var providers: [any ModelProvider] = [gemma, gemmaText, qwen3_4b, qwen35_4b, qwen3_1_7b]
         if #available(macOS 26.0, iOS 19.0, *), Self.enableAppleFM {
             // FoundationModels.framework gets linked into the app at
             // load time on iOS 19+/macOS 26+, costing ~10–30 MB. Only
@@ -897,9 +969,17 @@ public final class ChatSession {
         let savedId = UserDefaults.standard.string(forKey: Self.selectedModelKey)
         self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma
         startObservingSelectedModel()
-        gemma.debugSink = { [weak self] msg in
-            Task { @MainActor [weak self] in
-                self?.debug(msg, category: "Gemma4")
+        // Wire every Gemma4Provider instance (which includes Qwen
+        // variants — same class, different template) to the debug
+        // pane. Each uses its own template's log category so "Qwen
+        // 3 4B" lines aren't tagged `[Gemma4]`.
+        for p in providers {
+            guard let prov = p as? Gemma4Provider else { continue }
+            let cat = prov.template.logCategory
+            prov.debugSink = { [weak self] msg in
+                Task { @MainActor [weak self] in
+                    self?.debug(msg, category: cat)
+                }
             }
         }
         // Wire the Apple FM debug sink now that `self` is fully initialised.
@@ -1371,11 +1451,12 @@ public final class ChatSession {
                 systemMessage: preamble, tools: toolDecls
             )
             let prompt = template.bos + systemTurn
-            self.debug("prewarming KV cache in background…", category: "Gemma4")
+            let cat = template.logCategory
+            self.debug("prewarming KV cache in background…", category: cat)
             do {
                 try await gemma.primeCache(prompt: prompt)
             } catch {
-                self.debug("KV prewarm failed: \(error)", category: "Gemma4")
+                self.debug("KV prewarm failed: \(error)", category: cat)
             }
         }
     }

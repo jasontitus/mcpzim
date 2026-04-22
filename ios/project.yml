@@ -144,6 +144,55 @@ targets:
       testTargets:
         - MCPZimChatMacTests
 
+  MCPZimEvalCLI:
+    # Headless command-line eval harness. Ships as a plain
+    # macOS executable so the multi-model scorecard test can run
+    # in its own process — previously it was an XCTest bundle
+    # injected into MCPZimChatMac.app, which forced the app's own
+    # `@main` ChatSession to stand up in parallel with the test's
+    # ChatSession and caused MLX to crash in slice_update when
+    # the two sessions raced on the GPU.
+    type: tool
+    platform: macOS
+    sources:
+      - path: MCPZimChat
+        excludes:
+          - "**/.DS_Store"
+          - "Info.plist"
+          - "Info-Mac.plist"
+          - "App/**"    # no SwiftUI @main; we supply our own main.swift
+          - "Views/**"  # no UI in a CLI
+          - "Voice/**"  # no AVFoundation / Kokoro pulls
+      - path: MCPZimEval
+    dependencies:
+      - package: MCPZimKit
+        product: MCPZimKit
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-huggingface
+        product: HuggingFace
+      - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
+        embed: false
+        codeSign: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimEvalCLI
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_OBJC_BRIDGING_HEADER: MCPZimChat/Libzim/LibzimBridge.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_ENABLE_MODULES: "YES"
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
+
   MCPZimChatMac:
     type: application
     platform: macOS

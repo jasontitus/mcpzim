@@ -18,6 +18,10 @@ public enum SZRGError: Error, CustomStringConvertible {
     case badMagic([UInt8])
     case unsupportedVersion(UInt32)
     case truncated(String)
+    /// Richer variant that carries enough context (pos / size / section /
+    /// parsed header) to diagnose format drift — e.g. an unexpected
+    /// edge-stride on a future SZRG version.
+    case truncatedAt(String, pos: Int, size: Int, header: String)
 
     public var description: String {
         switch self {
@@ -25,6 +29,8 @@ public enum SZRGError: Error, CustomStringConvertible {
         case .badMagic(let b): return "bad magic \(b)"
         case .unsupportedVersion(let v): return "unsupported SZRG version \(v)"
         case .truncated(let s): return "truncated \(s)"
+        case .truncatedAt(let s, let pos, let size, let hdr):
+            return "truncated \(s) at pos=\(pos) size=\(size) header=[\(hdr)]"
         }
     }
 }
@@ -50,6 +56,23 @@ public struct SZRGGraph: Sendable {
         return names[i]
     }
 
+    /// Rough lower bound on the parsed graph's steady-state footprint —
+    /// sum of the fixed-stride arrays. Excludes `names` (Swift String
+    /// overhead per entry) and `geoms` (skipped when parsed with
+    /// `decodeGeoms=false`). Useful for attributing the `+2 GB on graph
+    /// load` memory spike to the specific arrays driving it.
+    public var estimatedBytes: Int {
+        let n = numNodes, e = numEdges
+        return 8 * n  // lat Double
+             + 8 * n  // lon Double
+             + 4 * (n + 1)  // adjOffsets UInt32
+             + 4 * e  // edgeTargets UInt32
+             + 8 * e  // edgeDistMeters Double
+             + 1 * e  // edgeSpeedKmh UInt8
+             + 4 * e  // edgeGeomIdx Int32
+             + 4 * e  // edgeNameIdx UInt32
+    }
+
     /// Parse the binary routing graph. When `decodeGeoms` is `false` the
     /// per-edge polyline blob is skipped entirely — on a country-scale
     /// graph (Baltics, 977 MB ZIM) that saves ~600 MB of Swift tuples and
@@ -69,7 +92,16 @@ public struct SZRGGraph: Sendable {
             //     — speed/dist are packed instead, geom widened to full u32
             //     (0xFFFFFFFF = no geom). Everything outside the edge record
             //     is identical to v2.
-            guard version == 2 || version == 3 else {
+            // v4: same 4 u32s as v3 + one trailing class_access_u32 per edge.
+            //     Bits 0..4 encode a road-class ordinal (motorway / footway /
+            //     …), bits 5..7 are access-override flags (foot=no, bicycle=no,
+            //     oneway). The rest is reserved. Routing here still only
+            //     consumes (dist, speed, geom, name), so we skip-parse the
+            //     extra u32 — enough to make v4 ZIMs load. When road-class
+            //     warnings graduate out of the design doc in
+            //     streetzim/docs/driving-mode-road-class-warnings.md, widen
+            //     the graph struct to carry it.
+            guard version == 2 || version == 3 || version == 4 else {
                 throw SZRGError.unsupportedVersion(version)
             }
             let numNodes = Int(try p.readU32())
@@ -78,6 +110,9 @@ public struct SZRGGraph: Sendable {
             let geomBytes = Int(try p.readU32())
             let numNames = Int(try p.readU32())
             let namesBytes = Int(try p.readU32())
+            let headerStr = "v=\(version) nodes=\(numNodes) edges=\(numEdges) "
+                + "geoms=\(numGeoms) geomBytes=\(geomBytes) "
+                + "names=\(numNames) namesBytes=\(namesBytes) size=\(data.count)"
 
             // Nodes — lat/lon in 1e-7 degrees.
             var lat = [Double](); lat.reserveCapacity(numNodes)
@@ -110,10 +145,14 @@ public struct SZRGGraph: Sendable {
                     edgeGeomIdx.append(geomIdx24 == 0xFFFFFF ? -1 : Int32(geomIdx24))
                     edgeNameIdx.append(nameIdx)
                 } else {
-                    // v3: speed+dist packed together, geom_idx gets a full u32.
+                    // v3 + v4: speed+dist packed together, geom_idx gets a
+                    // full u32. v4 adds a trailing class_access u32 we don't
+                    // consume yet — read + discard so the cursor lands at
+                    // the next edge.
                     let speedDist = try p.readU32()
                     let geom = try p.readU32()
                     let nameIdx = try p.readU32()
+                    if version == 4 { _ = try p.readU32() }
                     edgeTargets.append(target)
                     let distDm24 = speedDist & 0x00FFFFFF
                     edgeDistMeters.append(Double(distDm24) / 10.0)
@@ -126,16 +165,31 @@ public struct SZRGGraph: Sendable {
             // Geometry offsets + blob (blob stays in place; we just track
             // its start offset and length and decode into `geoms` in one
             // pass without any `subdata` copies).
+            let posAfterEdges = p.pos
             var geomOffsets = [UInt32](); geomOffsets.reserveCapacity(numGeoms + 1)
             for _ in 0...numGeoms { geomOffsets.append(try p.readU32()) }
             let geomBase = p.pos
-            try p.advance(geomBytes)
+            do {
+                try p.advance(geomBytes)
+            } catch {
+                throw SZRGError.truncatedAt(
+                    "geomBlob (posAfterEdges=\(posAfterEdges))",
+                    pos: p.pos, size: data.count, header: headerStr
+                )
+            }
 
             // Name offsets + blob.
             var nameOffsets = [UInt32](); nameOffsets.reserveCapacity(numNames + 1)
             for _ in 0...numNames { nameOffsets.append(try p.readU32()) }
             let namesBase = p.pos
-            try p.advance(namesBytes)
+            do {
+                try p.advance(namesBytes)
+            } catch {
+                throw SZRGError.truncatedAt(
+                    "namesBlob",
+                    pos: p.pos, size: data.count, header: headerStr
+                )
+            }
 
             // Decode polylines directly against the unsafe buffer — no copies.
             // With `decodeGeoms=false` we allocate the outer array as empty

@@ -127,10 +127,17 @@ public protocol ModelTemplate: Sendable {
     /// open `<think>` without a close stays visible to avoid flashing
     /// mid-stream).
     func stripReasoning(_ text: String) -> String
+
+    /// Human-friendly log category for the model family (e.g. `"Gemma4"`,
+    /// `"Qwen"`, `"Llama3"`). Used by the host's debug pane to tag lines
+    /// with the *actual* family being used — helpful now that one
+    /// provider class hosts multiple families via the template slot.
+    var logCategory: String { get }
 }
 
 public extension ModelTemplate {
     func stripReasoning(_ text: String) -> String { text }
+    var logCategory: String { "LLM" }
 }
 
 // MARK: - Gemma 4 implementation
@@ -145,6 +152,8 @@ public struct Gemma4Template: ModelTemplate {
     public var bos: String { Gemma4PromptTemplate.bos }
 
     public var stopMarkers: [String] { ["<turn|>", "<|turn>"] }
+
+    public var logCategory: String { "Gemma4" }
 
     public func formatSystemTurn(
         systemMessage: String, tools: [ModelToolDeclaration]

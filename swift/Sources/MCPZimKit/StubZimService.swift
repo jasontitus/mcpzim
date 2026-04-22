@@ -31,6 +31,14 @@ public actor StubZimService: ZimService {
         public var routeFromPlaces: [String: RouteFromPlacesResponse] = [:]
         public var search: [String: [SearchHitResult]] = [:]
         public var articleByTitle: [String: ArticleByTitleResponse] = [:]
+        /// Keyed by article path (see `keyArticleSections`). Serves the
+        /// composite tools (`article_overview`, `narrate_article`,
+        /// `compare_articles`, `article_relationship`) that need the full
+        /// section outline, not just one section.
+        public var articleSections: [String: ArticleSectionsResponse] = [:]
+        /// Keyed by lowercased query (see `keyGeocode`). Used by
+        /// `nearby_stories_at_place` and any direct `geocode` tool calls.
+        public var geocode: [String: [Place]] = [:]
         public var inventory: InventoryResult?
 
         public init() {}
@@ -71,6 +79,17 @@ public actor StubZimService: ZimService {
             self.path = path
             self.title = title
             self.section = section
+        }
+    }
+
+    public struct ArticleSectionsResponse: Sendable {
+        public let zim: String
+        public let title: String
+        public let sections: [ArticleSection]
+        public init(zim: String, title: String, sections: [ArticleSection]) {
+            self.zim = zim
+            self.title = title
+            self.sections = sections
         }
     }
 
@@ -155,7 +174,11 @@ public actor StubZimService: ZimService {
     }
 
     public func articleSections(path: String, zim: String?) async throws -> (zim: String, title: String, sections: [ArticleSection]) {
-        throw StubError.noFixture(method: "articleSections", key: "path=\(path)")
+        let k = Self.keyArticleSections(path: path)
+        guard let hit = fixture.articleSections[k] else {
+            throw StubError.noFixture(method: "articleSections", key: k)
+        }
+        return (hit.zim, hit.title, hit.sections)
     }
 
     public func articleSection(path: String, section: String, zim: String?) async throws -> (zim: String, title: String, section: ArticleSection) {
@@ -170,7 +193,11 @@ public actor StubZimService: ZimService {
     }
 
     public func geocode(query: String, limit: Int, zim: String?, kinds: [String]?) async throws -> [Place] {
-        throw StubError.noFixture(method: "geocode", key: query.lowercased())
+        let k = Self.keyGeocode(query: query)
+        guard let hit = fixture.geocode[k] else {
+            throw StubError.noFixture(method: "geocode", key: k)
+        }
+        return Array(hit.prefix(max(1, limit)))
     }
 
     public func zimInfo(zim: String?) async throws -> [[String: Any]] { [] }
@@ -199,5 +226,19 @@ public actor StubZimService: ZimService {
 
     public static func keyArticleByTitle(title: String, section: String?) -> String {
         "\(title.lowercased())|\(section?.lowercased() ?? "")"
+    }
+
+    /// Key: lowercased article path. `articleSections` ignores `zim` in
+    /// this stub — the composite tools always pass the `zim` they got
+    /// back from the prior `articleByTitle` resolution, so the key space
+    /// on path alone stays collision-free.
+    public static func keyArticleSections(path: String) -> String {
+        path.lowercased()
+    }
+
+    /// Key: lowercased query. Kinds filter is ignored — the only caller
+    /// today (`nearby_stories_at_place`) passes `kinds: nil`.
+    public static func keyGeocode(query: String) -> String {
+        query.lowercased()
     }
 }

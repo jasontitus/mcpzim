@@ -33,22 +33,12 @@ struct RootView: View {
                     SetupOverlayView()
                 }
                 .task {
-                    // Sandbox Documents first, then reopen any ZIMs the user
-                    // previously picked from Downloads/external folders.
-                    await session.scanDocumentsFolder()
-                    await session.restoreExternalBookmarks()
-                    // Prime location permission + snapshot early so the
-                    // very first "directions to X" query has `currentLocation`
-                    // baked into the system preamble.
-                    LocationFetcher.requestAuthorizationIfNeeded()
-                    LocationFetcher.start() // kick continuous updates ASAP
-                    session.refreshLocationIfStale()
-                    // Warm the routing graph + rerank model so the first
-                    // real query doesn't pay their ~1.2–3 s load costs.
-                    session.prewarmBackgroundCaches()
-                    // One-time prompt-cache warm (or load from disk).
-                    // Blocks send() until complete via setupState.
-                    await session.runSetupIfNeeded()
+                    // Single idempotent entry point — SwiftUI can fire
+                    // `.task` more than once as navigation reshapes the
+                    // stack, and ChatSession.runLaunchSequence() guards
+                    // against double-opening the library / double-warming
+                    // the streetzim routing graph.
+                    await session.runLaunchSequence()
                 }
         }
     }
