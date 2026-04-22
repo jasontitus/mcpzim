@@ -2763,6 +2763,42 @@ public final class ChatSession {
                 return out
             }
             return result
+        case "article_overview", "compare_articles":
+            // Both return `sections: [{title, text, bytes}]`. The
+            // Wikipedia relations article + two country articles
+            // easily runs 20–40 KB of raw text, which blows the
+            // model's prompt budget and jetsams the app when the
+            // LLM tries to prefill a summary pass on top of its
+            // already-warmed system preamble. Cap each section's
+            // text to ~1500 chars (lead-heavy summarisation gets
+            // everything it needs from the opening paragraphs) so
+            // the fast-path round-trip stays well under budget.
+            let perSectionCap = 1500
+            func trimSections(_ a: [[String: Any]]) -> [[String: Any]] {
+                a.map { s -> [String: Any] in
+                    var out = s
+                    if let text = s["text"] as? String, text.count > perSectionCap {
+                        out["text"] = String(text.prefix(perSectionCap)) + "…"
+                        out["truncated"] = true
+                        out["bytes_original"] = text.count
+                    }
+                    return out
+                }
+            }
+            var out = result
+            if let sections = out["sections"] as? [[String: Any]] {
+                out["sections"] = trimSections(sections)
+            }
+            if let articles = out["articles"] as? [[String: Any]] {
+                out["articles"] = articles.map { a -> [String: Any] in
+                    var inner = a
+                    if let sections = a["sections"] as? [[String: Any]] {
+                        inner["sections"] = trimSections(sections)
+                    }
+                    return inner
+                }
+            }
+            return out
         default:
             return result
         }
