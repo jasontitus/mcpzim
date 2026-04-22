@@ -161,8 +161,7 @@ public enum IntentRouter {
         if let m = match(lower, pattern:
             #"^compare\s+(.+?)\s+(?:and|vs\.?|versus|with|to)\s+(.+)$"#)
         {
-            let a = m[0]
-            let b = m[1]
+            let (a, b) = expandSharedSuffix(first: m[0], second: m[1])
             return DirectIntent(toolName: "compare_articles", args: [
                 "titles": .array([.string(a), .string(b)])
             ])
@@ -200,6 +199,52 @@ public enum IntentRouter {
         }
 
         return nil
+    }
+
+    /// Natural-English shared-suffix inference for `compare X and Y Z`.
+    ///
+    /// When a speaker says "compare north and south korea", what they
+    /// almost always mean is "compare north korea and south korea" —
+    /// "Korea" is a shared suffix the speaker dropped from the first
+    /// half. The strict regex parse gives us `X = "north"`,
+    /// `Y_Z = "south korea"`. If we dispatch that verbatim, the
+    /// `north` article lookup misses and the reply degenerates into
+    /// "Comparing north and south korea. Results below." with nothing
+    /// below (real on-device capture).
+    ///
+    /// Heuristic: if the first title is a *single directional or
+    /// ordinal word* AND the second has 2+ words, treat the last word
+    /// of the second as the shared suffix and append it to the first.
+    /// Conservative by design — we only reshape when the shape is an
+    /// obvious shared-suffix pattern. Legit pairs like "cats and
+    /// dogs" or "Apple and Google" (first is a single non-directional
+    /// word) pass through untouched.
+    static func expandSharedSuffix(
+        first: String, second: String
+    ) -> (String, String) {
+        let sharedPrefixWords: Set<String> = [
+            "north", "south", "east", "west",
+            "northern", "southern", "eastern", "western",
+            "upper", "lower",
+            "old", "new", "young", "elder", "modern", "ancient",
+            "first", "second", "third", "fourth", "fifth",
+            "left", "right",
+            "big", "little", "greater", "lesser",
+        ]
+        let aWords = first.split(separator: " ").map(String.init)
+        let bWords = second.split(separator: " ").map(String.init)
+        guard aWords.count == 1,
+              bWords.count >= 2,
+              sharedPrefixWords.contains(aWords[0]),
+              let tail = bWords.last
+        else {
+            return (first, second)
+        }
+        // Don't double-append if the speaker was explicit enough to
+        // include the suffix on both halves ("compare north korea
+        // and south korea" — already aWords.count == 2, guarded
+        // above).
+        return (aWords[0] + " " + tail, second)
     }
 
     /// Turn an English plural into its singular form for the OSM
@@ -380,25 +425,52 @@ public enum IntentRouter {
             return err
         }
         let articles = (fullResult["articles"] as? [[String: Any]]) ?? []
-        let lines: [String] = articles.prefix(3).compactMap { a in
+        // Drop entries where the tool couldn't fetch the article — a
+        // bad title will land here (real-device example: "north" +
+        // "south korea" instead of "north korea" + "south korea"),
+        // and carrying the title alone with no content produces the
+        // degenerate "Comparing north and south korea. Results below."
+        // bubble with nothing below.
+        let good = articles.filter { a in
+            if let e = a["error"] as? String, !e.isEmpty { return false }
+            let sections = (a["sections"] as? [[String: Any]]) ?? []
+            let text = (sections.first?["text"] as? String) ?? ""
+            return !text.isEmpty
+        }
+        let lines: [String] = good.prefix(3).map { a in
             let t = (a["title"] as? String) ?? ""
             let sections = (a["sections"] as? [[String: Any]]) ?? []
             let text = (sections.first?["text"] as? String) ?? ""
             let snippet = firstSentences(text, maxChars: 160)
-            if t.isEmpty, snippet.isEmpty { return nil }
-            if snippet.isEmpty { return t }
+            if t.isEmpty { return snippet }
             return "**\(t)** — \(snippet)"
         }
-        if !lines.isEmpty {
+        // Need both subjects to have content before we can usefully
+        // compare — one-subject-found outputs "**South Korea** — …"
+        // with no North Korea, which reads as a wiki lookup not a
+        // comparison and isn't what the user asked for.
+        if lines.count >= 2 {
             return lines.joined(separator: "\n\n")
         }
         let titles = (args["titles"] as? [String]) ?? []
         if titles.count >= 2 {
-            let head = titles.dropLast().joined(separator: ", ")
-            let tail = titles.last ?? ""
-            return "Comparing \(head) and \(tail). Results below."
+            // Name the titles we couldn't resolve so the user can see
+            // what needs re-asking. Better than the old "Comparing X
+            // and Y. Results below." which was a lie when `Results`
+            // turned out to be empty.
+            let failing: [String] = articles.compactMap { a in
+                guard let e = a["error"] as? String, !e.isEmpty else { return nil }
+                return (a["title"] as? String)
+            }
+            if !failing.isEmpty {
+                let q = failing.map { "“\($0)”" }.joined(separator: " or ")
+                return "I couldn't find articles for \(q). "
+                    + "Try the full names (e.g. \"North Korea and South Korea\")."
+            }
+            return "I couldn't find articles matching those titles. "
+                + "Try the full names on both sides."
         }
-        return "Comparison below."
+        return "I couldn't put together a comparison from that query."
     }
 
     /// Caption for `what_is_here` fast-path. Describes the resolved

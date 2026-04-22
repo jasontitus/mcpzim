@@ -185,6 +185,60 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    func testCompareExpandsSharedSuffix() {
+        // "Compare north and south korea" literally parses as
+        // ["north", "south korea"], but the intended English reading
+        // is ["north korea", "south korea"] — "Korea" is a shared
+        // suffix the speaker dropped from the first half. Exactly
+        // this failure appeared on device (fast-path fired, but
+        // dispatched with the wrong titles; tool returned empty; UI
+        // showed "Comparing north and south korea. Results below."
+        // with nothing below). Heuristic re-attaches the last word
+        // of the second title only when the first is a single
+        // directional/ordinal word.
+        let cases: [(String, String, String)] = [
+            ("compare north and south korea",    "north korea",    "south korea"),
+            ("compare east and west germany",    "east germany",   "west germany"),
+            ("compare northern and southern ireland",
+                                                  "northern ireland", "southern ireland"),
+            ("compare old and new testament",    "old testament",  "new testament"),
+            ("compare big and little league",    "big league",     "little league"),
+        ]
+        for (query, a, b) in cases {
+            let i = IntentRouter.classify(query)
+            XCTAssertEqual(i?.toolName, "compare_articles", "query: \(query)")
+            XCTAssertEqual(i?.args["titles"],
+                           .array([.string(a), .string(b)]),
+                           "query: \(query)")
+        }
+    }
+
+    func testCompareDoesNotExpandNonDirectionalSingleWord() {
+        // "Apple", "cats", "python" aren't directional/ordinal —
+        // don't append the last word of the second title, it'd
+        // be a lossy transformation.
+        let cases: [(String, String, String)] = [
+            ("compare apple and google maps",    "apple",   "google maps"),
+            ("compare cats and dogs",            "cats",    "dogs"),
+            ("compare python vs rust lang",      "python",  "rust lang"),
+        ]
+        for (query, a, b) in cases {
+            let i = IntentRouter.classify(query)
+            XCTAssertEqual(i?.args["titles"],
+                           .array([.string(a), .string(b)]),
+                           "query: \(query)")
+        }
+    }
+
+    func testCompareDoesNotDoubleAppendWhenSpeakerWasExplicit() {
+        // "compare north korea and south korea" — first half is
+        // already "north korea" (2 words), so the heuristic's
+        // aWords.count == 1 guard keeps us from appending anything.
+        let i = IntentRouter.classify("compare north korea and south korea")
+        XCTAssertEqual(i?.args["titles"],
+                       .array([.string("north korea"), .string("south korea")]))
+    }
+
     func testCompareIgnoresSingleEntity() {
         // `compare foo` with no connector shouldn't fake a second entity.
         XCTAssertNil(IntentRouter.classify("compare physics"))
@@ -311,6 +365,52 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertTrue(s.contains("North Korea"))
         XCTAssertTrue(s.contains("South Korea"))
         XCTAssertTrue(s.contains("Pyongyang") || s.contains("East Asia"))
+    }
+
+    func testSynthesizeCompareRequiresBothSubjectsToHaveContent() {
+        // On-device repro: fast-path dispatched with
+        // titles=["north","south korea"], tool returned one valid
+        // article + one error. Old synth emitted just "north" +
+        // the South Korea lead, which reads as an article lookup,
+        // not a comparison. New synth insists on two subjects with
+        // real text; otherwise falls back to a clear "couldn't
+        // find these titles — try the full names" message.
+        let fullResult: [String: Any] = [
+            "articles": [
+                ["title": "north", "error": "Could not fetch"],
+                [
+                    "title": "South Korea",
+                    "sections": [[
+                        "text": "South Korea is a country in East Asia."
+                    ]]
+                ],
+            ]
+        ]
+        let s = IntentRouter.synthesizeCompareReply(
+            args: ["titles": ["north", "south korea"]],
+            fullResult: fullResult
+        )
+        XCTAssertFalse(s.contains("East Asia"),
+                       "must not surface one-sided content as a comparison")
+        XCTAssertTrue(s.contains("couldn't") || s.contains("try"),
+                      "should prompt the user to rephrase")
+        XCTAssertTrue(s.contains("north"),
+                      "should name the title that failed")
+    }
+
+    func testSynthesizeCompareBothErrored() {
+        let fullResult: [String: Any] = [
+            "articles": [
+                ["title": "north",       "error": "Could not fetch"],
+                ["title": "south korea", "error": "Could not fetch"],
+            ]
+        ]
+        let s = IntentRouter.synthesizeCompareReply(
+            args: ["titles": ["north", "south korea"]],
+            fullResult: fullResult
+        )
+        XCTAssertTrue(s.contains("north") && s.contains("south korea"),
+                      "should name both failing titles")
     }
 
     func testSynthesizeWhatIsHereNearby() {
