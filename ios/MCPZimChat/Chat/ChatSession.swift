@@ -2764,36 +2764,54 @@ public final class ChatSession {
             }
             return result
         case "article_overview", "compare_articles":
-            // Both return `sections: [{title, text, bytes}]`. The
-            // Wikipedia relations article + two country articles
-            // easily runs 20–40 KB of raw text, which blows the
-            // model's prompt budget and jetsams the app when the
-            // LLM tries to prefill a summary pass on top of its
-            // already-warmed system preamble. Cap each section's
-            // text to ~1500 chars (lead-heavy summarisation gets
-            // everything it needs from the opening paragraphs) so
-            // the fast-path round-trip stays well under budget.
-            let perSectionCap = 1500
-            func trimSections(_ a: [[String: Any]]) -> [[String: Any]] {
-                a.map { s -> [String: Any] in
-                    var out = s
-                    if let text = s["text"] as? String, text.count > perSectionCap {
-                        out["text"] = String(text.prefix(perSectionCap)) + "…"
-                        out["truncated"] = true
-                        out["bytes_original"] = text.count
+            // Wikipedia leads are designed to be standalone summaries —
+            // the opening paragraphs carry the entire "what is this"
+            // answer the LLM needs for a compare / overview pass.
+            // Feeding additional sections just burns prompt budget
+            // AND memory: on-device repro showed two full articles
+            // (15–30 KB of raw text) jetsam'd the app mid-summary.
+            //
+            // Keep ONLY the lead section, truncated to ~first
+            // paragraph (80 words ≈ 500 chars ≈ 100 tokens). At two
+            // articles that's ~200 extra tokens of prompt — well
+            // under any threshold, and the model still has the core
+            // facts to compare. Word-based truncation (vs char-based)
+            // keeps words and trailing punctuation intact so the
+            // model doesn't see "...founded in 19" or mid-entity
+            // mangling at the boundary. The relations-article shape
+            // (top-level `sections`) gets the same treatment.
+            let leadWordCap = 80
+            func keepLeadOnly(_ sections: [[String: Any]]) -> [[String: Any]] {
+                guard let lead = sections.first else { return [] }
+                var trimmedLead = lead
+                if let text = lead["text"] as? String {
+                    // Prefer first paragraph; if the paragraph is
+                    // itself long, cap at `leadWordCap` whole words.
+                    let para = text
+                        .components(separatedBy: "\n\n")
+                        .first ?? text
+                    let words = para.split(separator: " ",
+                                           omittingEmptySubsequences: false)
+                    let truncated = words.count > leadWordCap
+                    let out = truncated
+                        ? words.prefix(leadWordCap).joined(separator: " ") + "…"
+                        : para
+                    trimmedLead["text"] = out
+                    if truncated || sections.count > 1 {
+                        trimmedLead["truncated"] = true
                     }
-                    return out
                 }
+                return [trimmedLead]
             }
             var out = result
             if let sections = out["sections"] as? [[String: Any]] {
-                out["sections"] = trimSections(sections)
+                out["sections"] = keepLeadOnly(sections)
             }
             if let articles = out["articles"] as? [[String: Any]] {
                 out["articles"] = articles.map { a -> [String: Any] in
                     var inner = a
                     if let sections = a["sections"] as? [[String: Any]] {
-                        inner["sections"] = trimSections(sections)
+                        inner["sections"] = keepLeadOnly(sections)
                     }
                     return inner
                 }
