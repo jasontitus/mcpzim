@@ -522,7 +522,7 @@ public final class ChatSession {
         if there is a wikipedia, use it for general knowledge; if there \
         is an mdwiki, use it for medical questions). Pick sensible \
         defaults for optional arguments. Only respond in prose after \
-        you have the tool result.\(locationLine)
+        you have the tool result.
 
         Follow-up interpretation: when the user's current message is
         SHORT (under ~8 words) or begins with "and", "what about", "how
@@ -600,8 +600,15 @@ public final class ChatSession {
         * Cite section / article names inline (e.g. "per 'Article' § \
           Causes…") whenever a claim isn't obviously common knowledge. \
         * If the loaded ZIMs genuinely don't cover the question, say that \
-          — do not guess.
+          — do not guess.\(locationLine)
         """
+        // NB: `locationLine` is deliberately the LAST thing in the
+        // preamble. It changes on every GPS fix (and is empty until the
+        // first fix lands), so keeping it at the tail means the
+        // everything-but-the-last-block prefix tokenises identically
+        // across prewarm (no-fix state) and runtime (fix obtained) —
+        // which keeps `Gemma4Provider.generate`'s LCP match near
+        // `cached.count` and skips ~7000 tokens of prefill on iter 0.
     }
 
     private static func categoryHint(for complexity: QueryComplexity) -> String {
@@ -1534,6 +1541,31 @@ public final class ChatSession {
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
         isGenerating = true
         Task {
+            // Fast-path intent router. Match a small set of simple
+            // user patterns ("<category> in <place>", "directions to
+            // <place>", "<category> near me") and dispatch the tool
+            // directly — no model generate, no 13 s prefill. If no
+            // pattern matches, fall through to the full LLM loop.
+            // Logic lives in `MCPZimKit.IntentRouter` so it's covered
+            // by `swift test` (see `IntentRouterTests`).
+            if let intent = IntentRouter.classify(
+                text, currentLocation: currentLocation
+            ) {
+                debug("fast-path intent: \(intent.toolName) — skipping LLM",
+                      category: "Router")
+                let handled = await executeDirectIntent(intent)
+                if handled {
+                    isGenerating = false
+                    if let idx = messages.indices.last,
+                       messages[idx].role == .assistant
+                    {
+                        messages[idx].finishedAt = Date()
+                    }
+                    return
+                }
+                debug("fast-path intent: dispatch failed, falling back to LLM",
+                      category: "Router")
+            }
             await runGenerationLoop()
             // Phase 2c: for explanatory turns, if the model pulled
             // >=2 sections, run a stateless map-reduce synthesis
@@ -1741,6 +1773,22 @@ public final class ChatSession {
                 }
                 // Flush the final tokens — the throttle may have skipped them.
                 appendToAssistant(buffer)
+                // Post-stream rescue: generation ended naturally without
+                // the strict streaming parser matching a tool call. Qwen
+                // 3.5 (and occasionally Qwen 3) sometimes gets clipped by
+                // the `<|im_end|>` stop token mid-`</tool_call>`, leaving
+                // a partial closer like `</tool` or bare JSON. The
+                // template's `firstToolCallAfterClip` retries with a
+                // lenient closer — only called here, not during stream —
+                // so a clipped emission still dispatches instead of the
+                // loop silently returning "done, no tool call".
+                if toolCall == nil,
+                   let rescued = selectedModel.template.firstToolCallAfterClip(in: buffer)
+                {
+                    debug("iter \(iter) · recovered clipped tool_call via firstToolCallAfterClip",
+                          category: "Chat")
+                    toolCall = (range: rescued.range, name: rescued.name, args: rescued.arguments)
+                }
             } catch {
                 debug("generate threw: \(error)", category: "Chat")
                 lastError = String(describing: error)
@@ -1895,6 +1943,31 @@ public final class ChatSession {
                     if !synth.isEmpty {
                         updateAssistant(synth)
                         debug("routing skip-model-reply: synthesized \(synth.count) chars (iter 1 skipped)",
+                              category: "Chat")
+                        return
+                    }
+                }
+
+                // Same fast path for the places-returning families. The
+                // map bubble below the message carries the actual
+                // answer — pins + popups with Wikipedia intros where
+                // available — so the LLM's prose summary is both
+                // redundant AND slow (Qwen 3.5 pays the full hybrid-
+                // cache prefill every turn, ~13 s). Synthesise a
+                // one-line caption and skip iter 1.
+                let placesTools: Set<String> = [
+                    "near_named_place", "near_places",
+                    "nearby_stories", "nearby_stories_at_place",
+                ]
+                if placesTools.contains(call.name) {
+                    let synth = IntentRouter.synthesizePlacesReply(
+                        toolName: call.name,
+                        args: call.args,
+                        fullResult: fullResult
+                    )
+                    if !synth.isEmpty {
+                        updateAssistant(synth)
+                        debug("places skip-model-reply: synthesized \(synth.count) chars (iter 1 skipped)",
                               category: "Chat")
                         return
                     }
@@ -2244,6 +2317,192 @@ public final class ChatSession {
             messages[messages.count - 1].toolCalls.append(trace)
         }
     }
+
+    // MARK: - Fast-path direct-dispatch router
+
+    // Fast-path intent classification + reply synthesis live in
+    // `MCPZimKit.IntentRouter` so they're exercised by `swift test`.
+    // The iOS side just calls `IntentRouter.classify(...)` and passes
+    // the resulting `DirectIntent` into `executeDirectIntent`.
+
+    /// Article-sheet presentation intent — set by
+    /// `presentArticleSheet` and observed by `PlacesWebView` to mount
+    /// a native `.sheet(item:)` hosting a WKWebView of the article.
+    /// Replaces the previous "dispatch `get_article_section` and
+    /// render as a chat turn" flow, which showed "Results below." in
+    /// the bubble and hid the actual article behind a tap.
+    public struct ArticleSheetRequest: Equatable, Identifiable {
+        public let id = UUID()
+        public let zim: String
+        public let path: String
+        public let title: String
+    }
+    public var articleSheetIntent: ArticleSheetRequest? = nil
+
+    /// Resolve the Wikipedia ZIM from the library and post an
+    /// `ArticleSheetRequest`. `PlacesWebView` observes this via
+    /// `.onChange(of:)` and mounts the sheet.
+    public func presentArticleSheet(title: String, path: String) {
+        let zimName = library
+            .first(where: { $0.isEnabled && $0.reader.kind == .wikipedia })?
+            .url.lastPathComponent ?? "wikipedia"
+        articleSheetIntent = ArticleSheetRequest(
+            zim: zimName, path: path, title: title
+        )
+    }
+
+    /// Public entry for the "Read article" affordance on pin popups
+    /// and list rows — dispatches `get_article_section(path, lead)`
+    /// directly (no LLM roundtrip) and lets the existing
+    /// `traceHasArticle` branch on `MessageRow.assistant` render the
+    /// hero image + prose like any other article-bearing trace.
+    public func triggerArticleRead(title: String, path: String) {
+        guard setupState == .ready else {
+            debug("triggerArticleRead ignored — setup still running",
+                  category: "Chat")
+            return
+        }
+        guard !path.isEmpty else {
+            debug("triggerArticleRead: empty path, ignoring", category: "Chat")
+            return
+        }
+        let caption = title.isEmpty
+            ? "Read article at \(path)"
+            : "Read \(title)"
+        debug(caption, category: "User")
+        messages.append(ChatMessage(role: .user, text: caption))
+        messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
+        isGenerating = true
+        Task {
+            let intent = DirectIntent(toolName: "get_article_section", args: [
+                "path":    .string(path),
+                "section": .string("lead")
+            ])
+            let ok = await executeDirectIntent(intent)
+            if !ok {
+                debug("triggerArticleRead: get_article_section dispatch failed",
+                      category: "Tool")
+            }
+            isGenerating = false
+            if let idx = messages.indices.last,
+               messages[idx].role == .assistant
+            {
+                messages[idx].finishedAt = Date()
+            }
+        }
+    }
+
+    /// Public entry for the pin-popup Directions button. Appends a
+    /// new user turn ("Directions to <name>") and dispatches our OWN
+    /// `plan_driving_route` — not Apple Maps — against the exact
+    /// lat/lon of the pin (no geocoding round-trip; the name is just
+    /// the label shown in chat). Ends up with a route bubble in chat
+    /// carrying the polyline + Drive/Walk/Bike pills.
+    public func triggerDirectionsToCoord(
+        name: String, lat: Double, lon: Double
+    ) {
+        guard setupState == .ready else {
+            debug("triggerDirections ignored — setup still running",
+                  category: "Chat")
+            return
+        }
+        refreshLocationIfStale()
+        guard let origin = currentLocation else {
+            lastError = "Can't route — no GPS fix yet."
+            return
+        }
+        let caption = name.isEmpty
+            ? String(format: "Directions to (%.5f, %.5f)", lat, lon)
+            : "Directions to \(name)"
+        debug(caption, category: "User")
+        messages.append(ChatMessage(role: .user, text: caption))
+        messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
+        isGenerating = true
+        Task {
+            let intent = DirectIntent(toolName: "plan_driving_route", args: [
+                "origin_lat": .double(origin.lat),
+                "origin_lon": .double(origin.lon),
+                "dest_lat":   .double(lat),
+                "dest_lon":   .double(lon)
+            ])
+            let ok = await executeDirectIntent(intent)
+            if !ok {
+                debug("triggerDirections: plan_driving_route dispatch failed",
+                      category: "Tool")
+            }
+            isGenerating = false
+            if let idx = messages.indices.last,
+               messages[idx].role == .assistant
+            {
+                messages[idx].finishedAt = Date()
+            }
+        }
+    }
+
+    /// Run the dispatched tool, record the trace, and synthesize a
+    /// one-line assistant caption. Returns `true` when the fast path
+    /// was used successfully and the LLM should be skipped.
+    @MainActor
+    private func executeDirectIntent(_ intent: DirectIntent) async -> Bool {
+        guard let adapter else { return false }
+        let dictArgs = intent.anyArgs
+        let argsStr: String = {
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: dictArgs, options: [.sortedKeys]
+            ), let s = String(data: data, encoding: .utf8) else { return "{}" }
+            return s
+        }()
+        debug("fast-path dispatch \(intent.toolName)(\(argsStr))", category: "Tool")
+        do {
+            let fullResult = try await adapter.dispatch(
+                tool: intent.toolName, args: dictArgs
+            )
+            let resultData = (try? JSONSerialization.data(
+                withJSONObject: fullResult, options: [.sortedKeys]
+            )) ?? Data()
+            let rawStr = String(data: resultData, encoding: .utf8) ?? "{}"
+            recordToolTrace(ToolCallTrace(
+                name: intent.toolName,
+                arguments: argsStr,
+                result: rawStr,
+                rawResult: rawStr,
+                error: nil
+            ))
+            let placesTools: Set<String> = [
+                "near_named_place", "near_places",
+                "nearby_stories", "nearby_stories_at_place",
+            ]
+            let routingTools: Set<String> = [
+                "route_from_places", "plan_driving_route",
+            ]
+            if placesTools.contains(intent.toolName) {
+                let synth = IntentRouter.synthesizePlacesReply(
+                    toolName: intent.toolName,
+                    args: dictArgs,
+                    fullResult: fullResult
+                )
+                updateAssistant(synth.isEmpty ? "Results below." : synth)
+            } else if routingTools.contains(intent.toolName) {
+                let synth = Self.synthesizeRoutingReply(from: fullResult)
+                updateAssistant(synth.isEmpty ? "Route below." : synth)
+            } else {
+                updateAssistant("Results below.")
+            }
+            return true
+        } catch {
+            debug("fast-path dispatch failed: \(error)", category: "Tool")
+            if let idx = messages.indices.last,
+               messages[idx].role == .assistant
+            {
+                messages[idx].text = ""
+                messages[idx].toolCalls.removeAll()
+            }
+            return false
+        }
+    }
+
+    // `synthesizePlacesReply` + its helpers moved to
+    // `MCPZimKit.IntentRouter` so they're covered by `swift test`.
 
     /// Build a human-readable reply from a `route_from_places` /
     /// `plan_driving_route` result, without going through another

@@ -112,6 +112,14 @@ public protocol ModelTemplate: Sendable {
     /// the byte range + parsed call once we have a full block.
     func firstToolCall(in buffer: String) -> ToolCallMatch?
 
+    /// Post-stream variant — called once after generation finishes
+    /// without the streaming parser having matched a tool call. Allows
+    /// the template to be lenient about partial closers (Qwen 3.5
+    /// sometimes gets clipped by `<|im_end|>` mid-`</tool_call>`,
+    /// leaving `</tool` or bare JSON). Default impl delegates to the
+    /// strict streaming version.
+    func firstToolCallAfterClip(in buffer: String) -> ToolCallMatch?
+
     /// Render a tool-response turn to feed back to the model. Ends with
     /// the assistant-open tag so the next `generate(...)` resumes in
     /// assistant mode.
@@ -138,6 +146,9 @@ public protocol ModelTemplate: Sendable {
 public extension ModelTemplate {
     func stripReasoning(_ text: String) -> String { text }
     var logCategory: String { "LLM" }
+    func firstToolCallAfterClip(in buffer: String) -> ToolCallMatch? {
+        firstToolCall(in: buffer)
+    }
 }
 
 // MARK: - Gemma 4 implementation

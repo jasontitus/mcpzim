@@ -14,6 +14,28 @@ struct ChatView: View {
     @State private var showVoiceChat = false
     @FocusState private var inputFocused: Bool
 
+    /// Stable id for the zero-height spacer we pin at the tail of the
+    /// `LazyVStack` so `proxy.scrollTo(chatBottomAnchorId)` always
+    /// lands on the bottom regardless of which row is currently last.
+    private let chatBottomAnchorId = "mcpzim-chat-bottom"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        // Dispatch to the next runloop — when the caller just mutated
+        // `session.messages` or toggled `showThinkingIndicator`,
+        // SwiftUI hasn't measured the new layout yet, so a synchronous
+        // `scrollTo` lands on the pre-change geometry. One tick later
+        // the anchor has its real y-offset and the scroll hits bottom.
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo(chatBottomAnchorId, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(chatBottomAnchorId, anchor: .bottom)
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Only show the status banner when there's something to
@@ -45,6 +67,15 @@ struct ChatView: View {
                                 .id("thinking")
                                 .transition(.opacity)
                         }
+                        // Invisible anchor pinned to the bottom of the
+                        // stack so `proxy.scrollTo(chatBottomAnchorId)`
+                        // always lands on the absolute tail, regardless
+                        // of whether the ThinkingIndicator or the last
+                        // message row happens to be the final rendered
+                        // child at the moment of the scroll.
+                        Color.clear
+                            .frame(height: 1)
+                            .id(chatBottomAnchorId)
                     }
                     .animation(.easeInOut(duration: 0.2), value: session.isGenerating)
                     .padding(.horizontal, 12)
@@ -54,11 +85,22 @@ struct ChatView: View {
                 // so the debug pane + composer area become reachable
                 // without manually tapping "Done".
                 .scrollDismissesKeyboard(.immediately)
-                .onChange(of: session.messages.last?.text) { _, _ in
-                    if let last = session.messages.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
-                }
+                // Multi-signal auto-scroll — any of these should pin
+                // the view to the bottom. Watching only `last?.text`
+                // missed: (a) appending a fresh assistant message
+                // placeholder (text still ""), (b) new tool-call
+                // traces arriving on an existing assistant row, (c)
+                // the ThinkingIndicator appearing/disappearing, (d)
+                // `lastError` alerts / state transitions that resize
+                // neighbouring rows. Each trigger scrolls to the
+                // dedicated bottom anchor so layout changes above
+                // can't backscroll the visible content.
+                .onChange(of: session.messages.count)      { _, _ in scrollToBottom(proxy) }
+                .onChange(of: session.messages.last?.text) { _, _ in scrollToBottom(proxy) }
+                .onChange(of: session.messages.last?.toolCalls.count) { _, _ in scrollToBottom(proxy) }
+                .onChange(of: session.isGenerating)        { _, _ in scrollToBottom(proxy) }
+                .onChange(of: showThinkingIndicator)       { _, _ in scrollToBottom(proxy) }
+                .onAppear { scrollToBottom(proxy, animated: false) }
             }
             if !showVoiceChat { composer }
             DebugPaneView()
@@ -167,7 +209,11 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Try asking:").font(.headline)
             Group {
-                Text("• What's in my library?")
+                // Previously "What's in my library?" — the model read
+                // "library" as a nearby POI and routed to `near_places`,
+                // returning nearby library buildings. Phrase unambiguously
+                // as an archive/ZIM inventory so `list_libraries` fires.
+                Text("• What offline archives do I have?")
                 Text("• Route from Boston Common to Fenway Park")
                 Text("• What is aspirin used for?")
             }

@@ -127,12 +127,43 @@ public struct QwenChatMLTemplate: ModelTemplate {
     }
 
     public func firstToolCall(in buffer: String) -> ToolCallMatch? {
+        return firstToolCall(in: buffer, allowImplicitClose: false)
+    }
+
+    public func firstToolCallAfterClip(in buffer: String) -> ToolCallMatch? {
+        return firstToolCall(in: buffer, allowImplicitClose: true)
+    }
+
+    /// Internal impl with an extra `allowImplicitClose` toggle. Streaming
+    /// callers pass `false` (default) — they need strict framing so we
+    /// don't fire a tool call the model is still in the middle of
+    /// writing. The generation-loop post-stream cleanup pass calls with
+    /// `true` to rescue Qwen 3.5 emissions that got clipped by the
+    /// `<|im_end|>` stop marker mid-closer (observed: body ends with
+    /// `</tool` or even bare JSON, no `</tool_call>` at all).
+    public func firstToolCall(
+        in buffer: String, allowImplicitClose: Bool
+    ) -> ToolCallMatch? {
         guard let openMarker = buffer.range(of: "<tool_call>") else { return nil }
-        guard let closeMarker = buffer.range(
-            of: "</tool_call>", range: openMarker.upperBound..<buffer.endIndex
-        ) else { return nil }
+        let searchStart = openMarker.upperBound
+        let closeRange: Range<String.Index>
+        if let r = buffer.range(of: "</tool_call>", range: searchStart..<buffer.endIndex) {
+            closeRange = r
+        } else if allowImplicitClose {
+            // Partial-close fallbacks — only safe AFTER the model has
+            // stopped generating, otherwise we'd match whatever partial
+            // JSON is mid-stream.
+            if let r = buffer.range(of: "</tool", range: searchStart..<buffer.endIndex) {
+                closeRange = r
+            } else {
+                // No closer at all — treat the entire tail as body.
+                closeRange = buffer.endIndex..<buffer.endIndex
+            }
+        } else {
+            return nil
+        }
         let bodyStart = openMarker.upperBound
-        let body = String(buffer[bodyStart..<closeMarker.lowerBound])
+        let body = String(buffer[bodyStart..<closeRange.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Some Qwen variants (Qwen 3.5 especially) emit JSON shapes
         // that don't quite match our prompt's "{name, arguments}"
@@ -153,7 +184,7 @@ public struct QwenChatMLTemplate: ModelTemplate {
            let args = obj["arguments"] as? [String: Any]
         {
             return ToolCallMatch(
-                range: openMarker.lowerBound..<closeMarker.upperBound,
+                range: openMarker.lowerBound..<closeRange.upperBound,
                 name: name, arguments: args
             )
         }
@@ -162,7 +193,7 @@ public struct QwenChatMLTemplate: ModelTemplate {
            let args = obj["arguments"] as? [String: Any]
         {
             return ToolCallMatch(
-                range: openMarker.lowerBound..<closeMarker.upperBound,
+                range: openMarker.lowerBound..<closeRange.upperBound,
                 name: name, arguments: args
             )
         }
@@ -172,7 +203,7 @@ public struct QwenChatMLTemplate: ModelTemplate {
            let args = inner["arguments"] as? [String: Any]
         {
             return ToolCallMatch(
-                range: openMarker.lowerBound..<closeMarker.upperBound,
+                range: openMarker.lowerBound..<closeRange.upperBound,
                 name: name, arguments: args
             )
         }
@@ -188,7 +219,7 @@ public struct QwenChatMLTemplate: ModelTemplate {
            let args = inner["arguments"] as? [String: Any]
         {
             return ToolCallMatch(
-                range: openMarker.lowerBound..<closeMarker.upperBound,
+                range: openMarker.lowerBound..<closeRange.upperBound,
                 name: name, arguments: args
             )
         }
@@ -200,17 +231,60 @@ public struct QwenChatMLTemplate: ModelTemplate {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
-    /// Qwen 3.5 sometimes clips a generation mid-object, leaving
-    /// e.g. `{"function": {"name": "foo", "arguments": {…}` without
-    /// the trailing `}` needed to close the outer wrapper. Balance the
-    /// braces before giving the JSON decoder one more shot. Cheap
-    /// best-effort — if the clipped span is deeper than one missing
-    /// brace, we just return nil from the caller.
+    /// Best-effort repair for Qwen 3.5 tool-call JSON quirks seen on
+    /// device. Applied only after a strict decode has already failed,
+    /// so the wins are pure — no risk of masking a good parse.
+    ///
+    /// Observed emissions (real captures, all on Qwen 3.5 4-bit):
+    ///   1) `{"name": "foo",,"arguments": {...,,...}}`
+    ///      — stray double commas after strings. We collapse `,,` to
+    ///        `,`.
+    ///   2) `{"titles": ["A", "B",]}` / `{"x": 1,}`
+    ///      — trailing comma before `]` or `}`. Strict JSON rejects
+    ///        it; JavaScript accepts it, and Qwen leaks JS habits.
+    ///   3) `["North Korea", " "South Korea"]`
+    ///      — an extra whitespace-only string injected before a real
+    ///        string. We drop the empty-whitespace string so the
+    ///        array parses as the two values the model meant.
+    ///   4) `{"function": {"name": "foo", "arguments": {…}` (clipped)
+    ///      — brace-balance repair, same as before.
+    ///
+    /// Cheap, ordered, idempotent. If more than one missing closing
+    /// brace is needed (deep clip), the caller still bails gracefully.
     private static func repairJSON(_ s: String) -> String {
-        let opens = s.filter { $0 == "{" }.count
-        let closes = s.filter { $0 == "}" }.count
-        guard opens > closes else { return s }
-        return s + String(repeating: "}", count: opens - closes)
+        var out = s
+        // (1) Double commas → single. Iterate to collapse `,,,` too.
+        while out.contains(",,") {
+            out = out.replacingOccurrences(of: ",,", with: ",")
+        }
+        // (2) Trailing commas inside `{…}` / `[…]`.
+        out = out.replacingOccurrences(
+            of: #",\s*([}\]])"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        // (3) Whitespace-only string wedged before an unquoted
+        //     bareword: `" "South Korea"` → `"South Korea"`. The
+        //     model split one string into two by emitting an extra
+        //     `" "` after the opening quote, so the rescue is to
+        //     collapse the `"…whitespace…"` into a single `"`,
+        //     re-joining the closing quote of the bogus slot with
+        //     the bareword that follows. Lookahead gates the repair
+        //     on the next char being a non-delimiter — intentional
+        //     whitespace values like `{"a": " "}` (followed by `}`)
+        //     or `["x", " ", "y"]` (followed by `,`) are left alone.
+        out = out.replacingOccurrences(
+            of: #""\s+"(?=[^"\s,\]\}])"#,
+            with: "\"",
+            options: .regularExpression
+        )
+        // (4) Brace-balance clip repair (original behaviour).
+        let opens = out.filter { $0 == "{" }.count
+        let closes = out.filter { $0 == "}" }.count
+        if opens > closes {
+            out += String(repeating: "}", count: opens - closes)
+        }
+        return out
     }
 
     /// Qwen 3's reasoning mode wraps its scratchpad in `<think>…</think>`

@@ -36,3 +36,4 @@ DerivedData/
 # ios/MCPZimChat/Frameworks/ before building.
 ios/MCPZimChat/Frameworks/CoreKiwix.xcframework/
 tools/gemma-smoke/.build/
+dropped-request.log

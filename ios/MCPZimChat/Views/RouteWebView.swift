@@ -668,17 +668,13 @@ private func reloadIfNeeded(
         )
         return
     }
-    // URL matched — map is already loading/loaded in this webview.
-    // Re-run the full overlay JS so the route line gets drawn (the
-    // previous coordinator's `didFinish` may not have seen the
-    // spec we care about in fullscreen-cover scenarios). The JS is
-    // idempotent: it uses `getSource`/`getLayer` guards before
-    // adding, and `setData` for existing layers.
-    if let coordinator = objc_getAssociatedObject(webView, &coordinatorKey) as? RouteWebCoordinator,
-       let js = coordinator.pendingInjection
-    {
-        webView.evaluateJavaScript(js) { _, _ in }
-    }
+    // URL matched — map is already loaded in this webview. Only
+    // refresh the "you are here" dot from the new spec.userLocation;
+    // do NOT re-evaluate the full pendingInjection. That injection
+    // contains `frameRoute(m)` which calls `map.fitBounds` and drive
+    // mode's `easeTo` — re-running it on every SwiftUI
+    // `updateUIView` (which fires on every GPS tick, ~2 Hz) made the
+    // map re-zoom itself every few seconds, visibly distracting.
     if let here = spec.userLocation {
         let js = userDotOnlyJS(lat: here.lat, lon: here.lon)
         webView.evaluateJavaScript(js) { _, _ in }

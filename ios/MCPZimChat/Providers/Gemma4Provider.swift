@@ -490,6 +490,14 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         // the broken reuse path never runs. Costs the
                         // first-token latency we'd have saved; avoids a
                         // SIGABRT.
+                        //
+                        // Upstream status + rationale lives in the repo
+                        // root under `QWEN35_HYBRID_CACHE.md`. TL;DR:
+                        // tracked at mlx-swift-lm#157; the actual bug is
+                        // stale `precomputedPositionIds` / `ropeDeltas`
+                        // on `Qwen35` the model class, not in the
+                        // KVCache itself. No upstream PR yet — do NOT
+                        // drop this guard.
                         let cacheIsHybrid = existing?.contains(where: { $0 is MambaCache }) ?? false
                         if common == cached.count, common > 0, let existing, !existing.isEmpty,
                            !cacheIsHybrid

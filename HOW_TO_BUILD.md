@@ -224,9 +224,44 @@ Two parallel `WebView`-backed SwiftUI views render tool results against the stre
 
 Both live only for the **newest assistant message** (see `isLatestAssistant` in `ChatView.swift::MessageRow`). Older traces collapse to a `MapPlaceholder` chip — a live WKWebView + MapLibre instance is ~300–500 MB of Metal buffers, so stacking them across a dozen tool calls reliably trips the iPhone's 6 GB jetsam cap mid-generation.
 
+## Qwen 3.5 hybrid-cache cannot reuse across turns
+
+Qwen 3.5 4B forces a full prefill (~13 s on a 7k-token preamble) every
+turn because its hybrid attention (MambaCache + KVCacheSimple) trips
+`broadcast_shapes (128,256) vs (129,256)` on partial-prefix reuse. Root
+cause + upstream status + mitigation options documented separately in
+`QWEN35_HYBRID_CACHE.md`. The short answer: we're pinned at
+`mlx-swift-lm` 3.31.3 which is HEAD; the upstream fix
+(mlx-swift-lm#157) hasn't been written yet. For fast multi-turn on
+device, prefer Qwen 3 4B (non-hybrid, same 9/9 eval score).
+
 ## Preemptive memory guard before MLX generate()
 
 MLX's Metal backend doesn't surface command-buffer errors as Swift errors — when the GPU runs out of memory mid-eval the underlying C++ throws and the process terminates before any Swift `catch` can fire. `ChatSession.runGenerationLoop` checks `os_proc_available_memory()` at the top of each iter and refuses to start a new prefill/sample if headroom is below ~700 MB, surfacing a chat error message instead of an `abort_trap`.
+
+## Fast-path intent routing (skip the LLM entirely)
+
+On Qwen 3.5 4B a single turn eats ~13 s of prefill before the first token streams. Queries that are already structurally identical to a tool call shouldn't pay that — we pattern-match them in `IntentRouter.classify()` (swift/Sources/MCPZimKit/IntentRouter.swift) and dispatch the tool directly. Current fast paths:
+
+| Query shape | Tool | Notes |
+|---|---|---|
+| `<cat> near me / around here` | `near_places` | needs GPS; pattern is mutually-exclusive with the generic `<X> in <Y>` below |
+| `[polite]? directions/route/navigate to <X>` | `route_from_places` | `polite` accepts `give me`, `show me`, `get me`, `find me`, `tell me`, `please`, `can/could/would/will you`, `I need / I want / I'd like` |
+| `[polite]? how do I get to <X>` / `take me to <X>` | `route_from_places` | same polite stripping |
+| `<cat> in/near/at/around <Y>` | `near_named_place` | skips when the query starts with an interrogative (`what`, `where`, `how`, …) so `"where can I find bars in SF"` still falls to the LLM for phrasing |
+
+Why polite prefixes matter: voice input routinely emits `"Give me directions to SF"`. Before the prefix strip, that fell to the LLM and Qwen 3.5 4B emitted malformed JSON (`{"name": "route_from_places",,"arguments": {...,,...,}}`) with 20% probability — a silent dropped turn after 15 s of waiting. See `dropped-request.log` for a capture.
+
+## Qwen tool-call JSON repair
+
+`QwenChatMLTemplate.repairJSON` (swift/Sources/MCPZimKit) runs as a second-chance decode whenever strict `JSONSerialization` rejects a `<tool_call>` body. Repairs observed in the wild on Qwen 3.5 4B 4-bit:
+
+1. **Double commas** → collapse to single. Real capture: `{"name": "route_from_places",,"arguments": …}`.
+2. **Trailing comma** before `}` or `]`. Qwen leaks JavaScript habits (`{"kinds": ["bar",]}`).
+3. **Whitespace-only string wedged before a bareword** (`["North Korea", " "South Korea"]` → `["North Korea", "South Korea"]`). The model spliced `" "` into the array at what should have been the next opening quote; collapsing the `" "` back to a single `"` re-joins the halves. Gated on the following char being a non-delimiter so intentional `" "` values survive.
+4. **Brace-balance clip repair** — original behaviour, adds missing `}` when a turn was clipped by `<|im_end|>` mid-object.
+
+All four are covered by `QwenClippedToolCallTests` with verbatim captures from `dropped-request.log` and a guard test to prove intentional whitespace-only values aren't clobbered.
 
 ## Why this exists
 

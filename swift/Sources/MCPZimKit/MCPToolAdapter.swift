@@ -16,6 +16,7 @@
 // upgrades to the Swift MCP SDK don't ripple into this package's API.
 
 import Foundation
+import os
 
 public struct MCPTool: Sendable {
     public let name: String
@@ -163,6 +164,15 @@ public typealias HostStateProvider = @Sendable () async -> HostStateSnapshot
 public typealias HitReranker = @Sendable (_ query: String, _ hits: [SearchHitResult]) async -> [SearchHitResult]
 
 public actor MCPToolAdapter {
+    /// Routed to `os.Logger` so diagnostics surface via
+    /// `idevicesyslog` (plain `print` goes to stderr and is dropped
+    /// by the device side). Host streamers see
+    /// `Tool.MCPToolAdapter.…` when filtering.
+    static let toolLog = Logger(
+        subsystem: "org.mcpzim.MCPZimChat",
+        category: "MCPToolAdapter"
+    )
+
     private let service: any ZimService
     private let hasStreetzim: Bool
     private let surface: ToolSurface
@@ -670,11 +680,13 @@ public actor MCPToolAdapter {
                 kinds: args["kinds"] as? [String],
                 zim: args["zim"] as? String
             )
+            let excerpts = await fetchWikiExcerpts(for: combined.result)
             return Self.encodeNearPlaces(
                 query: place,
                 resolved: combined.resolved,
                 radius: radius,
-                result: combined.result
+                result: combined.result,
+                excerpts: excerpts
             )
         case "near_places":
             // Validate coords up front. Without this, a model that passes
@@ -702,10 +714,12 @@ public actor MCPToolAdapter {
                 zim: args["zim"] as? String,
                 hasWiki: (args["has_wiki"] as? Bool) ?? false
             )
+            let excerpts = await fetchWikiExcerpts(for: result)
             return Self.encodeNearPlaces(
                 origin: ["lat": lat, "lon": lon],
                 radius: radius,
-                result: result
+                result: result,
+                excerpts: excerpts
             )
         case "route_from_places":
             let result = try await service.routeFromPlaces(
@@ -1269,6 +1283,189 @@ public actor MCPToolAdapter {
         ]
     }
 
+    /// Fetch Wikipedia lead paragraphs in parallel for every result
+    /// that carries a `wiki` OSM tag (e.g. `"en:HP_Garage"`). Gives
+    /// the chat-bubble map popup + the `List` sheet something richer
+    /// than kind + distance to show when the user taps a pin; also
+    /// means the skip-model-reply fast path can present real content
+    /// without a second model turn.
+    ///
+    /// Returns a dict keyed by the result row's index so
+    /// `encodeNearPlaces` can look up the matching excerpt without
+    /// relying on positional pairing. Failures (wiki tag present but
+    /// the article isn't in any loaded ZIM) drop silently — the row
+    /// just doesn't get enriched.
+    func fetchWikiExcerpts(
+        for result: NearPlacesResult
+    ) async -> [Int: [String: Any]] {
+        // Overall cap so a result set of 50+ hits doesn't kick off 50
+        // parallel ZIM reads — a handful of leads is enough to dress
+        // up the top pins the user will actually see on the map.
+        let cap = 10
+        var candidates: [(idx: Int, wiki: String)] = []
+        candidates.reserveCapacity(min(cap, result.results.count))
+        for (idx, pair) in result.results.enumerated() {
+            let w = pair.place.wiki ?? ""
+            if !w.isEmpty {
+                candidates.append((idx, w))
+                if candidates.count >= cap { break }
+            }
+        }
+        // Diagnostic log — `print()` to stderr doesn't reach
+        // `idevicesyslog`, so route through `os.Logger` which the
+        // host's streamer captures. Tells us whether "no wiki on pins"
+        // is because the streetzim records didn't carry the tag vs
+        // the article not resolving against a loaded Wikipedia ZIM.
+        let totalWikiTagged = result.results.filter { !($0.place.wiki?.isEmpty ?? true) }.count
+        let sampleNames = result.results.prefix(3)
+            .map { $0.place.name.isEmpty ? "(unnamed)" : $0.place.name }
+            .joined(separator: ", ")
+        Self.toolLog.notice(
+            "fetchWikiExcerpts: \(totalWikiTagged, privacy: .public) of \(result.results.count, privacy: .public) results carry a wiki tag; sample: \(sampleNames, privacy: .public); fetching \(candidates.count, privacy: .public)"
+        )
+        // Even when the streetzim contributed no tagged candidates
+        // we still want the name-search fallback to run — that's the
+        // whole point of the fallback. So instead of an early
+        // `return [:]`, fall through to the task-group with zero
+        // primary tasks + let the fallback pass do the heavy lifting.
+        let svc = service
+        return await withTaskGroup(
+            of: (Int, [String: Any]?).self,
+            returning: [Int: [String: Any]].self
+        ) { group in
+            for (idx, wikiTag) in candidates {
+                group.addTask { [svc] in
+                    do {
+                        let hit = try await svc.articleByTitle(
+                            title: wikiTag, zim: nil, section: "lead"
+                        )
+                        let excerpt = ArticleHeuristics.trimToSentence(
+                            ArticleHeuristics.stripCitations(hit.section.text),
+                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
+                        )
+                        if excerpt.isEmpty { return (idx, nil) }
+                        return (idx, [
+                            "excerpt": excerpt,
+                            "wiki_title": hit.title,
+                            "wiki_path": hit.path,
+                            "zim": hit.zim,
+                        ])
+                    } catch {
+                        return (idx, nil)
+                    }
+                }
+            }
+            var out: [Int: [String: Any]] = [:]
+            for await (idx, payload) in group {
+                if let payload { out[idx] = payload }
+            }
+            Self.toolLog.notice(
+                "fetchWikiExcerpts: enriched \(out.count, privacy: .public) of \(candidates.count, privacy: .public) via OSM wiki-tag"
+            )
+            // Fallback pass — for rows that the streetzim index
+            // didn't cross-ref (its name+coord join is strict; see
+            // `create_osm_zim.py::extract_wiki_cross_refs`), try a
+            // direct Wikipedia search by place name. Cheap because
+            // each hit only costs one ZIM search + one lead fetch,
+            // capped to what the top-pass didn't already enrich.
+            let fallback = await fetchWikiExcerptsByNameSearch(
+                for: result, excluding: Set(out.keys), cap: cap
+            )
+            for (idx, payload) in fallback {
+                out[idx] = payload
+            }
+            Self.toolLog.notice(
+                "fetchWikiExcerpts: enriched \(fallback.count, privacy: .public) additional rows via Wikipedia name search"
+            )
+            return out
+        }
+    }
+
+    /// Secondary enrichment — searches the loaded Wikipedia ZIM by
+    /// place name for rows the streetzim didn't tag. Only accepts a
+    /// hit when the returned title *closely* matches the place's
+    /// name (loose-equal after punctuation strip), so a generic
+    /// "restaurant" query doesn't latch onto the restaurant
+    /// Wikipedia article.
+    func fetchWikiExcerptsByNameSearch(
+        for result: NearPlacesResult,
+        excluding alreadyEnriched: Set<Int>,
+        cap: Int
+    ) async -> [Int: [String: Any]] {
+        var candidates: [(idx: Int, name: String)] = []
+        for (idx, pair) in result.results.enumerated() {
+            if alreadyEnriched.contains(idx) { continue }
+            let name = pair.place.name
+            if name.count < 4 { continue }  // skip 1–3 char POIs
+            candidates.append((idx, name))
+            if candidates.count >= cap { break }
+        }
+        if candidates.isEmpty { return [:] }
+        let svc = service
+        return await withTaskGroup(
+            of: (Int, [String: Any]?).self,
+            returning: [Int: [String: Any]].self
+        ) { group in
+            for (idx, name) in candidates {
+                group.addTask { [svc] in
+                    do {
+                        let hits = try await svc.search(
+                            query: name, limit: 3, kind: .wikipedia
+                        )
+                        guard let hit = hits.first else { return (idx, nil) }
+                        // Accept only close-match titles to avoid
+                        // topical drift (e.g. "Cafe" → "Coffeehouse").
+                        let a = Self.normaliseTitle(name)
+                        let b = Self.normaliseTitle(hit.title)
+                        let matches = a == b
+                            || a.contains(b) || b.contains(a)
+                        if !matches { return (idx, nil) }
+                        let article = try await svc.articleByTitle(
+                            title: hit.path.hasPrefix("A/")
+                                ? String(hit.path.dropFirst(2))
+                                : hit.title,
+                            zim: hit.zim, section: "lead"
+                        )
+                        let excerpt = ArticleHeuristics.trimToSentence(
+                            ArticleHeuristics.stripCitations(article.section.text),
+                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
+                        )
+                        if excerpt.isEmpty { return (idx, nil) }
+                        return (idx, [
+                            "excerpt":     excerpt,
+                            "wiki_title":  article.title,
+                            "wiki_path":   article.path,
+                            "zim":         article.zim,
+                        ])
+                    } catch {
+                        return (idx, nil)
+                    }
+                }
+            }
+            var out: [Int: [String: Any]] = [:]
+            for await (idx, payload) in group {
+                if let payload { out[idx] = payload }
+            }
+            return out
+        }
+    }
+
+    /// Loose-equality normaliser for comparing OSM place names to
+    /// Wikipedia article titles. Drops ampersands / periods /
+    /// redundant spaces and lowercases; `&` → `and` so "Iris & B.
+    /// Gerald Cantor Center" matches "Iris and B. Gerald Cantor
+    /// Center" when Wikipedia uses the spelled-out form.
+    private static func normaliseTitle(_ s: String) -> String {
+        let lowered = s.lowercased()
+            .replacingOccurrences(of: "&", with: "and")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "'", with: "")
+        // Collapse whitespace runs to single spaces then trim.
+        let parts = lowered.split(whereSeparator: { $0.isWhitespace })
+        return parts.joined(separator: " ")
+    }
+
     /// Shared encoder for `near_places` / `near_named_place` results.
     /// Emits the headline counts + category breakdown *first* so a small
     /// model can answer "20 cafes, 10 bars …" without having to scan the
@@ -1278,7 +1475,8 @@ public actor MCPToolAdapter {
         origin: [String: Double]? = nil,
         resolved: Place? = nil,
         radius: Double,
-        result: NearPlacesResult
+        result: NearPlacesResult,
+        excerpts: [Int: [String: Any]] = [:]
     ) -> [String: Any] {
         // Breakdown sorted descending so the model sees the biggest
         // buckets first — encourages "N cafes, M bars, …" phrasing.
@@ -1319,9 +1517,24 @@ public actor MCPToolAdapter {
             // How many entries are in `results` below (capped at `limit`).
             // NOT the same as `total_in_radius`.
             "results_shown": result.results.count,
-            "results": result.results.map { pair -> [String: Any] in
+            "results": result.results.enumerated().map { idx, pair -> [String: Any] in
                 var r = encodePlace(pair.place)
                 r["distance_m"] = Int(pair.distanceMeters.rounded())
+                // Inject Wikipedia lead + path when `fetchWikiExcerpts`
+                // resolved the place's `wiki` tag. Popup rendering on
+                // the iOS side reads `excerpt` / `wiki_path` to show
+                // the summary + "Read article" button.
+                if let enrich = excerpts[idx] {
+                    if let excerpt = enrich["excerpt"] as? String, !excerpt.isEmpty {
+                        r["excerpt"] = excerpt
+                    }
+                    if let path = enrich["wiki_path"] as? String, !path.isEmpty {
+                        r["wiki_path"] = path
+                    }
+                    if let title = enrich["wiki_title"] as? String, !title.isEmpty {
+                        r["wiki_title"] = title
+                    }
+                }
                 return r
             },
             // Embed the usage contract in every response so the model sees
