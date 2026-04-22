@@ -765,53 +765,102 @@ private func loadSpec(
     let driveModeJS: String
     if let mode = initialDriveMode, let ep = endpoints {
         driveModeJS = """
-              // Kick off the streetzim viewer's drive mode. All three
-              // stages (graph ready → set origin+dest → route computed →
-              // click mode button) are polled with a bounded retry so
-              // a slow graph load doesn't wedge this on a fast timer.
               (function() {
                 var mode = "\(mode)";
                 var o = [\(ep.origin.lat), \(ep.origin.lon)];
                 var d = [\(ep.dest.lat), \(ep.dest.lon)];
+                console.info("mcpzim drive-mode: kickoff mode=" + mode
+                  + " origin=" + o.join(",") + " dest=" + d.join(","));
+                // Fail-fast if the ZIM's viewer doesn't have the
+                // streetzimRouting hook (older build — needs a rebuild
+                // of the ZIM after streetzim@226d511). Without this
+                // we'd silently poll for 30 s before logging the
+                // timeout, long after the user has given up.
+                function hookPresent() {
+                  return typeof window.streetzimRouting !== "undefined"
+                      && window.streetzimRouting !== null;
+                }
+                function hookCheck(tries) {
+                  tries = tries || 0;
+                  if (hookPresent()) return proceed();
+                  if (tries > 20) {  // 2 s is plenty for script setup
+                    console.warn("mcpzim drive-mode: window.streetzimRouting "
+                      + "missing after 2 s — this ZIM was built before the "
+                      + "streetzim hook landed. Rebuild the ZIM with the "
+                      + "latest resources/viewer/index.html.");
+                    return;
+                  }
+                  setTimeout(function() { hookCheck(tries + 1); }, 100);
+                }
                 function waitFor(test, cb, label, tries) {
                   tries = tries || 0;
-                  try {
-                    if (test()) return cb();
-                  } catch (e) {}
+                  try { if (test()) return cb(); } catch (e) {}
                   if (tries > 300) {
-                    console.warn("mcpzim drive-mode: timeout waiting for " + label);
+                    console.warn("mcpzim drive-mode: timeout waiting for " + label
+                      + " after 30 s");
                     return;
                   }
                   setTimeout(function() { waitFor(test, cb, label, tries + 1); }, 100);
                 }
-                waitFor(
-                  function() {
-                    return window.streetzimRouting
-                        && window.streetzimRouting.graphReady;
-                  },
-                  function() {
-                    try {
-                      window.streetzimRouting.setOrigin(o[0], o[1], "Start");
-                      window.streetzimRouting.setDest(d[0], d[1], "Destination");
-                    } catch (e) {
-                      console.error("mcpzim drive-mode: setOrigin/setDest threw", e);
-                      return;
+                function proceed() {
+                  console.info("mcpzim drive-mode: hook present; "
+                    + "graphReady=" + window.streetzimRouting.graphReady);
+                  // Viewer lazy-loads the routing graph on first user
+                  // interaction with the routing panel (toggle click).
+                  // When we're entering from a chat bubble the panel
+                  // was never opened, so kick off the fetch ourselves
+                  // before we poll graphReady. Calling twice is safe —
+                  // the viewer's own loadGraph is a no-op when a fetch
+                  // is already in flight.
+                  if (!window.streetzimRouting.graphReady) {
+                    if (typeof window.streetzimRouting.loadGraph === "function") {
+                      console.info("mcpzim drive-mode: graph not loaded, calling loadGraph()");
+                      try { window.streetzimRouting.loadGraph(); }
+                      catch (e) { console.error("mcpzim drive-mode: loadGraph threw", e); }
+                    } else {
+                      // Older ZIM (hook present but no loadGraph method).
+                      // Trigger the fetch via the existing UI path — click
+                      // the route-toggle button to open the routing panel,
+                      // which internally calls loadGraph(). The panel is
+                      // auto-hidden once driveMode.enter fires, so the user
+                      // sees it flash briefly at worst.
+                      var toggle = document.getElementById("route-toggle");
+                      if (toggle) {
+                        console.info("mcpzim drive-mode: graph not loaded, clicking route-toggle");
+                        toggle.click();
+                      } else {
+                        console.warn("mcpzim drive-mode: no loadGraph + no #route-toggle — can't trigger fetch");
+                      }
                     }
-                    waitFor(
-                      function() { return window.streetzimRouting.hasRoute; },
-                      function() {
-                        try {
-                          window.streetzimRouting.clickMode(mode);
-                          console.info("mcpzim drive-mode entered:", mode);
-                        } catch (e) {
-                          console.error("mcpzim drive-mode: clickMode threw", e);
-                        }
-                      },
-                      "hasRoute"
-                    );
-                  },
-                  "graphReady"
-                );
+                  }
+                  waitFor(
+                    function() { return window.streetzimRouting.graphReady; },
+                    function() {
+                      console.info("mcpzim drive-mode: graph ready, calling setOrigin/setDest");
+                      try {
+                        window.streetzimRouting.setOrigin(o[0], o[1], "Start");
+                        window.streetzimRouting.setDest(d[0], d[1], "Destination");
+                      } catch (e) {
+                        console.error("mcpzim drive-mode: setOrigin/setDest threw", e);
+                        return;
+                      }
+                      waitFor(
+                        function() { return window.streetzimRouting.hasRoute; },
+                        function() {
+                          try {
+                            window.streetzimRouting.clickMode(mode);
+                            console.info("mcpzim drive-mode entered: " + mode);
+                          } catch (e) {
+                            console.error("mcpzim drive-mode: clickMode threw", e);
+                          }
+                        },
+                        "hasRoute"
+                      );
+                    },
+                    "graphReady"
+                  );
+                }
+                hookCheck();
               })();
         """
     } else {
