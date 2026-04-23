@@ -922,6 +922,42 @@ public actor MCPToolAdapter {
         ]
     }
 
+    /// Shared cleaner for any wiki article we're about to dress up
+    /// as a place's "Wikipedia preview." Returns nil when the
+    /// article is a disambiguation page or the cleaned lead has no
+    /// real content — caller should then skip the wiki enrichment
+    /// entirely rather than show a misleading header.
+    ///
+    /// Rejection cases seen on device (2026-04-22 screenshot):
+    ///   * "Oak Grove" → `Oak_Grove_(disambiguation)` / "may refer
+    ///     to:" → rendered as the place's preview, nonsensical.
+    ///   * "Wine Cellar" → generic `Wine_cellar` concept article →
+    ///     rendered as the place's preview, also nonsensical.
+    ///   * OSM-tagged places like "Palo Alto Junior Museum and Zoo"
+    ///     → lead opens with the title repeated three times before
+    ///     the first sentence → list row shows the triple-title
+    ///     instead of the actual description.
+    ///
+    /// `stripLeadingTitleRepetition` handles the third; the disambig
+    /// check handles the first; calling code gets nil for the
+    /// second if the resolved title doesn't match the place name
+    /// (tightened check in `fetchWikiExcerptsByNameSearch`).
+    static func cleanedWikiExcerpt(
+        title: String, leadText: String
+    ) -> String? {
+        if ArticleHeuristics.isDisambiguationArticle(
+            title: title, leadText: leadText
+        ) { return nil }
+        let stripped = ArticleHeuristics.stripLeadingTitleRepetition(
+            ArticleHeuristics.stripCitations(leadText), title: title
+        )
+        let excerpt = ArticleHeuristics.trimToSentence(
+            stripped,
+            maxChars: ArticleHeuristics.defaultStoryExcerptChars
+        )
+        return excerpt.isEmpty ? nil : excerpt
+    }
+
     private static func fetchCompareEntry(
         service: any ZimService, title: String,
         section: String?, zim: String?
@@ -1148,11 +1184,9 @@ public actor MCPToolAdapter {
                         let hit = try await svc.articleByTitle(
                             title: wiki, zim: nil, section: "lead"
                         )
-                        let excerpt = ArticleHeuristics.trimToSentence(
-                            ArticleHeuristics.stripCitations(hit.section.text),
-                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
-                        )
-                        if excerpt.isEmpty { return (i, nil) }
+                        guard let excerpt = Self.cleanedWikiExcerpt(
+                            title: hit.title, leadText: hit.section.text
+                        ) else { return (i, nil) }
                         return (i, [
                             "place_name": place.name,
                             "wiki_title": hit.title,
@@ -1255,11 +1289,11 @@ public actor MCPToolAdapter {
             out["wikipedia"] = wiki
             if let hit = try? await service.articleByTitle(
                 title: wiki, zim: nil, section: "lead"
-            ) {
-                let summary = ArticleHeuristics.trimToSentence(
-                    ArticleHeuristics.stripCitations(hit.section.text),
-                    maxChars: ArticleHeuristics.defaultStoryExcerptChars
-                )
+            ),
+               let summary = Self.cleanedWikiExcerpt(
+                title: hit.title, leadText: hit.section.text
+               )
+            {
                 out["wiki_title"] = hit.title
                 out["wiki_zim"] = hit.zim
                 out["wiki_summary"] = summary
@@ -1412,11 +1446,9 @@ public actor MCPToolAdapter {
                         let hit = try await svc.articleByTitle(
                             title: wikiTag, zim: nil, section: "lead"
                         )
-                        let excerpt = ArticleHeuristics.trimToSentence(
-                            ArticleHeuristics.stripCitations(hit.section.text),
-                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
-                        )
-                        if excerpt.isEmpty { return (idx, nil) }
+                        guard let excerpt = Self.cleanedWikiExcerpt(
+                            title: hit.title, leadText: hit.section.text
+                        ) else { return (idx, nil) }
                         return (idx, [
                             "excerpt": excerpt,
                             "wiki_title": hit.title,
@@ -1486,24 +1518,32 @@ public actor MCPToolAdapter {
                             query: name, limit: 3, kind: .wikipedia
                         )
                         guard let hit = hits.first else { return (idx, nil) }
-                        // Accept only close-match titles to avoid
-                        // topical drift (e.g. "Cafe" → "Coffeehouse").
+                        // Tight title match. The previous "a contains
+                        // b OR b contains a" loosening let too many
+                        // unrelated concept pages through — e.g.
+                        // "Wine Cellar" → `Wine_cellar` (generic
+                        // concept article about wine cellars in
+                        // general, not this specific place). Demand
+                        // a normalised-equal title; anything else is
+                        // a fuzzy match we can't trust.
                         let a = Self.normaliseTitle(name)
                         let b = Self.normaliseTitle(hit.title)
-                        let matches = a == b
-                            || a.contains(b) || b.contains(a)
-                        if !matches { return (idx, nil) }
+                        if a != b { return (idx, nil) }
                         let article = try await svc.articleByTitle(
                             title: hit.path.hasPrefix("A/")
                                 ? String(hit.path.dropFirst(2))
                                 : hit.title,
                             zim: hit.zim, section: "lead"
                         )
-                        let excerpt = ArticleHeuristics.trimToSentence(
-                            ArticleHeuristics.stripCitations(article.section.text),
-                            maxChars: ArticleHeuristics.defaultStoryExcerptChars
-                        )
-                        if excerpt.isEmpty { return (idx, nil) }
+                        // Still run through the disambig / title-rep
+                        // cleaner — an exact normalised title match
+                        // can still land on a disambiguation page for
+                        // short generic names (real capture: "Oak
+                        // Grove" → `Oak_Grove` → "may refer to:").
+                        guard let excerpt = Self.cleanedWikiExcerpt(
+                            title: article.title,
+                            leadText: article.section.text
+                        ) else { return (idx, nil) }
                         return (idx, [
                             "excerpt":     excerpt,
                             "wiki_title":  article.title,

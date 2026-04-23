@@ -95,6 +95,89 @@ public enum ArticleHeuristics {
 
     // MARK: - Prose cleaning
 
+    /// Detect Wikipedia disambiguation pages — the ones titled
+    /// `Foo (disambiguation)` or opening with "Foo may refer to:".
+    /// These return a list of meanings, not a description of a
+    /// specific entity, and on device we were rendering the "may
+    /// refer to:" line as a place's Wikipedia preview (real capture:
+    /// "Oak Grove" → disambig). Both the tagged-wiki path and the
+    /// fallback name-search path bail when this returns true.
+    public static func isDisambiguationArticle(
+        title: String, leadText: String
+    ) -> Bool {
+        let t = title.lowercased()
+        if t.contains("(disambiguation)") { return true }
+        let lead = leadText.prefix(400).lowercased()
+        // "X may refer to:" is the canonical disambig opener; match
+        // as a word-bounded substring so we don't catch "also refer
+        // to" in body prose.
+        if lead.range(of: #"\bmay refer to\b"#,
+                      options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
+    /// Strip leading paragraphs that are just the article's own
+    /// title repeated. Wikipedia's lead section often opens with
+    /// `Title\n\nShort descriptor\n\nTitle is a …` where the first
+    /// two lines are the infobox caption + heading we already show
+    /// as the row label. Without this the list rendered
+    /// "Palo Alto Junior Museum and Zoo" THREE times before any
+    /// actual sentence (see 2026-04-22 screenshot).
+    ///
+    /// Conservative: only drops a leading line when it's a
+    /// normalised equal / prefix of the title. Doesn't touch the
+    /// rest of the lead.
+    public static func stripLeadingTitleRepetition(
+        _ text: String, title: String
+    ) -> String {
+        let titleNorm = normaliseForCompare(title)
+        guard !titleNorm.isEmpty else { return text }
+        let paragraphs = text.components(separatedBy: "\n\n")
+        var idx = 0
+        while idx < paragraphs.count {
+            let p = paragraphs[idx].trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            if p.isEmpty { idx += 1; continue }
+            let pNorm = normaliseForCompare(p)
+            // Only strip paragraphs that are EXACTLY the title after
+            // normalisation. Anything more permissive (like "starts
+            // with the title") clobbers the real first sentence —
+            // Wikipedia leads frequently open with
+            // "Title is a …" which shares the title as a prefix but
+            // IS the content we want to keep.
+            if pNorm == titleNorm { idx += 1; continue }
+            break
+        }
+        if idx == 0 { return text }
+        return paragraphs[idx..<paragraphs.count]
+            .joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Lowercase + strip punctuation + collapse whitespace. Used by
+    /// the title-repetition detector so "Palo Alto", "palo alto", and
+    /// "Palo Alto." compare equal.
+    private static func normaliseForCompare(_ s: String) -> String {
+        let lowered = s.lowercased()
+        var out = ""
+        out.reserveCapacity(lowered.count)
+        var lastWasSpace = false
+        for c in lowered {
+            if c.isLetter || c.isNumber {
+                out.append(c); lastWasSpace = false
+            } else if c.isWhitespace {
+                if !lastWasSpace, !out.isEmpty {
+                    out.append(" "); lastWasSpace = true
+                }
+            } else {
+                // punctuation → eat
+            }
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
     /// Strip inline citation markers that look fine on screen but read
     /// badly through TTS. Keeps the sentence punctuation intact.
     /// Examples removed: [1], [12], [a], [citation needed], [note 3], [nb 2].
