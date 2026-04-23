@@ -50,6 +50,13 @@ public final class ChatSession {
     public private(set) var models: [any ModelProvider]
     public var selectedModel: any ModelProvider
     public var modelState: ModelLoadState = .notLoaded
+    /// Wall-clock stamp of when the current download started — stamped
+    /// on the `.notLoaded → .downloading` transition and cleared on
+    /// transitions back to `.notLoaded` / `.ready` / `.failed`. Used by
+    /// `LibraryView` to render "Ns elapsed" alongside the Hub's percent
+    /// so the UI stays honest when `fractionCompleted` coalesces and
+    /// sits at 1% for minutes on large safetensors downloads.
+    public var downloadStartedAt: Date? = nil
 
     // MARK: - Transcript
 
@@ -927,6 +934,22 @@ public final class ChatSession {
             huggingFaceRepo: "mlx-community/Gemma4-E2B-IT-Text-int4",
             approximateMemoryMB: 2200
         )
+        // Gemma 3 4B IT text-only 4-bit — the mlx-swift-lm-compatible
+        // quant. `mlx-community/gemma-3-4b-it-4bit` is the multimodal
+        // `Gemma3ForConditionalGeneration` wrapper and its packed 4-bit
+        // weights mismatch our vendored `Gemma3TextModel`'s
+        // `o_proj` shape (seen on 2026-04-23: expectedShape [2560,128]
+        // vs actualShape [2560,256]). The `-text-4b-it-` variant is the
+        // text-only checkpoint designed for the mlx-swift-lm `Gemma3Text`
+        // path and loads cleanly. Benched 7/9 on the mac-only eval
+        // scorecard; dense attention (no Qwen 3.5 MambaCache reuse bug).
+        let gemma3_4b = Gemma4Provider(
+            id: "gemma3-4b-it-text-4bit",
+            displayName: "Gemma 3 4B IT (4-bit · text)",
+            huggingFaceRepo: "mlx-community/gemma-3-text-4b-it-4bit",
+            approximateMemoryMB: 2700,
+            template: Gemma3Template()
+        )
         // Qwen 3 family — ChatML tool-call format, registered upstream
         // (`qwen3` / `qwen3_5_text` in `LLMModelFactory`). Same provider
         // class, same streaming path as Gemma; only the `template`
@@ -967,7 +990,27 @@ public final class ChatSession {
             // budget so it can reliably finish both reasoning + tool.
             replyTokensFloor: 1024
         )
-        var providers: [any ModelProvider] = [gemma, gemmaText, qwen3_4b, qwen35_4b, qwen3_1_7b]
+        var providers: [any ModelProvider] = [gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b]
+        #if os(macOS)
+        // Gemma 3 12B IT QAT-4bit — mac-only reference model. Benched 9/9
+        // on the mac-only eval scorecard (perfect tool-calling across
+        // every scenario), but peak memory scales from 9.2 GB @ 7k to
+        // 13.4 GB @ 40k tokens, well past the iPhone 17 Pro Max 6 GB
+        // jetsam cap. Useful on the Mac app for A/B comparisons against
+        // the 4B candidates and as an upper bound the smaller models
+        // can be measured against. See ON_DEVICE_MODEL_REPORT_2026-04-23.md.
+        // Pull the text-only 12B quant to match the text-only 4B choice —
+        // same `Gemma3TextModel` load path, no multimodal wrapper to
+        // mismatch on.
+        let gemma3_12b = Gemma4Provider(
+            id: "gemma3-12b-it-text-4bit",
+            displayName: "Gemma 3 12B IT (4-bit · text · mac)",
+            huggingFaceRepo: "mlx-community/gemma-3-text-12b-it-4bit",
+            approximateMemoryMB: 9200,
+            template: Gemma3Template()
+        )
+        providers.append(gemma3_12b)
+        #endif
         if #available(macOS 26.0, iOS 19.0, *), Self.enableAppleFM {
             // FoundationModels.framework gets linked into the app at
             // load time on iOS 19+/macOS 26+, costing ~10–30 MB. Only
@@ -1141,6 +1184,17 @@ public final class ChatSession {
         stateObservationTask = Task { [weak self] in
             guard let self else { return }
             for await state in self.selectedModel.stateStream() {
+                // Stamp/clear download start time on state transitions
+                // so the UI can show elapsed seconds during the window
+                // where Hub progress is stuck at 1%.
+                switch state {
+                case .downloading:
+                    if self.downloadStartedAt == nil {
+                        self.downloadStartedAt = Date()
+                    }
+                case .notLoaded, .loading, .ready, .failed:
+                    self.downloadStartedAt = nil
+                }
                 self.modelState = state
             }
         }

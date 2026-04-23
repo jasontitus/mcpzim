@@ -67,6 +67,27 @@ switch the affected models to the state-aware
 `callAsFunction(_ input:cache:state:)` overload. `alankessler` offered
 (2026-03-27) to implement it; **no PR yet**.
 
+## Upstream status (checked 2026-04-23)
+
+- **#157** — still **OPEN**. Last activity 2026-03-27 (27 days stale). No
+  commits reference `LMOutput.State`, `precomputedPositionIds`, or
+  `ropeDeltas` in a refactor PR. `alankessler` has other open PRs
+  (#174, #167) but nothing on the scratch-state fix.
+- **#149** ("Fix Qwen35 VLM crash on text-only inference", open,
+  updated 2026-04-15) — narrowly fixes a separate 1D-tensor `dim(1)`
+  crash in `Qwen35Language.callAsFunction`. Doesn't touch the
+  stale-scratch bug; both can reproduce on the same model.
+- **#229** ("fix segsum dtype promotion — 2x memory waste on hybrid
+  SSM models", open, filed 2026-04-21) — orthogonal: cuts hybrid SSM
+  prefill memory roughly in half by matching the `-∞` scalar dtype to
+  the bf16 accumulator. Would shrink Qwen 3.5's footprint but doesn't
+  unblock cache reuse.
+- **#155** (prompt-cache round-trip for `ArraysCache` / `MambaCache` /
+  `CacheList`) — **merged**; already in our 3.31.3.
+
+Net: the refactor that would let us drop the `cacheIsHybrid` guard
+has not been started as of 2026-04-23. Keep the guard.
+
 ## What we've checked
 
 | Option | Status |

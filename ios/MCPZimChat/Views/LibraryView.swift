@@ -16,9 +16,34 @@ struct LibraryView: View {
         List {
             Section("Model") {
                 ModelPickerView()
-                Text(modelStateDescription)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                // Wrap in TimelineView so the "Ns elapsed" tail of the
+                // download status refreshes every second even when the
+                // Hub's `fractionCompleted` is silent — the UI stays
+                // honest about the download being alive. The TimelineView
+                // re-evaluates its body on each 1-second tick.
+                TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                    HStack(spacing: 8) {
+                        // Render an indeterminate spinner whenever the
+                        // model is actively fetching or loading — the
+                        // Hub's progress callback for a ~2.5 GB
+                        // safetensors can sit silent at 1% for minutes
+                        // while bytes flow (swift-huggingface coalesces
+                        // the per-file NSProgress updates very
+                        // coarsely), so the spinner is the most
+                        // reliable "the app isn't frozen" signal.
+                        switch session.modelState {
+                        case .downloading, .loading:
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .controlSize(.small)
+                        default:
+                            EmptyView()
+                        }
+                        Text(modelStateDescription)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             Section {
                 if session.library.isEmpty {
@@ -157,7 +182,17 @@ struct LibraryView: View {
                     ))
                     .textContentType(.password)
                     .autocorrectionDisabled()
+                    #if os(iOS)
+                    // `.textInputAutocapitalization` is iOS / catalyst /
+                    // visionOS / tvOS / watchOS only — it does NOT exist
+                    // on native macOS, and including it unconditionally
+                    // causes the Mac target's SwiftUI type-checker to bail
+                    // with "unable to type-check this expression in
+                    // reasonable time". `.autocorrectionDisabled()` is
+                    // cross-platform and already covers the important
+                    // part on Mac (no autocorrect on a PAT).
                     .textInputAutocapitalization(.never)
+                    #endif
                     .font(.footnote.monospaced())
                     Text("When set, the debug-pane Report button uploads the "
                          + "session as a secret gist so it can be fetched from "
@@ -235,7 +270,23 @@ struct LibraryView: View {
         switch session.modelState {
         case .notLoaded:          return "Not loaded. Pick a model above."
         case .loading:            return "Loading weights…"
-        case .downloading(let p): return "Downloading weights… \(Int(p * 100))%"
+        case .downloading(let p):
+            let pct = "\(Int(p * 100))%"
+            let start = session.downloadStartedAt
+            let elapsed = start.map { Int(Date().timeIntervalSince($0)) } ?? 0
+            let elapsedStr = "\(elapsed)s"
+            // `swift-huggingface`'s NSProgress stays near 0 for a long
+            // stretch on big .safetensors downloads (the parent
+            // Progress tree coalesces very coarsely), so after ~20s at
+            // ≤1% we replace the stuck percent with a "fetching…" hint
+            // and lean on the elapsed counter + spinner to show life.
+            // When the Hub finally emits a jump past 5% we go back to
+            // the numeric display.
+            let percentLooksStuck = (Int(p * 100) <= 1) && elapsed > 20
+            if percentLooksStuck {
+                return "Fetching weights (~2.5 GB, first-launch only)… \(elapsedStr)"
+            }
+            return "Downloading weights… \(pct) · \(elapsedStr)"
         case .ready:              return "Ready."
         case .failed(let m):      return "Failed: \(m)"
         }

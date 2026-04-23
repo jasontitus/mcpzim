@@ -32,7 +32,7 @@ final class EvalHarness {
         /// `mlx_lm.convert`). `repo` stays populated for display +
         /// `isCached` path-matching.
         let localDirectory: URL?
-        enum TemplateKind { case gemma4, qwenChatML }
+        enum TemplateKind { case gemma4, qwenChatML, gemma3 }
 
         init(
             id: String, displayName: String, repo: String,
@@ -71,6 +71,17 @@ final class EvalHarness {
               displayName: "Qwen 3 4B (4-bit)",
               repo: "mlx-community/Qwen3-4B-4bit",
               templateKind: .qwenChatML),
+        // Gemma 3 4B IT text-only 4-bit — added 2026-04-23. The
+        // multimodal `gemma-3-4b-it-4bit` weights mismatch our vendored
+        // mlx-swift-lm 3.31.3 `Gemma3TextModel` `o_proj` shape
+        // (expectedShape [2560,128] vs actualShape [2560,256]); the
+        // `-text-4b-it-` variant is the text-only checkpoint for the
+        // `Gemma3Text` load path. 7/9 on the mac-only Python eval —
+        // this harness re-runs it through the real Swift app path.
+        .init(id: "gemma3-4b-it-text-4bit",
+              displayName: "Gemma 3 4B IT (4-bit · text)",
+              repo: "mlx-community/gemma-3-text-4b-it-4bit",
+              templateKind: .gemma3),
         // Qwen 3.5 4B text-only at full bf16 precision. On Mac (36 GB
         // RAM) this fits easily and gives us a ceiling-of-quality
         // reference to compare against the 4-bit quant below. On
@@ -461,6 +472,7 @@ final class EvalHarness {
             switch v.templateKind {
             case .gemma4:      return Gemma4Template()
             case .qwenChatML:  return QwenChatMLTemplate()
+            case .gemma3:      return Gemma3Template()
             }
         }()
         let provider = Gemma4Provider(

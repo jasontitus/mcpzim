@@ -16,6 +16,38 @@ import OSLog
 
 private let log = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "Gemma4")
 
+/// Serialised fraction store for the disk-poll progress sibling.
+/// `load()` spawns a Task that writes to this; the provider reads the
+/// max between this and the Hub-reported fraction.
+actor DiskFraction {
+    private var value: Double = 0
+    func set(_ f: Double) { value = max(value, f) }
+    func maxFraction() -> Double { value }
+}
+
+/// Sum of regular-file sizes under `url`, recursive. Returns 0 if the
+/// directory doesn't exist yet (download hasn't started laying bytes
+/// down). Used as a "real" progress signal to sidestep
+/// `swift-huggingface`'s coalesced `NSProgress.fractionCompleted`.
+func dirSizeBytes(at url: URL) -> Int64 {
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: url.path) else { return 0 }
+    guard let enumerator = fm.enumerator(
+        at: url,
+        includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+        options: [.skipsHiddenFiles],
+        errorHandler: nil
+    ) else { return 0 }
+    var total: Int64 = 0
+    for case let file as URL in enumerator {
+        let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        if values?.isRegularFile == true, let size = values?.fileSize {
+            total += Int64(size)
+        }
+    }
+    return total
+}
+
 #if canImport(MLXLLM) && canImport(MLXLMCommon)
 import MLX
 import MLXLLM
@@ -359,16 +391,72 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                 return URLSession(configuration: cfg)
             }()
             let hub = HubClient(session: longDownloadSession)
+
+            // `swift-huggingface`'s progressHandler coalesces byte-level
+            // updates through an NSProgress tree — for a snapshot with
+            // one dominant `model.safetensors` the parent's
+            // `fractionCompleted` can sit near 0 for long stretches even
+            // while the file is actively growing on disk. Observed on
+            // 2026-04-23: UI stalled at 1% on a 2.5 GB download even
+            // though bytes were flowing.
+            //
+            // Sidestep by polling the HF cache dir in parallel with the
+            // Hub download: sum all file bytes under
+            // `<cachesDir>/huggingface/hub/models--<org>--<repo>/` every
+            // 750 ms and report `bytes / (approximateMemoryMB * MB)` as
+            // the fraction. Whichever signal (Hub native or disk poll)
+            // reports a higher fraction wins, so progress is monotonic.
+            set(.downloading(0))
+
+            // Expected cache root = default `swift-huggingface` location
+            // on iOS / macOS: `<cachesDir>/huggingface/hub`. The repo
+            // folder uses Python-compatible naming: `models--<org>--<repo>`.
+            let hfHubRoot: URL = {
+                let caches = FileManager.default.urls(
+                    for: .cachesDirectory, in: .userDomainMask
+                ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                return caches
+                    .appendingPathComponent("huggingface")
+                    .appendingPathComponent("hub")
+            }()
+            let repoDirName = "models--" + modelConfiguration.name
+                .replacingOccurrences(of: "/", with: "--")
+            let repoRoot = hfHubRoot.appendingPathComponent(repoDirName)
+            // Approximate total bytes from provider metadata. Slightly
+            // over-estimated on purpose (bumps MB→bytes with 1024×1024
+            // vs the actual weight file size) so real progress caps
+            // just below 100% rather than overshooting when blobs +
+            // metadata together exceed approximateMemoryMB.
+            let approxTotalBytes: Int64 = Int64(approximateMemoryMB) * 1024 * 1024
+
+            let diskFrac = DiskFraction()
+            let pollTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    let bytes = dirSizeBytes(at: repoRoot)
+                    if bytes > 0, approxTotalBytes > 0 {
+                        let frac = min(0.99, Double(bytes) / Double(approxTotalBytes))
+                        await diskFrac.set(frac)
+                        self?.set(.downloading(await diskFrac.maxFraction()))
+                    }
+                    try? await Task.sleep(nanoseconds: 750_000_000)
+                }
+            }
+            defer { pollTask.cancel() }
+
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: #hubDownloader(hub),
                 using: #huggingFaceTokenizerLoader(),
                 configuration: modelConfiguration,
                 progressHandler: { [weak self] progress in
                     let pct = progress.fractionCompleted
+                    // diskFrac is an actor; we can't `await` from a sync
+                    // closure. Instead update with the Hub value and let
+                    // the poll task raise the floor on its next tick.
                     self?.set(.downloading(pct))
-                    if Int(pct * 100) % 5 == 0 {
-                        self?.debug("download \(Int(pct * 100))%")
-                        log.notice("download progress: \(Int(pct * 100))%")
+                    let intPct = Int(pct * 100)
+                    if intPct == 1 || intPct % 5 == 0 {
+                        self?.debug("download \(intPct)%")
+                        log.notice("download progress: \(intPct)%")
                     }
                 }
             )

@@ -187,6 +187,81 @@ GEMMA_SMOKE_MODE=prompt-experiment ./GemmaSmoke "x"
 
 `prompt-experiment` reports `LCP vs primed` / `LCP vs cached` / `hit=YES|no` for each layout in `tools/gemma-smoke/Sources/GemmaSmoke/PromptExperiment.swift`. Add a new `Layout<X>` function and register it in `run()`'s `for (label, runner)` list to test a candidate; no iOS rebuild needed.
 
+## llm-smoke (Python cross-family model bench)
+
+`tools/llm-smoke/` is the Python-mlx-lm / mlx-vlm harness suite used to
+produce `ON_DEVICE_MODEL_REPORT_2026-04-23.md`. It runs any
+`mlx-community` model (Gemma 3, Gemma 4, Qwen 3, Phi 4-mini, Nemotron,
+gemma-3n, gemma-3-12b) against the 9 tool-selection scenarios from
+`ios/MCPZimEval/EvalHarness.swift` and reports accuracy + prefill/decode
+tok/s + peak memory at configurable preamble sizes. Everything runs on
+mac — no iOS device needed. Managed via `uv` with Python 3.12.
+
+### Setup
+
+```sh
+cd tools/llm-smoke
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install mlx-lm mlx-vlm psutil
+```
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `eval.py MODEL_ID [all\|one]` | 9-scenario tool-call eval via mlx-lm (HF chat template + manual tool injection fallback for Phi-4-mini). |
+| `eval_gemma4.py MODEL_ID` | Same eval via mlx-vlm — required for Gemma 4 (mlx-lm rejects its shared-KV layer weights). |
+| `eval_gemma4_native.py MODEL_ID` | Gemma 4 eval using the Python port of `MCPZimKit.Gemma4PromptTemplate` + `Gemma4ToolFormat` — matches what ships in the iOS app. |
+| `bench.py MODEL_ID --mode all` | Memory + warm-cache probe for one model (mlx-lm). |
+| `bench_memory.py --sizes 7000,20000,40000` | Cross-model peak-memory bench at controlled preamble sizes. |
+| `bench_memory_gemma4.py` | Same, but via mlx-vlm for Gemma 4. |
+| `bench_kv.py MODEL_ID` | Gemma 3 KV-cache variant sweep (default / bounded_512 / kv_bits=8 / kv_bits=4). |
+
+### Example runs
+
+```sh
+# 9-scenario eval for the app's default candidates
+python eval.py mlx-community/Qwen3-4B-Instruct-2507-4bit
+python eval.py mlx-community/gemma-3-4b-it-4bit
+python eval_gemma4_native.py mlx-community/gemma-4-e2b-it-4bit
+
+# Memory comparison 7k/20k/40k across the main three candidates
+python bench_memory.py --which gemma3 --sizes 7000,20000,40000
+python bench_memory.py --which qwen   --sizes 7000,20000,40000
+python bench_memory_gemma4.py --sizes 7000,20000,40000
+
+# KV cache variants on Gemma 3
+python bench_kv.py mlx-community/gemma-3-4b-it-4bit
+```
+
+### Shared pieces
+
+- `gemma4_format.py` — Python port of the Gemma 4 custom mini-format (`<|tool_call>call:NAME{k:v,…}<tool_call|>` + `<|"|>…<|"|>` quoted strings + nested objects). Used by `eval_gemma4_native.py` so the mac eval matches the Swift template byte-for-byte.
+- Scenario + tool definitions live in `eval.py` (`CASES`, `TOOLS`). Every other script imports from there — change the tool surface once.
+
+### Reproducing the scorecard
+
+See `ON_DEVICE_MODEL_REPORT_2026-04-23.md` for full methodology. Quick
+reproduction:
+
+```sh
+source .venv/bin/activate
+for m in \
+  mlx-community/Qwen3-4B-Instruct-2507-4bit \
+  mlx-community/gemma-3-4b-it-4bit \
+  mlx-community/gemma-3-4b-it-qat-4bit \
+  mlx-community/gemma-3-4b-it-4bit-DWQ \
+  mlx-community/gemma-3n-E2B-it-lm-4bit \
+  mlx-community/gemma-3n-E4B-it-lm-4bit \
+  mlx-community/Phi-4-mini-instruct-4bit \
+  mlx-community/Phi-4-mini-instruct-6bit \
+; do python eval.py "$m" all ; done
+python eval_gemma4_native.py mlx-community/gemma-4-e2b-it-4bit
+python eval_gemma4_native.py mlx-community/gemma-4-e4b-it-4bit
+python bench_memory.py --sizes 7000,20000,40000
+```
+
 ## Streetzim viewer hook (window.streetzimRouting)
 
 `RouteWebView.swift` and `PlacesWebView.swift` inject JS that calls into `window.streetzimRouting` on the embedded streetzim viewer to drive routing, drive-mode, multi-place pins, coverage rings, and camera/chrome. The hook is exposed at the end of `initRouting()` in `../streetzim/resources/viewer/index.html`. All the backing state (`lastRoute`, `modeBtns`, `setOriginFromLatLon`, `graph`) lives inside that function, so the window object is the only seam.
@@ -234,6 +309,34 @@ cause + upstream status + mitigation options documented separately in
 `mlx-swift-lm` 3.31.3 which is HEAD; the upstream fix
 (mlx-swift-lm#157) hasn't been written yet. For fast multi-turn on
 device, prefer Qwen 3 4B (non-hybrid, same 9/9 eval score).
+
+## Model picker — on-device candidates
+
+`ChatSession.init()` builds the provider list every launch. The current
+(2026-04-23) picker contents:
+
+| id | Display | Weights HF repo | Template | Notes |
+|---|---|---|---|---|
+| `gemma4-e2b-it-4bit` | Gemma 4 E2B (4-bit · multimodal) | `mlx-community/gemma-4-e2b-it-4bit` | `Gemma4Template` | App default; vision+audio encoders stay resident (~750 MB tax). |
+| `gemma4-e2b-it-4bit-text` | Gemma 4 E2B Text (4-bit · text-only) | `mlx-community/Gemma4-E2B-IT-Text-int4` | `Gemma4Template` | Weaker tool-calling under long preambles; kept for A/B. |
+| `gemma3-4b-it-text-4bit` | Gemma 3 4B IT (4-bit · text) | `mlx-community/gemma-3-text-4b-it-4bit` | `Gemma3Template` | Benched 7/9 on mac eval; dense (no Qwen 3.5 hybrid bug). Text-only checkpoint — the multimodal `gemma-3-4b-it-4bit` weights mismatch mlx-swift-lm 3.31.3's `Gemma3TextModel` `o_proj` shape. |
+| `qwen3-4b-4bit` | Qwen 3 4B (4-bit) | `mlx-community/Qwen3-4B-4bit` | `QwenChatMLTemplate` | Prior baseline. |
+| `qwen35-4b-4bit` | Qwen 3.5 4B (4-bit) | `mlx-community/Qwen3.5-4B-MLX-4bit` | `QwenChatMLTemplate` | Forces full prefill per turn — see above. |
+| `qwen3-1-7b-4bit` | Qwen 3 1.7B (4-bit) | `mlx-community/Qwen3-1.7B-4bit` | `QwenChatMLTemplate` | Small-slot fallback for ≤4 GB iPhones. |
+| `gemma3-12b-it-text-4bit` *(mac only)* | Gemma 3 12B IT (4-bit · text · mac) | `mlx-community/gemma-3-text-12b-it-4bit` | `Gemma3Template` | 9/9 on eval at the non-text-only QAT variant; peak 9–13 GB on mac. Gated `#if os(macOS)` in ChatSession.init. Text-only checkpoint for mlx-swift-lm compatibility. |
+
+`Gemma3Template` is a sibling of `QwenChatMLTemplate` — same JSON-in-tags
+tool-call convention, different turn markers
+(`<start_of_turn>` / `<end_of_turn>` vs `<|im_start|>` / `<|im_end|>`).
+Gemma 3 isn't natively tool-tuned; the model learns the format from the
+in-system demonstration the template emits.
+
+When adding a new model: build a `ModelTemplate`-conforming struct for
+its family if one doesn't exist, append a `Gemma4Provider` entry in
+`ChatSession.init()` (despite the name, that class is the generic MLX
+provider — the template slot is what differs across families), and pass
+the `template:` argument. No other wiring changes — the adapter + router
+are template-agnostic.
 
 ## Preemptive memory guard before MLX generate()
 
