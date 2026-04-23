@@ -223,6 +223,15 @@ public final class ChatSession {
         launchSequenceRan = true
         await scanDocumentsFolder()
         await restoreExternalBookmarks()
+        // Route LocationFetcher's auth-state events into the
+        // in-app debug pane + the gist report so "why does it keep
+        // prompting me" is answerable from the log rather than by
+        // re-walking the CoreLocation state machine.
+        LocationFetcher.debug = { [weak self] msg in
+            Task { @MainActor [weak self] in
+                self?.debug(msg, category: "Location")
+            }
+        }
         LocationFetcher.requestAuthorizationIfNeeded()
         LocationFetcher.start()
         refreshLocationIfStale()

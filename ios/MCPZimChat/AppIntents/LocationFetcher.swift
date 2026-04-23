@@ -67,22 +67,54 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         DispatchQueue.main.async { shared.subscribers.append(cb) }
     }
 
+    /// Optional debug hook wired by the host app. Every auth-state
+    /// change + permission-prompt call routes through here in
+    /// addition to `os.Logger` so the in-app debug pane (and
+    /// gist-uploaded reports) can surface the pattern — e.g. why
+    /// the user sees the prompt on every launch.
+    nonisolated(unsafe) static var debug: @Sendable (String) -> Void = { _ in }
+
     /// Trigger the `WhenInUse` permission prompt if we haven't yet.
     /// Call at launch so the dialog shows up while the user is
     /// looking, not later when they've already asked for directions.
     static func requestAuthorizationIfNeeded() {
         DispatchQueue.main.async {
             let s = shared.manager.authorizationStatus
-            locLog.notice("requestAuthorizationIfNeeded: status=\(s.rawValue, privacy: .public)")
+            let statusName = Self.describe(s)
+            locLog.notice("requestAuthorizationIfNeeded: status=\(statusName, privacy: .public)")
+            debug("requestAuthorizationIfNeeded: status=\(statusName)")
             if s == .notDetermined {
+                debug("→ requesting WhenInUse authorization (first time or prior \"Allow Once\" expired)")
                 #if os(iOS)
                 shared.manager.requestWhenInUseAuthorization()
                 #else
                 shared.manager.requestAlwaysAuthorization()
                 #endif
             } else if Self.isAuthorized(s) {
+                debug("→ already authorized; starting updates")
                 shared.manager.startUpdatingLocation()
+            } else {
+                // .denied / .restricted — don't prompt; iOS won't
+                // show the dialog again for us until the user goes
+                // to Settings. Logging keeps the "why no location"
+                // question answerable from a gist.
+                debug("→ status is denied / restricted; not prompting")
             }
+        }
+    }
+
+    /// Human-readable form of `CLAuthorizationStatus` for logs. The
+    /// raw-value integer (0–4) reads badly in debug reports.
+    private static func describe(_ s: CLAuthorizationStatus) -> String {
+        switch s {
+        case .notDetermined:       return "notDetermined"
+        case .restricted:          return "restricted"
+        case .denied:              return "denied"
+        case .authorizedAlways:    return "authorizedAlways"
+        #if os(iOS)
+        case .authorizedWhenInUse: return "authorizedWhenInUse"
+        #endif
+        @unknown default:          return "unknown(\(s.rawValue))"
         }
     }
 
@@ -179,7 +211,9 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let s = manager.authorizationStatus
-        locLog.notice("didChangeAuthorization: status=\(s.rawValue, privacy: .public)")
+        let statusName = Self.describe(s)
+        locLog.notice("didChangeAuthorization: status=\(statusName, privacy: .public)")
+        Self.debug("didChangeAuthorization: status=\(statusName)")
         if Self.isAuthorized(s) {
             manager.startUpdatingLocation()
         } else if s == .denied || s == .restricted {
