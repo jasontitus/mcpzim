@@ -233,6 +233,23 @@ public struct Gemma3Template: ModelTemplate {
         {
             return (name, args)
         }
+        // (a') flat form: `{"function":"name","parameters":{…}}` or
+        // `{"function":"name","arguments":{…}}`. Gemma 3 emits this
+        // inside ```tool``` markdown fences after the tool cull —
+        // observed on the `nearby_stories_palo_alto` / `how_much_longer`
+        // scenarios 2026-04-23.
+        if let name = obj["function"] as? String {
+            if let args = obj["arguments"] as? [String: Any] {
+                return (name, args)
+            }
+            if let params = obj["parameters"] as? [String: Any] {
+                if let nestedProps = params["properties"] as? [String: Any] {
+                    return (name, nestedProps)
+                }
+                return (name, params)
+            }
+            return (name, [:])
+        }
         // (b) `{"name":…,"parameters":{…}}` (parameters alias used by
         // Gemma 3 when it follows Python-style schema naming).
         if let name = obj["name"] as? String,

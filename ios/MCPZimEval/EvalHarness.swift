@@ -219,8 +219,10 @@ final class EvalHarness {
         .init(name: "restaurants_in_sf", turns: [(
             user: "Are there any good restaurants in San Francisco?",
             expect: TurnExpect(
-                toolsCalledAny: ["near_named_place"],
-                toolsNotCalled: ["near_places", "route_from_places"],
+                // Post-cull (2026-04-23): `near_named_place` is merged
+                // into `near_places(place:)`; both accepted.
+                toolsCalledAny: ["near_places", "near_named_place"],
+                toolsNotCalled: ["route_from_places"],
                 responseIncludesAny: ["souvla", "zuni", "nopa", "restaurant"],
                 responseExcludes: ["i do not have", "i don't have specific"]
             )
@@ -257,7 +259,9 @@ final class EvalHarness {
         .init(name: "nearby_stories_palo_alto", turns: [(
             user: "Tell me some interesting stories from Palo Alto.",
             expect: TurnExpect(
-                toolsCalledAny: ["nearby_stories_at_place"],
+                // Post-cull: `nearby_stories_at_place` merged into
+                // `nearby_stories(place:)`; accept either name.
+                toolsCalledAny: ["nearby_stories", "nearby_stories_at_place"],
                 responseIncludesAny: ["hewlett", "packard", "garage",
                                        "stanford", "palo alto"],
                 responseExcludes: []

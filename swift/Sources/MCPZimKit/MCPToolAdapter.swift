@@ -244,14 +244,27 @@ public actor MCPToolAdapter {
     }
 
     public var registry: MCPToolRegistry {
+        // Phase-B tool cull (2026-04-23): the model's declared menu is now
+        // 10 tools (down from 21). Pruned tools kept their dispatch
+        // handlers, so existing transcripts / retained conversations that
+        // still reference them continue to work — they're just no longer
+        // declared, so the model doesn't see them in the system turn.
+        // Memory win: ~1-2 k fewer tokens in the preamble; peak RSS drops
+        // ~500 MB on our 3-turn eval scenarios. See ON_DEVICE_MODEL_REPORT
+        // and EXTENDED_CONTEXT_EVAL.md for the Phase A data that drove this.
+        //
+        // Dropped (dispatch-only from here):
+        //   list_libraries, get_article, list_article_sections,
+        //   get_article_by_title, get_main_page, zim_info,
+        //   near_named_place, nearby_stories_at_place,
+        //   plan_driving_route, show_map, geocode
+        //
+        // Merged behaviour:
+        //   - near_places now accepts optional `place` (free-text). When
+        //     set, the adapter geocodes internally — the model doesn't need
+        //     a separate `near_named_place` tool.
+        //   - nearby_stories same treatment for the Wikipedia-linked variant.
         var tools: [MCPTool] = [
-            MCPTool(
-                name: "list_libraries",
-                description:
-                    "Inventory the ZIM archives this server can read. Returns kinds, metadata, "
-                    + "and the aggregate capabilities exposed by this tool set. Call this first.",
-                inputSchemaJSON: Self.emptyObjectSchema
-            ),
             MCPTool(
                 name: "search",
                 description:
@@ -266,77 +279,22 @@ public actor MCPToolAdapter {
                     + "Good: `query=\"Aspirin\"`, `query=\"Marie Curie\"`. "
                     + "Bad: `query=\"what is aspirin used for\"`. "
                     + "For LOCATION questions (\"what's in X\", \"near X\", "
-                    + "\"around X\") prefer `near_named_place`. Returns "
-                    + "paths, titles, AND a ~200-char snippet from each hit's "
-                    + "lead paragraph. READ THE SNIPPETS before picking — the "
-                    + "top BM25 match isn't always the topically-closest one "
-                    + "(e.g. a query about quantum computing's impact on "
-                    + "encryption will surface \"Crypto-shredding\" because "
-                    + "of keyword overlap, but the snippet makes clear it's "
-                    + "about key destruction, not quantum threats). Prefer "
-                    + "a lower-ranked hit if its snippet is a better topic "
-                    + "match for the user's question.",
+                    + "\"around X\") prefer `near_places` with a `place` arg. "
+                    + "Returns paths, titles, AND a ~200-char snippet from "
+                    + "each hit's lead paragraph. READ THE SNIPPETS before "
+                    + "picking — the top BM25 match isn't always the "
+                    + "topically-closest one.",
                 inputSchemaJSON: Self.searchSchema
             ),
             MCPTool(
-                name: "get_article",
-                description: "Fetch a single ZIM entry by path, as plain text. "
-                    + "For long Wikipedia articles (most of them) prefer "
-                    + "`list_article_sections` to see the outline, then pull "
-                    + "only the relevant parts with `get_article_section` — "
-                    + "that keeps the prompt small and the reply grounded.",
-                inputSchemaJSON: Self.articleSchema
-            ),
-            MCPTool(
-                name: "list_article_sections",
-                description: "Return the ordered section outline for an article "
-                    + "(lead + each `<h2>` / `<h3>` heading). Use this to decide "
-                    + "which sections to fetch for the user's question instead "
-                    + "of loading the full body.",
-                inputSchemaJSON: Self.articleSchema
-            ),
-            MCPTool(
                 name: "get_article_section",
-                description: "Fetch just one section of an article by name — "
-                    + "use after `list_article_sections` so you're not dragging "
-                    + "in references, navigation, or unrelated sections. Pass "
-                    + "the section title exactly as `list_article_sections` "
-                    + "returned it (case-insensitive, prefix-tolerant). "
-                    + "Pass `section: \"lead\"` (or omit) to get just the "
-                    + "introduction.",
+                description: "Fetch an article's content. Pass `section` to get "
+                    + "just one named section, or omit / pass `section: \"lead\"` "
+                    + "to get the introduction. Use after deciding from a "
+                    + "search hit or `article_overview` response which "
+                    + "section you want. Pass `title` (e.g. \"Palo Alto\") "
+                    + "OR `path` (e.g. \"A/Palo_Alto\") — either works.",
                 inputSchemaJSON: Self.articleSectionSchema
-            ),
-            MCPTool(
-                name: "get_article_by_title",
-                description:
-                    "LOW-LEVEL title-index lookup that returns just ONE "
-                    + "section (default lead). Use ONLY for the narrow "
-                    + "cases the composite tools don't cover — e.g. "
-                    + "pulling a specific non-lead section when you "
-                    + "already know the section title. "
-                    + "DO NOT use this for: "
-                    + "\"tell me about X\" → use `article_overview`. "
-                    + "\"read me the article about X\" → use `narrate_article`. "
-                    + "\"compare X and Y\" → use `compare_articles`. "
-                    + "Accepts bare titles (\"Palo Alto\") or wiki tags "
-                    + "(\"en:Palo Alto\"). Handles redirects + approximate "
-                    + "matches via the ZIM's title index.",
-                inputSchemaJSON: Self.articleByTitleSchema
-            ),
-            MCPTool(
-                name: "get_main_page",
-                description: "Fetch the main/home page of one or every loaded ZIM.",
-                inputSchemaJSON: Self.mainPageSchema
-            ),
-            MCPTool(
-                name: "zim_info",
-                description:
-                    "Return the `streetzim-meta.json` descriptor for loaded streetzim ZIMs. "
-                    + "Use this to check which region a streetzim covers (via `bbox`), "
-                    + "whether it has routing / satellite / Wikipedia cross-refs, and the "
-                    + "feature counts. Skipped silently for ZIMs built before the meta "
-                    + "shipped (generator commit a485ce3).",
-                inputSchemaJSON: Self.zimInfoSchema
             ),
             MCPTool(
                 name: "article_overview",
@@ -395,88 +353,49 @@ public actor MCPToolAdapter {
             ),
         ]
         if hasStreetzim {
-            // Name-based streetzim tools are safe for every surface.
             tools.append(contentsOf: [
-                MCPTool(
-                    name: "near_named_place",
-                    description:
-                        Self.nearPlacesProtocolBlurb
-                        + " Takes a free-text place name and handles the geocode "
-                        + "step internally — use it for \"what's around <place>\" "
-                        + "style questions.",
-                    inputSchemaJSON: Self.nearNamedPlaceSchema(vocabulary: categoryVocabulary)
-                ),
                 MCPTool(
                     name: "route_from_places",
                     description:
-                        "Plan a driving route between two free-text place names. Convenience "
-                        + "wrapper over geocode + plan_driving_route.",
+                        "Plan a driving route between two free-text place names "
+                        + "(or \"my location\" as the origin). Returns distance, "
+                        + "duration, polyline, and turn-by-turn instructions. "
+                        + "The host renders the map automatically — no need for "
+                        + "a separate \"show the map\" call.",
                     inputSchemaJSON: Self.routeFromPlacesSchema
-                ),
-                MCPTool(
-                    name: "show_map",
-                    description:
-                        "Show an interactive map centred on a free-text place name "
-                        + "(\"show me a map of Palo Alto\"). Use for questions that "
-                        + "only ask to see a location — no route, no nearby list. "
-                        + "Returns the resolved place name + coordinates; the host "
-                        + "renders the streetzim viewer at those coordinates.",
-                    inputSchemaJSON: Self.showMapSchema
-                ),
-                // Coord-based routing + nearby. The host injects the
-                // user's current lat/lon into the system preamble, so
-                // the model has concrete numbers to pass here — use
-                // these for "directions to X" / "nearest Y" / "what's
-                // around here" style queries.
-                MCPTool(
-                    name: "plan_driving_route",
-                    description:
-                        "Compute a driving route between two lat/lon points using the loaded "
-                        + "streetzim routing graph. Use this (with origin_lat/origin_lon set to "
-                        + "the user's current location from the system preamble) whenever the "
-                        + "user asks for directions without naming a starting point. Returns "
-                        + "distance, duration, a polyline, and turn-by-turn instructions.",
-                    inputSchemaJSON: Self.routeSchema
                 ),
                 MCPTool(
                     name: "near_places",
                     description:
                         Self.nearPlacesProtocolBlurb
-                        + " Takes numeric lat/lon — use the user's current coordinates from "
-                        + "the system preamble for \"what's around me\" / \"nearest ___\" "
-                        + "queries. For a NAMED place use `near_named_place` instead.",
+                        + " Pass `place` (free-text) for \"what's around "
+                        + "<place>\" — the tool geocodes internally. Omit "
+                        + "`place` and pass explicit `lat`/`lon` (or just "
+                        + "rely on the user's current coordinates from the "
+                        + "system preamble) for \"what's around me\" / "
+                        + "\"nearest ___\" queries.",
                     inputSchemaJSON: Self.nearPlacesSchema(vocabulary: categoryVocabulary)
                 ),
-                // Composite "tell me something interesting" tools — wrap
+                // Composite "tell me something interesting" tool — wraps
                 // near_places(has_wiki=true) + parallel lead-paragraph
                 // fetches so the model gets story-ready excerpts on one
-                // call instead of stitching together N×get_article_by_title.
+                // call instead of stitching together N article fetches.
                 MCPTool(
                     name: "nearby_stories",
                     description:
-                        "Return 3–5 story-ready excerpts (~1–2 paragraphs each) "
-                        + "from Wikipedia articles for places around the given "
-                        + "lat/lon. The right tool for \"tell me something "
+                        "Return 3–5 story-ready excerpts (~1–2 paragraphs "
+                        + "each) from Wikipedia articles for places near a "
+                        + "location. The right tool for \"tell me something "
                         + "interesting about where I am\" / \"stories about "
-                        + "this neighborhood\" / \"history of this area\". "
-                        + "\"Interesting\" means `has_wiki=true` — museums, "
-                        + "tourism sites, historic spots, named landmarks, "
-                        + "parks, anything that has a Wikipedia article. "
+                        + "this neighborhood\" / \"history of downtown "
+                        + "Portland\". Pass `place` (free-text, e.g. "
+                        + "\"Palo Alto\") for a named location; omit "
+                        + "`place` to anchor on the user's current GPS. "
                         + "Optionally filter with `kinds` (e.g. "
                         + "`kinds=[\"museum\"]` for \"interesting museums\"). "
                         + "Each excerpt is substantive enough to narrate "
-                        + "directly; the model should read them out, not "
-                        + "summarize.",
+                        + "directly; read them out, don't summarize.",
                     inputSchemaJSON: Self.nearbyStoriesSchema(vocabulary: categoryVocabulary)
-                ),
-                MCPTool(
-                    name: "nearby_stories_at_place",
-                    description:
-                        "Same shape as `nearby_stories` but for a named place "
-                        + "(not the user's current coords). Geocodes the place "
-                        + "internally. Use for \"interesting stories from "
-                        + "Palo Alto\" / \"history of downtown Portland\".",
-                    inputSchemaJSON: Self.nearbyStoriesAtPlaceSchema(vocabulary: categoryVocabulary)
                 ),
                 MCPTool(
                     name: "what_is_here",
@@ -485,38 +404,25 @@ public actor MCPToolAdapter {
                         + "\"what neighborhood is this?\" / \"what city am "
                         + "I in?\". Reverse-geocodes the USER'S CURRENT GPS "
                         + "to the nearest named place (admin / neighborhood "
-                        + "/ city) and pulls its Wikipedia lead if there is "
-                        + "one. DO NOT use for \"tell me about <named "
-                        + "place>\" — the user names a place, not their "
-                        + "current location — call `article_overview` with "
-                        + "`title=<place>` instead. Omit `origin` to use the "
-                        + "host's GPS; pass explicit `origin=\"lat,lon\"` "
-                        + "only for a named-coord variant.",
+                        + "/ city) and pulls its Wikipedia lead if there "
+                        + "is one. DO NOT use for \"tell me about <named "
+                        + "place>\" — that's `article_overview`.",
                     inputSchemaJSON: Self.whatIsHereSchema
                 ),
                 MCPTool(
                     name: "route_status",
                     description:
                         "Check progress on the currently-active driving route. "
-                        + "Use for \"how much longer?\" / \"what's my next turn?\" "
-                        + "/ \"am I there yet?\". Takes no arguments — reads the "
-                        + "last planned route (via `route_from_places` / "
-                        + "`plan_driving_route`) and the host's live GPS fix, "
-                        + "returns remaining distance, ETA, progress %, and "
-                        + "the next turn-by-turn leg. Returns an error if no "
-                        + "route is active.",
+                        + "Use for \"how much longer?\" / \"what's my next "
+                        + "turn?\" / \"am I there yet?\". Takes no arguments "
+                        + "— reads the last planned route (via "
+                        + "`route_from_places`) and the host's live GPS "
+                        + "fix, returns remaining distance, ETA, progress "
+                        + "%, and the next leg. Errors if no route is "
+                        + "active.",
                     inputSchemaJSON: Self.emptyObjectSchema
                 ),
             ])
-            if surface == .full {
-                tools.append(
-                    MCPTool(
-                        name: "geocode",
-                        description: "Resolve a place or address string to coordinates.",
-                        inputSchemaJSON: Self.geocodeSchema
-                    )
-                )
-            }
         }
         return MCPToolRegistry(tools: tools)
     }
@@ -690,6 +596,19 @@ public actor MCPToolAdapter {
                 excerpts: excerpts
             )
         case "near_places":
+            // Phase-B merge (2026-04-23): `near_named_place` was folded
+            // into `near_places`. If the model passed a free-text
+            // `place`, route through the named-place dispatch; that
+            // code path geocodes, runs the coord scan, and returns the
+            // richer `resolved` block. Otherwise fall through to the
+            // coord path as before.
+            if let place = args["place"] as? String,
+               !place.trimmingCharacters(in: .whitespaces).isEmpty
+            {
+                var forwarded = args
+                forwarded["place"] = place
+                return try await dispatch(tool: "near_named_place", args: forwarded)
+            }
             // Validate coords up front. Without this, a model that passes
             // a place name (forgetting this tool needs lat/lon) sends us
             // `(0, 0)` by default — which silently scans a streetzim for
@@ -700,10 +619,11 @@ public actor MCPToolAdapter {
                   !(lat == 0 && lon == 0)
             else {
                 return [
-                    "error": "near_places requires numeric `lat` and `lon` "
-                        + "arguments. For a free-text place name, call "
-                        + "`near_named_place` with `place`, which geocodes "
-                        + "internally. (Received args: "
+                    "error": "near_places needs a center — either `place` "
+                        + "(free-text, geocoded internally) or numeric "
+                        + "`lat`/`lon`. For \"what's around me\" queries, "
+                        + "use the user's current coords from the system "
+                        + "preamble. (Received args: "
                         + (args.keys.sorted().joined(separator: ", ")) + ")",
                 ]
             }
@@ -752,6 +672,13 @@ public actor MCPToolAdapter {
         case "narrate_article":
             return try await dispatchNarrateArticle(args: args)
         case "nearby_stories":
+            // Phase-B merge: if `place` is set, route through the
+            // named-place dispatch; otherwise use the GPS-centred path.
+            if let place = args["place"] as? String,
+               !place.trimmingCharacters(in: .whitespaces).isEmpty
+            {
+                return try await dispatchNearbyStoriesAtPlace(args: args)
+            }
             return try await dispatchNearbyStories(args: args)
         case "nearby_stories_at_place":
             return try await dispatchNearbyStoriesAtPlace(args: args)
@@ -1832,11 +1759,18 @@ public actor MCPToolAdapter {
     }
 
     private static func nearPlacesSchema(vocabulary: [String]) -> Data {
+        // Post-cull: the model only sees one `near_places` declaration.
+        // Passing `place` routes internally through the geocode path
+        // (what was previously `near_named_place`); passing explicit
+        // `lat`/`lon` skips geocode and goes straight to the coord
+        // path. Either form is valid, hence no required fields here.
         schemaJSON(
-            required: ["lat", "lon"],
+            required: [],
             properties: [
-                ("lat", ["type": "number", "description": "Center latitude (get from geocode)."]),
-                ("lon", ["type": "number", "description": "Center longitude (get from geocode)."]),
+                ("place", ["type": "string",
+                           "description": "Free-text place name (\"Palo Alto\", \"downtown Portland\"). When set, the tool geocodes this and uses it as the center — use for \"what's around <place>\" / \"restaurants in San Francisco\". Omit to search around `lat`/`lon` (or, if those are omitted too, the user's current GPS from the system preamble)."]),
+                ("lat", ["type": "number", "description": "Center latitude. Use with `lon` for explicit coords; omit when `place` is set or the user's current GPS is the implicit center."]),
+                ("lon", ["type": "number", "description": "Center longitude (pair with `lat`)."]),
                 ("radius_km", ["type": "number", "default": 1.0,
                                "description": "Search radius in km. 0.5 ≈ walking distance, 2–5 ≈ neighborhood."]),
                 ("limit", ["type": "integer", "default": 10,
@@ -1845,7 +1779,7 @@ public actor MCPToolAdapter {
                 ("zim", ["type": "string",
                          "description": "Specific streetzim filename, else try them all."]),
                 ("has_wiki", ["type": "boolean", "default": false,
-                              "description": "When true, only return places that have an associated Wikipedia / Wikidata article. Use for \"what's interesting around here\" and similar queries, or to filter hundreds of results (\"bars in Seattle\") down to notable ones. Each result will include `wikipedia` (e.g. \"en:HP Garage\") and/or `wikidata` (e.g. \"Q2720242\") fields that a follow-up article fetch can use."]),
+                              "description": "When true, only return places that have an associated Wikipedia / Wikidata article. Use for \"what's interesting around here\" and similar queries, or to filter hundreds of results (\"bars in Seattle\") down to notable ones."]),
             ]
         )
     }
@@ -1936,11 +1870,16 @@ public actor MCPToolAdapter {
     """#.data(using: .utf8)!
 
     private static func nearbyStoriesSchema(vocabulary: [String]) -> Data {
+        // Post-cull: merged `nearby_stories_at_place` in. Pass `place`
+        // for a named location; omit it to anchor on the user's GPS
+        // (implicit) or explicit `lat`/`lon`.
         schemaJSON(
-            required: ["lat", "lon"],
+            required: [],
             properties: [
+                ("place", ["type": "string",
+                           "description": "Free-text place name — geocoded internally. Use for \"interesting stories from <place>\" / \"history of downtown Portland\". Omit to anchor on the user's GPS / explicit coords."]),
                 ("lat", ["type": "number",
-                         "description": "Center latitude (use the user's current coords from the system preamble)."]),
+                         "description": "Center latitude. Use with `lon` for explicit coords; omit when `place` is set or the user's current GPS is the implicit center."]),
                 ("lon", ["type": "number",
                          "description": "Center longitude."]),
                 ("radius_km", ["type": "number", "default": 2.0,
