@@ -31,6 +31,13 @@ public struct MemorySummary: Sendable {
     public let lifetimePeakMB: Double
     public let postTurnHighMB: Double?      // worst post-turn snapshot
     public let sampleCount: Int
+    /// Counts of continuous-sample observations at or above each
+    /// threshold — answers "how often did we hit N GB?" without
+    /// requiring raw sample dumps. Thresholds match the iPhone
+    /// jetsam-risk bands we care about (5 / 6 / 7 GB).
+    public let samplesAtOrAbove5GB: Int
+    public let samplesAtOrAbove6GB: Int
+    public let samplesAtOrAbove7GB: Int
 
     public func scorecardRow(namePad: Int = 34) -> String {
         func col(_ v: Double?) -> String {
@@ -38,7 +45,18 @@ public struct MemorySummary: Sendable {
             return "    —   "
         }
         let name = variant.padding(toLength: namePad, withPad: " ", startingAt: 0)
-        return "\(name) | baseline=\(col(baselineMB)) post_load=\(col(postLoadMB)) peak=\(col(lifetimePeakMB)) post_turn=\(col(postTurnHighMB)) (n=\(sampleCount))"
+        let basic = "\(name) | baseline=\(col(baselineMB)) post_load=\(col(postLoadMB)) peak=\(col(lifetimePeakMB)) post_turn=\(col(postTurnHighMB)) (n=\(sampleCount))"
+        // A phone's jetsam cap is ~6 GB on current iPhones; the 5 / 6 / 7
+        // breakdown turns the aggregate peak into a "how often would we
+        // risk dying" number. 0/0/0 is safe; anything >0 on the 6/7 GB
+        // columns needs attention before shipping the scenario on phone.
+        let bands = String(
+            format: "  ≥5GB: %d  ≥6GB: %d  ≥7GB: %d",
+            samplesAtOrAbove5GB,
+            samplesAtOrAbove6GB,
+            samplesAtOrAbove7GB
+        )
+        return basic + bands
     }
 }
 
@@ -90,13 +108,22 @@ public actor MemoryProbe {
             .filter { $0.tag.hasPrefix("post_turn") }
             .map(\.rssMB).max()
         let peak = samples.map(\.rssMB).max() ?? 0
+        var ge5 = 0, ge6 = 0, ge7 = 0
+        for s in samples {
+            if s.rssMB >= 7000 { ge7 += 1 }
+            if s.rssMB >= 6000 { ge6 += 1 }
+            if s.rssMB >= 5000 { ge5 += 1 }
+        }
         return MemorySummary(
             variant: variant,
             baselineMB: baseline,
             postLoadMB: postLoad,
             lifetimePeakMB: peak,
             postTurnHighMB: postTurnHigh,
-            sampleCount: samples.count
+            sampleCount: samples.count,
+            samplesAtOrAbove5GB: ge5,
+            samplesAtOrAbove6GB: ge6,
+            samplesAtOrAbove7GB: ge7
         )
     }
 }

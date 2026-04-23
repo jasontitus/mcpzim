@@ -82,6 +82,14 @@ final class EvalHarness {
               displayName: "Gemma 3 4B IT (4-bit · text)",
               repo: "mlx-community/gemma-3-text-4b-it-4bit",
               templateKind: .gemma3),
+        // Gemma 3 12B text-only 4-bit — mac-only reference model.
+        // Benched 9/9 on the 9-scenario Python eval; ~7 GB weights +
+        // up to 13 GB peak mean this will never run on a phone but
+        // tells us the ceiling the 4B can be measured against.
+        .init(id: "gemma3-12b-it-text-4bit",
+              displayName: "Gemma 3 12B IT (4-bit · text · mac)",
+              repo: "mlx-community/gemma-3-text-12b-it-4bit",
+              templateKind: .gemma3),
         // Qwen 3.5 4B text-only at full bf16 precision. On Mac (36 GB
         // RAM) this fits easily and gives us a ceiling-of-quality
         // reference to compare against the 4-bit quant below. On
