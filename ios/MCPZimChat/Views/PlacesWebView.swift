@@ -771,8 +771,16 @@ private var placesCoordinatorKey: UInt8 = 0
 private func reloadPlacesIfNeeded(
     _ webView: WKWebView, spec: PlacesSpec, payload: PlacesPayload
 ) {
-    let expected = "zim://\(spec.zimName)/\(spec.mainPath)"
-    if webView.url?.absoluteString != expected {
+    // Comparison uses `url.host` (decodes percent-escaped back to the
+    // original filename) so a ZIM whose name needed encoding at load
+    // time still compares equal across re-renders. Previously the
+    // expected string was built un-encoded while `webView.url?
+    // .absoluteString` came back percent-encoded — they never matched
+    // and we reloaded the whole map on every GPS tick.
+    let currentHost = webView.url?.host ?? ""
+    let currentPath = webView.url?.path.trimmingCharacters(
+        in: CharacterSet(charactersIn: "/")) ?? ""
+    if currentHost != spec.zimName || currentPath != spec.mainPath {
         loadPlacesSpec(webView, spec: spec, payload: payload)
         return
     }
@@ -1126,10 +1134,19 @@ private func loadPlacesSpec(
     if let coordinator = objc_getAssociatedObject(webView, &placesCoordinatorKey) as? PlacesWebCoordinator {
         coordinator.pendingInjection = injectJS
     }
-    var components = URLComponents()
-    components.scheme = ZimURLSchemeHandler.scheme
-    components.host = spec.zimName
-    components.path = "/" + spec.mainPath
-    guard let url = components.url else { return }
+    // Build the URL as a pre-encoded string. `URLComponents.host` with
+    // an illegal character (space) silently makes `.url` return nil;
+    // real capture was `osm-silicon-valley-2026-04-22 3.zim` where the
+    // trailing " 3" is a space. The old URLComponents path hit the nil
+    // branch and the `webView.load` skipped, leaving the user with a
+    // blank places map under a valid caption. Encoding the host +
+    // path ourselves keeps the URL valid; the scheme handler reads
+    // `url.host` which decodes back to the original filename.
+    let encodedHost = spec.zimName.addingPercentEncoding(
+        withAllowedCharacters: .urlHostAllowed) ?? spec.zimName
+    let encodedPath = spec.mainPath.addingPercentEncoding(
+        withAllowedCharacters: .urlPathAllowed) ?? spec.mainPath
+    let urlString = "\(ZimURLSchemeHandler.scheme)://\(encodedHost)/\(encodedPath)"
+    guard let url = URL(string: urlString) else { return }
     webView.load(URLRequest(url: url))
 }
