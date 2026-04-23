@@ -62,7 +62,25 @@ struct LibraryView: View {
                     }
                 }
             }
-            Section {
+            // MARK: Behavior — everything that changes HOW the model
+            // answers. Reply length, routing shortcut, article budget,
+            // voice output, provider surface. Kept together so a
+            // user tweaking "why is it so slow / chatty / quiet"
+            // doesn't have to jump between three panes.
+            Section("Behavior") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.longerReplies) {
+                    Text("Longer replies")
+                }
+                Text("Doubles the per-turn token budget (\(DeviceProfile.current.maxReplyTokens) → \(DeviceProfile.current.maxReplyTokens * 2) tokens) so the model can finish longer answers without clipping. Costs extra generation time and KV-cache memory.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Toggle(isOn: $bindable.routingSkipModelReply) {
+                    Text("Fast routing replies")
+                }
+                Text("Skip the model's final summary for routing questions (\"directions to X\") — the distance / first turns come straight from the tool. Saves about 5 s per route query; reply wording is more mechanical.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 HStack {
                     Text("Article cap")
                     Spacer()
@@ -88,78 +106,15 @@ struct LibraryView: View {
                     Text(DeviceProfile.current.label)
                         .foregroundStyle(.secondary)
                 }
-                Text("Defaults for article cap, reply length, and MLX cache scale to available memory. Override the article cap above if you want more / less than your tier's default.")
+                Text("Defaults for article cap, reply length, and MLX cache scale to available memory. Override above if you want more / less than your tier's default.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            } header: {
-                Text("Generation")
             }
 
+            // Voice is its own composite — keep the sub-view but fold
+            // it under Behavior visually by rendering it right after.
+            // Its `Section` header (inside the view) will read "Voice".
             VoiceModelSection()
-
-            Section("Debug") {
-                @Bindable var bindable = session
-                Toggle(isOn: $bindable.showDebugPane) {
-                    Text("Show debug pane")
-                }
-                Text("When on, a log strip appears below the chat showing tool dispatches, per-turn memory, and model timing. Turn off for a clean UI.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                NavigationLink {
-                    PastLogsView()
-                } label: {
-                    Label("Past logs", systemImage: "doc.text.magnifyingglass")
-                }
-                Text("Each launch writes a timestamped log to disk so you can read it (and Share / AirDrop it) after a crash, even if the debug pane cleared.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Routing") {
-                @Bindable var bindable = session
-                Toggle(isOn: $bindable.routingSkipModelReply) {
-                    Text("Fast routing replies")
-                }
-                Text("When on, routing questions (\"directions to X\") skip the model's final summary turn and render the distance / duration / first few steps directly from the tool result. Saves about 5 s per route query. Reply wording is more mechanical.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Generation") {
-                @Bindable var bindable = session
-                Toggle(isOn: $bindable.longerReplies) {
-                    Text("Longer replies")
-                }
-                Text("Doubles the per-turn token budget (\(DeviceProfile.current.maxReplyTokens) → \(DeviceProfile.current.maxReplyTokens * 2) tokens) so the model can finish longer answers without clipping. Costs extra generation time and KV-cache memory; with 4-bit KV quantization on, the memory tax is ~4× cheaper than it used to be.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Debug report") {
-                @Bindable var bindable = session
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("GitHub PAT (gist scope)")
-                    SecureField("ghp_…", text: Binding(
-                        get: { DebugReportConfig.githubToken ?? "" },
-                        set: { DebugReportConfig.githubToken = $0 }
-                    ))
-                    .textContentType(.password)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .font(.footnote.monospaced())
-                    Text("When set, the debug-pane Report button also uploads the "
-                         + "session as a secret gist to your GitHub account so you "
-                         + "can fetch it from anywhere. Unset → syslog-only "
-                         + "(requires `mcp-logs.sh` running on Mac).")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    if let token = DebugReportConfig.githubToken, !token.isEmpty {
-                        Text("✓ token set (\(token.count) chars)")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                    }
-                }
-            }
 
             Section("Providers") {
                 @Bindable var bindable = session
@@ -169,6 +124,55 @@ struct LibraryView: View {
                 Text("Adds Apple's on-device Foundation Models to the model picker. Off saves the framework load (~10–30 MB) + per-provider tool schemas; on exposes two extra picker entries (text-loop and native-tools). Takes effect on next app launch.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            // MARK: Debug — one place for the pane toggle, the Past-logs
+            // archive, the Report button's GitHub PAT, and any future
+            // diagnostic plumbing. The user asked for "all debug stuff
+            // together" — this is it.
+            Section("Debug") {
+                @Bindable var bindable = session
+                Toggle(isOn: $bindable.showDebugPane) {
+                    Text("Show debug pane")
+                }
+                Text("When on, a log strip appears below the chat showing tool dispatches, per-turn memory, and model timing. Turn off for a clean UI.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                NavigationLink {
+                    PastLogsView()
+                } label: {
+                    Label("Past logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Text("Each launch writes a timestamped log to disk so you can read it (and Share / AirDrop it) after a crash, even if the debug pane cleared.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("GitHub PAT (gist scope)")
+                        .font(.subheadline.weight(.semibold))
+                    SecureField("ghp_…", text: Binding(
+                        get: { DebugReportConfig.githubToken ?? "" },
+                        set: { DebugReportConfig.githubToken = $0 }
+                    ))
+                    .textContentType(.password)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.footnote.monospaced())
+                    Text("When set, the debug-pane Report button uploads the "
+                         + "session as a secret gist so it can be fetched from "
+                         + "anywhere via `ios/scripts/mcp-report.sh cloud`. "
+                         + "Unset → syslog-only (requires `mcp-logs.sh` "
+                         + "running on Mac).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let token = DebugReportConfig.githubToken, !token.isEmpty {
+                        Text("✓ token set (\(token.count) chars)")
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    }
+                }
+                .padding(.top, 4)
             }
 
             Section("Aggregate capabilities") {
