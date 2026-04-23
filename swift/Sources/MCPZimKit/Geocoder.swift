@@ -17,11 +17,19 @@ public struct Place: Equatable, Sendable {
     public let wiki: String?
     /// OSM `wikidata=` tag (e.g. `"Q162458"`).
     public let wikidata: String?
+    /// Overture-places enrichment fields (streetzim `--overture-places`).
+    /// Each is independent — a record may carry a phone with no website,
+    /// or a brand with neither. Surfaced as `ws` / `p` / `brand` in the
+    /// tool JSON so the iOS popup can render call/website chips.
+    public let website: String?
+    public let phone: String?
+    public let brand: String?
 
     public init(
         name: String, kind: String, lat: Double, lon: Double,
         subtype: String = "", location: String = "",
-        wiki: String? = nil, wikidata: String? = nil
+        wiki: String? = nil, wikidata: String? = nil,
+        website: String? = nil, phone: String? = nil, brand: String? = nil
     ) {
         self.name = name
         self.kind = kind
@@ -31,6 +39,9 @@ public struct Place: Equatable, Sendable {
         self.location = location
         self.wiki = wiki
         self.wikidata = wikidata
+        self.website = website
+        self.phone = phone
+        self.brand = brand
     }
 }
 
@@ -72,7 +83,10 @@ public enum Geocoder {
                 subtype: (rec["s"] as? String) ?? "",
                 location: (rec["l"] as? String) ?? "",
                 wiki: rec["w"] as? String,
-                wikidata: rec["q"] as? String
+                wikidata: rec["q"] as? String,
+                website: Self.nonEmpty(rec["ws"] as? String),
+                phone: Self.nonEmpty(rec["p"] as? String),
+                brand: Self.nonEmpty(rec["brand"] as? String)
             )
             scored.append((
                 offset: lower.distance(from: lower.startIndex, to: range.lowerBound),
@@ -85,5 +99,12 @@ public enum Geocoder {
             return a.length < b.length
         }
         return scored.prefix(limit).map { $0.place }
+    }
+
+    /// Collapse an empty string to nil so optional Place fields stay nil
+    /// when the record didn't carry the tag.
+    static func nonEmpty(_ s: String?) -> String? {
+        guard let s, !s.isEmpty else { return nil }
+        return s
     }
 }

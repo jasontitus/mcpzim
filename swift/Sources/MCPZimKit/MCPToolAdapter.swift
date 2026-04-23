@@ -1703,6 +1703,13 @@ public actor MCPToolAdapter {
         // Wikipedia ZIM via `get_article(path: "A/" + w.split(":",1)[1])`.
         if let w = p.wiki, !w.isEmpty { out["wikipedia"] = w }
         if let q = p.wikidata, !q.isEmpty { out["wikidata"] = q }
+        // Overture enrichment — same short keys the iOS parser reads
+        // (`parsePlacesJSON` looks for `ws`/`p`/`brand`). Only emitted
+        // when the record had them; keeps older streetzim payloads
+        // indistinguishable on the wire.
+        if let ws = p.website { out["ws"] = ws }
+        if let ph = p.phone { out["p"] = ph }
+        if let br = p.brand { out["brand"] = br }
         return out
     }
 

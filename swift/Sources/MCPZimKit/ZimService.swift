@@ -845,7 +845,10 @@ public actor DefaultZimService: ZimService {
                 subtype: (rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "",
                 location: (rec["l"] as? String) ?? (rec["location"] as? String) ?? "",
                 wiki: Self.sanitizedWikiTag(rec["w"] as? String),
-                wikidata: rec["q"] as? String
+                wikidata: rec["q"] as? String,
+                website: Geocoder.nonEmpty(rec["ws"] as? String),
+                phone: Geocoder.nonEmpty(rec["p"] as? String),
+                brand: Geocoder.nonEmpty(rec["brand"] as? String)
             )
             hits.append((p, d))
         }
