@@ -396,18 +396,24 @@ private func makeArticleWebView(
     if #available(macOS 13.3, iOS 16.4, *) {
         webView.isInspectable = true
     }
-    var comps = URLComponents()
-    comps.scheme = ZimURLSchemeHandler.scheme
-    comps.host = intent.zim
-    // Paths from the tool are typically "A/<Title>" — strip any
-    // leading slash so URLComponents doesn't double it up, and
-    // preserve the `A/…` segment so the ZIM scheme handler dispatches
-    // against the article entry.
+    // Construct the URL as a pre-encoded string rather than through
+    // URLComponents. When the ZIM filename contains a character
+    // illegal in a URL host (a space, in a real capture:
+    // `osm-silicon-valley-2026-04-22 3.zim`), `URLComponents.host = …`
+    // silently makes `.url` return nil and the webView never loads —
+    // the user sees a blank map bubble. Percent-encoding the host
+    // ourselves keeps the URL valid; the scheme handler on the
+    // receiving side reads `url.host` which decodes back to the
+    // original filename for the library lookup.
+    let encodedHost = intent.zim.addingPercentEncoding(
+        withAllowedCharacters: .urlHostAllowed) ?? intent.zim
     let trimmedPath = intent.path.hasPrefix("/")
         ? String(intent.path.dropFirst())
         : intent.path
-    comps.path = "/" + trimmedPath
-    if let url = comps.url {
+    let encodedPath = trimmedPath.addingPercentEncoding(
+        withAllowedCharacters: .urlPathAllowed) ?? trimmedPath
+    let urlString = "\(ZimURLSchemeHandler.scheme)://\(encodedHost)/\(encodedPath)"
+    if let url = URL(string: urlString) {
         webView.load(URLRequest(url: url))
     }
     return webView

@@ -75,7 +75,10 @@ public final class ChatSession {
         public let message: String
     }
     public var debugEntries: [DebugEntry] = []
-    public var showDebugPane = false
+    // Default ON — during active dev it's easier to see tool traces +
+    // memory pressure inline than to remember to toggle the pane every
+    // launch. User can turn it off in Library → Debug.
+    public var showDebugPane = true
     /// Debug-pane cap. Tuned for interactive use; tests that want to
     /// scan the full log can bump this before a long scenario.
     public var maxDebugEntries = 500
