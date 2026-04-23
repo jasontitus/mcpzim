@@ -151,6 +151,19 @@ public protocol ModelTemplate: Sendable {
     /// with the *actual* family being used — helpful now that one
     /// provider class hosts multiple families via the template slot.
     var logCategory: String { get }
+
+    /// True when the underlying MLX model carries per-evaluation mutable
+    /// state that leaks across calls — forcing the host to do a full
+    /// prefill every turn instead of reusing the KV cache. Known
+    /// offenders on mlx-swift-lm 3.31.3 (tracked upstream at
+    /// mlx-swift-lm#157): Qwen 3.5 (`precomputedPositionIds` /
+    /// `ropeDeltas` on `Qwen35`), Gemma 3 (same pattern on
+    /// `Gemma3TextModel`). Reproduced on Gemma 3 via EvalCLI
+    /// 2026-04-23 — fourth scenario crashes with
+    /// `[matmul] shape (…,1272) vs (…,1271)`.
+    /// Default: false. Families flip to true to opt their provider
+    /// into the "always full prefill" path.
+    var hasStaleScratchStateBug: Bool { get }
 }
 
 public extension ModelTemplate {
@@ -159,6 +172,7 @@ public extension ModelTemplate {
     func firstToolCallAfterClip(in buffer: String) -> ToolCallMatch? {
         firstToolCall(in: buffer)
     }
+    var hasStaleScratchStateBug: Bool { false }
 }
 
 // MARK: - Gemma 4 implementation

@@ -58,6 +58,17 @@ public struct Gemma3Template: ModelTemplate {
 
     public var logCategory: String { "Gemma3" }
 
+    /// Gemma 3's `Gemma3TextModel` stores `precomputedPositionIds` /
+    /// `ropeDeltas` as instance-level `var`s that get mutated during
+    /// each forward pass and never reset. Feeding the model a partial
+    /// prefix on a second call inherits the stale values from the
+    /// previous call, producing an off-by-one in the attention-shape
+    /// broadcast that MLX detects as a C++ fatal error before Swift
+    /// can catch. Same root cause as Qwen 3.5 / mlx-swift-lm#157. Opt
+    /// the provider into full-prefill-every-turn until upstream lands
+    /// the `LMOutput.State` refactor.
+    public var hasStaleScratchStateBug: Bool { true }
+
     public func formatSystemTurn(
         systemMessage: String, tools: [ModelToolDeclaration]
     ) -> String {

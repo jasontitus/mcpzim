@@ -587,8 +587,18 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         // KVCache itself. No upstream PR yet — do NOT
                         // drop this guard.
                         let cacheIsHybrid = existing?.contains(where: { $0 is MambaCache }) ?? false
+                        // Template-declared flag for families whose MLX
+                        // model carries per-eval mutable state that
+                        // leaks across calls. Gemma 3 flips this; Qwen
+                        // 3.5 (also affected) runs through the
+                        // MambaCache detection above so either guard
+                        // catches it. Detected 2026-04-23: Gemma 3
+                        // fourth-scenario crash
+                        //   [matmul] shape (…,1272) vs (…,1271)
+                        // Same root cause as mlx-swift-lm#157.
+                        let templateBugsReuse = self.template.hasStaleScratchStateBug
                         if common == cached.count, common > 0, let existing, !existing.isEmpty,
-                           !cacheIsHybrid
+                           !cacheIsHybrid, !templateBugsReuse
                         {
                             // Cache is a clean prefix — feed just the
                             // new tokens and keep the cache going.

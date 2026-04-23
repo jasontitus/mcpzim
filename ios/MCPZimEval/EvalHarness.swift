@@ -493,6 +493,92 @@ final class EvalHarness {
             maxPeakMB: 6500
         ),
 
+        // Four-turn French Revolution chain. Chronological walk —
+        // causes → Bastille → Reign of Terror → clarify. Tests whether
+        // the model fetches different sections on sequential turns
+        // (causes/events/terror are separate sections of the same
+        // article) or re-fetches the whole overview each time.
+        .init(
+            name: "french_revolution_chain",
+            turns: [
+                (
+                    user: "How did the French Revolution unfold?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["article_overview", "search",
+                                          "get_article_section"],
+                        responseIncludesAny: ["1789", "bastille",
+                                               "estates-general",
+                                               "louis"]
+                    )
+                ),
+                (
+                    user: "What was the Reign of Terror like?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section",
+                                          "article_overview", "search"],
+                        responseIncludesAny: ["robespierre", "guillotine",
+                                               "jacobin", "1793",
+                                               "committee"]
+                    )
+                ),
+                (
+                    user: "Why did it end?",
+                    expect: TurnExpect(
+                        responseIncludesAny: ["thermidor", "robespierre",
+                                               "coup", "overthrow",
+                                               "1794", "executed"],
+                        requireNoToolCall: true,
+                        referencesPriorSection: ["robespierre",
+                                                   "terror",
+                                                   "committee"]
+                    )
+                ),
+            ],
+            maxPeakMB: 6500
+        ),
+
+        // Three-turn CRISPR chain — tests layered abstraction. T1 asks
+        // the big-picture mechanism; T2 drills into a specific
+        // molecular detail; T3 (clarify) combines the two with no
+        // tool call.
+        .init(
+            name: "crispr_chain",
+            turns: [
+                (
+                    user: "What is CRISPR and how does it edit DNA?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["article_overview", "search",
+                                          "get_article_section"],
+                        responseIncludesAny: ["cas9", "guide rna",
+                                               "bacteria", "cut",
+                                               "sequence"]
+                    )
+                ),
+                (
+                    user: "How does the guide RNA find the right spot?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section",
+                                          "article_overview", "search"],
+                        responseIncludesAny: ["complementary",
+                                               "base-pair", "pam",
+                                               "spacer", "20"]
+                    )
+                ),
+                (
+                    user: "So why do off-target effects happen?",
+                    expect: TurnExpect(
+                        responseIncludesAny: ["similar", "mismatch",
+                                               "partial", "imperfect",
+                                               "binding"],
+                        requireNoToolCall: true,
+                        referencesPriorSection: ["guide", "rna", "pam",
+                                                   "sequence"]
+                    )
+                ),
+            ],
+            maxPeakMB: 6500
+        ),
+
         // Three-turn WWI vs WWII chain. Tests compare_articles as the
         // opener (a different pattern than `article_overview` → follow-
         // ups) plus a numeric-anchored expand (casualty figures) and a
@@ -880,7 +966,162 @@ final class EvalHarness {
         Self.addSkyIsBlueChainFixture(&f)
         Self.addGravWavesChainFixture(&f)
         Self.addWWIvsWWIIChainFixture(&f)
+        Self.addFrenchRevolutionChainFixture(&f)
+        Self.addCRISPRChainFixture(&f)
         return f
+    }
+
+    /// "How did the French Revolution unfold?" → 4-turn chronological
+    /// chain. Fixture: lead + Causes + Bastille + Reign of Terror +
+    /// Thermidorian Reaction sections.
+    private static func addFrenchRevolutionChainFixture(_ f: inout StubZimService.Fixture) {
+        let lead = ArticleSection(
+            title: "", level: 0,
+            text: "The French Revolution (1789–1799) was a period of " +
+                "radical political and societal change in France that " +
+                "ended the monarchy, severed the power of the Roman " +
+                "Catholic Church, led to the rise of Napoleon Bonaparte, " +
+                "and laid the foundations for modern liberal " +
+                "democracy. It began with the Estates-General of 1789 " +
+                "and climaxed with the storming of the Bastille on 14 " +
+                "July that year."
+        )
+        let causes = ArticleSection(
+            title: "Causes", level: 2,
+            text: "The revolution's immediate triggers were a severe " +
+                "fiscal crisis (royal debt from supporting the American " +
+                "Revolution), crop failures that raised bread prices, " +
+                "and the refusal of the clergy and nobility to accept " +
+                "new taxes. Louis XVI convened the Estates-General in " +
+                "May 1789 — the first such meeting since 1614. When " +
+                "the Third Estate (commoners) was outvoted 2-to-1 by " +
+                "the First (clergy) and Second (nobility), it broke " +
+                "away to form the National Assembly."
+        )
+        let bastille = ArticleSection(
+            title: "Storming of the Bastille", level: 2,
+            text: "On 14 July 1789 a Parisian crowd stormed the " +
+                "Bastille, a royal fortress-prison, seeking arms and " +
+                "gunpowder. The fortress fell after a few hours; the " +
+                "governor was killed and his head paraded on a pike. " +
+                "The date became the founding symbol of the " +
+                "Revolution and is now the French national holiday."
+        )
+        let terror = ArticleSection(
+            title: "Reign of Terror", level: 2,
+            text: "The Reign of Terror (September 1793 – July 1794) " +
+                "was a period of state-sanctioned violence led by the " +
+                "Committee of Public Safety under Maximilien " +
+                "Robespierre. The Jacobins used the guillotine to " +
+                "execute perceived enemies — an estimated 17,000 " +
+                "official death sentences plus tens of thousands more " +
+                "killed without trial. The Terror ended with the " +
+                "Thermidorian Reaction."
+        )
+        let thermidor = ArticleSection(
+            title: "Thermidorian Reaction", level: 2,
+            text: "On 9 Thermidor Year II (27 July 1794), Robespierre " +
+                "and his allies were denounced in the National " +
+                "Convention, arrested, and executed the next day — " +
+                "ending the Reign of Terror. Power shifted to the " +
+                "more moderate Directory, whose weaknesses would in " +
+                "turn set the stage for Napoleon's 1799 coup of 18 " +
+                "Brumaire."
+        )
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "French Revolution", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/French_Revolution",
+                  title: "French Revolution", section: lead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/French_Revolution")] =
+            .init(zim: "wikipedia_en.zim",
+                  title: "French Revolution",
+                  sections: [lead, causes, bastille, terror, thermidor])
+
+        let hit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/French_Revolution", title: "French Revolution",
+            snippet: "1789–1799 period of radical political change in France ending the monarchy."
+        )
+        for q in ["french revolution", "reign of terror", "bastille",
+                   "robespierre", "thermidorian reaction"] {
+            f.search[StubZimService.keySearch(query: q)] = [hit]
+        }
+    }
+
+    /// "What is CRISPR?" → 3-turn mechanism chain. Fixture: lead + Cas9
+    /// mechanism + guide RNA targeting + off-target effects sections.
+    private static func addCRISPRChainFixture(_ f: inout StubZimService.Fixture) {
+        let lead = ArticleSection(
+            title: "", level: 0,
+            text: "CRISPR/Cas9 is a genome editing technology adapted " +
+                "from a naturally-occurring bacterial immune system. " +
+                "A short guide RNA (gRNA) directs the Cas9 nuclease " +
+                "to a specific 20-base-pair DNA sequence, where Cas9 " +
+                "creates a double-strand break. The cell's own repair " +
+                "machinery then either disrupts the target gene or, " +
+                "with a supplied template, edits it to a new " +
+                "sequence. Jennifer Doudna and Emmanuelle Charpentier " +
+                "shared the 2020 Nobel Prize in Chemistry for the " +
+                "discovery."
+        )
+        let cas9 = ArticleSection(
+            title: "Cas9 mechanism", level: 2,
+            text: "Cas9 is an RNA-guided endonuclease. The enzyme " +
+                "binds its guide RNA + target DNA and scans the " +
+                "genome for a Protospacer Adjacent Motif (PAM) — " +
+                "typically an NGG sequence for SpCas9. Once a PAM " +
+                "is located, Cas9 checks whether the adjacent DNA " +
+                "base-pairs match the gRNA's 20-nucleotide spacer. " +
+                "On a match, Cas9's HNH and RuvC domains cut each " +
+                "DNA strand, producing a blunt double-strand break " +
+                "three base pairs upstream of the PAM."
+        )
+        let gRNATargeting = ArticleSection(
+            title: "Guide RNA targeting", level: 2,
+            text: "The guide RNA carries a 20-nucleotide \"spacer\" " +
+                "sequence complementary to the intended DNA target. " +
+                "Cas9 uses the gRNA-DNA base-pairing to find the " +
+                "right spot: the protein first recognises a PAM " +
+                "(e.g. NGG for SpCas9), then checks whether the " +
+                "adjacent 20 bp base-pair perfectly with the " +
+                "spacer. Perfect matches trigger the cut; " +
+                "mismatches — especially in the 10 bp \"seed\" " +
+                "region nearest the PAM — abort the reaction."
+        )
+        let offTarget = ArticleSection(
+            title: "Off-target effects", level: 2,
+            text: "Off-target edits happen when a partial match " +
+                "between the guide RNA and a non-target site is " +
+                "close enough to the spacer sequence that Cas9 " +
+                "proceeds with the cut anyway. Mismatches in the " +
+                "distal (PAM-far) positions are tolerated more " +
+                "than those in the seed region. High-fidelity Cas9 " +
+                "variants (eSpCas9, SpCas9-HF1) and shorter guide " +
+                "RNAs reduce off-target activity at some cost to " +
+                "on-target efficiency."
+        )
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "CRISPR", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/CRISPR", title: "CRISPR", section: lead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/CRISPR")] =
+            .init(zim: "wikipedia_en.zim", title: "CRISPR",
+                  sections: [lead, cas9, gRNATargeting, offTarget])
+
+        let hit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/CRISPR", title: "CRISPR",
+            snippet: "Genome editing technology using Cas9 nuclease guided by a short RNA to a specific 20-bp DNA sequence."
+        )
+        for q in ["crispr", "cas9", "guide rna", "pam sequence",
+                   "off-target crispr", "crispr mechanism"] {
+            f.search[StubZimService.keySearch(query: q)] = [hit]
+        }
     }
 
     /// "Why is the sky blue?" → multi-turn Rayleigh scattering chain.
