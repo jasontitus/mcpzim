@@ -424,6 +424,62 @@ final class EvalHarness {
             // realistic "iPhone 17 Pro Max would tolerate this" bar.
             maxPeakMB: 6500
         ),
+
+        // Four-turn gravitational-waves chain. Same opener / expand /
+        // crossref / clarify pattern as sky_is_blue_chain but scaled
+        // to a harder topic with a longer fixture — tests how the
+        // flow holds when article content is ~3-4× the Rayleigh
+        // article. Final "multi-messenger astronomy" turn is strict
+        // (no tool call; must cite prior sections).
+        .init(
+            name: "grav_waves_chain",
+            turns: [
+                (
+                    user: "What are gravitational waves?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["article_overview", "search",
+                                          "get_article_section"],
+                        responseIncludesAny: ["spacetime", "einstein",
+                                               "relativity", "ligo"]
+                    )
+                ),
+                (
+                    user: "Tell me about LIGO's detectors.",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section",
+                                          "article_overview", "search"],
+                        responseIncludesAny: ["interferometer", "mirror",
+                                               "laser", "arm"]
+                    )
+                ),
+                (
+                    user: "How was the 2017 neutron-star collision different?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section", "search",
+                                          "article_overview"],
+                        responseIncludesAny: ["neutron", "kilonova",
+                                               "electromagnetic", "gw170817",
+                                               "visible"]
+                    )
+                ),
+                (
+                    user: "Multi-messenger astronomy — what's the big idea?",
+                    expect: TurnExpect(
+                        // Clarify from cached sections. Flexible keywords
+                        // — Gemma 3 observed phrasing "combining multiple
+                        // signals" / "multiple carriers" etc.
+                        responseIncludesAny: ["combin", "multiple",
+                                               "signals", "channel",
+                                               "photons", "messenger"],
+                        requireNoToolCall: true,
+                        referencesPriorSection: ["ligo", "gw170817",
+                                                   "interferometer",
+                                                   "neutron"]
+                    )
+                ),
+            ],
+            maxPeakMB: 6500
+        ),
     ]
 
     /// Synthetic "Palo Alto → San Francisco" active route used by the
@@ -768,6 +824,7 @@ final class EvalHarness {
         Self.addNarrateHPGarageFixture(&f)
         Self.addWhatIsHereInSFFixture(&f)
         Self.addSkyIsBlueChainFixture(&f)
+        Self.addGravWavesChainFixture(&f)
         return f
     }
 
@@ -831,6 +888,116 @@ final class EvalHarness {
             f.search[StubZimService.keySearch(query: "why is the sky blue")] ?? []
         f.search[StubZimService.keySearch(query: "sunset red")] =
             f.search[StubZimService.keySearch(query: "why is the sky blue")] ?? []
+    }
+
+    /// "What are gravitational waves?" → 4-turn chain. Fixture covers
+    /// a Gravitational wave article with lead + detectors + GW170817 +
+    /// multi-messenger sections. Also registers LIGO as a separate
+    /// article the model may choose to fetch on turn 2, and enough
+    /// search routes that turn-3 queries don't fall off the stub.
+    private static func addGravWavesChainFixture(_ f: inout StubZimService.Fixture) {
+        let gwLead = ArticleSection(
+            title: "", level: 0,
+            text: "Gravitational waves are ripples in spacetime " +
+                "predicted by Einstein's 1916 general theory of " +
+                "relativity. They propagate outward from accelerating " +
+                "masses at the speed of light and were first directly " +
+                "observed in 2015 by the Laser Interferometer " +
+                "Gravitational-wave Observatory (LIGO), which detected " +
+                "a signal from a binary black-hole merger 1.3 billion " +
+                "light-years away."
+        )
+        let gwDetectors = ArticleSection(
+            title: "Detectors", level: 2,
+            text: "LIGO uses two 4-kilometre Michelson interferometers " +
+                "— one in Hanford, Washington and one in Livingston, " +
+                "Louisiana. A laser beam is split and sent down each " +
+                "arm, reflected off suspended mirrors, and recombined; " +
+                "a passing gravitational wave stretches one arm while " +
+                "compressing the other by a fraction of a proton's " +
+                "diameter, which the interferometer measures as a " +
+                "phase shift. Virgo in Italy and KAGRA in Japan add " +
+                "two more sites to the global network."
+        )
+        let gwNeutronStar = ArticleSection(
+            title: "GW170817 and the kilonova", level: 2,
+            text: "On 17 August 2017, LIGO and Virgo detected the " +
+                "first gravitational-wave signal from a binary " +
+                "neutron-star merger, GW170817. Unlike black-hole " +
+                "mergers this event was also seen in electromagnetic " +
+                "radiation — a short gamma-ray burst 1.7 seconds " +
+                "later, then visible light from the associated " +
+                "kilonova over the following days. It was the first " +
+                "multi-messenger observation combining gravitational " +
+                "waves and light from the same source."
+        )
+        let gwMultiMessenger = ArticleSection(
+            title: "Multi-messenger astronomy", level: 2,
+            text: "Combining signals from multiple carriers — " +
+                "gravitational waves, photons, neutrinos, and cosmic " +
+                "rays — lets astronomers extract information no single " +
+                "channel can provide alone. GW170817 confirmed that " +
+                "gravitational waves travel at the speed of light to " +
+                "within 1 part in 10¹⁵, constrained neutron-star " +
+                "equations of state, and demonstrated that kilonovae " +
+                "are a site of heavy-element (r-process) " +
+                "nucleosynthesis."
+        )
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "Gravitational wave", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/Gravitational_wave",
+                  title: "Gravitational wave", section: gwLead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/Gravitational_wave")] =
+            .init(zim: "wikipedia_en.zim",
+                  title: "Gravitational wave",
+                  sections: [gwLead, gwDetectors, gwNeutronStar, gwMultiMessenger])
+
+        // Also stand up a dedicated LIGO article so the model has
+        // somewhere to go on turn 2 if it picks `article_overview` on
+        // LIGO instead of a section fetch.
+        let ligoLead = ArticleSection(
+            title: "", level: 0,
+            text: "The Laser Interferometer Gravitational-wave " +
+                "Observatory (LIGO) is a large-scale physics experiment " +
+                "that detects gravitational waves. It comprises two " +
+                "detectors, in Hanford and Livingston, each with two " +
+                "4-kilometre arms. The first direct detection of a " +
+                "gravitational wave was made by LIGO on 14 September " +
+                "2015, from the merger of a pair of black holes 1.3 " +
+                "billion light-years away."
+        )
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "LIGO", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/LIGO", title: "LIGO", section: ligoLead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/LIGO")] =
+            .init(zim: "wikipedia_en.zim", title: "LIGO",
+                  sections: [ligoLead, gwDetectors])
+
+        // Search routes for plausible turn-3 queries.
+        let gwHit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/Gravitational_wave", title: "Gravitational wave",
+            snippet: "Ripples in spacetime from accelerating masses; first detected by LIGO in 2015."
+        )
+        let ligoHit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/LIGO", title: "LIGO",
+            snippet: "Laser Interferometer Gravitational-wave Observatory — two 4-km arms in the US."
+        )
+        for q in ["gravitational waves", "what are gravitational waves",
+                   "gw170817", "neutron star collision",
+                   "neutron star merger", "multi-messenger astronomy",
+                   "kilonova"] {
+            f.search[StubZimService.keySearch(query: q)] = [gwHit, ligoHit]
+        }
+        for q in ["ligo", "ligo detectors", "interferometer"] {
+            f.search[StubZimService.keySearch(query: q)] = [ligoHit, gwHit]
+        }
     }
 
     // Kept under the old name for any out-of-tree callers that might
