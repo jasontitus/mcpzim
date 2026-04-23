@@ -50,7 +50,33 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
         log("GET \(entryPath) from \(zimName)")
 
         do {
-            guard let entry = try reader.read(path: entryPath) else {
+            var entry = try reader.read(path: entryPath)
+            // Font-glyph fallback. MapLibre requests glyphs at the
+            // fontstack name the style declares — often `"Open Sans
+            // Bold"` with spaces. streetzim (intentionally, see
+            // `create_osm_zim.py:3381`) stores fonts under their
+            // space-stripped names (`fonts/OpenSansBold/...`). So
+            // the space-name request 404s and every codepoint falls
+            // back to local rendering — ugly-looking map labels and
+            // a flood of `Unable to load glyph range` WebView
+            // warnings (real capture 2026-04-23 gist b49387f4, 38
+            // entries from a single map view).
+            //
+            // If the literal lookup misses and the path is a fonts
+            // entry with spaces, try the space-stripped variant
+            // once. That's all streetzim-generated ZIMs actually
+            // expect.
+            if entry == nil,
+               entryPath.hasPrefix("fonts/"),
+               entryPath.contains(" ")
+            {
+                let stripped = entryPath.replacingOccurrences(of: " ", with: "")
+                if let hit = try reader.read(path: stripped) {
+                    entry = hit
+                    log("fonts alias '\(entryPath)' → '\(stripped)'")
+                }
+            }
+            guard let entry else {
                 log("404 entry '\(entryPath)' not in '\(zimName)'")
                 urlSchemeTask.didFailWithError(NSError(
                     domain: "ZimURLSchemeHandler", code: 404,
