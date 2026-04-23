@@ -2475,7 +2475,16 @@ public final class ChatSession {
     @MainActor
     private func executeDirectIntent(_ intent: DirectIntent) async -> Bool {
         guard let adapter else { return false }
-        let dictArgs = intent.anyArgs
+        // Replace "my location" / "here" / "me" / "current location"
+        // with "lat,lon" before dispatching, so the geocoder's parse-
+        // as-coords shortcut picks up the user's GPS fix. Previously
+        // only the LLM-driven tool-dispatch path (runGenerationLoop)
+        // ran this substitution, so fast-path-dispatched
+        // route_from_places / near_places with `origin:"my
+        // location"` failed with `could not resolve my location`
+        // (2026-04-23 gist aa8ca1dc, "Directions to San Jose
+        // airport").
+        let dictArgs = substituteCurrentLocation(in: intent.anyArgs)
         let argsStr: String = {
             guard let data = try? JSONSerialization.data(
                 withJSONObject: dictArgs, options: [.sortedKeys]
