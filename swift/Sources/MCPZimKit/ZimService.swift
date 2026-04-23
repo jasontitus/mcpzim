@@ -149,6 +149,31 @@ public actor DefaultZimService: ZimService {
         logger?(msg)
     }
 
+    /// Defence-in-depth guard on the streetzim `w` record field.
+    ///
+    /// Contract: `w` is a Wikipedia tag (`en:HP_Garage`,
+    /// `fr:Tour_Eiffel`), never a URL. A pre-fa6208b bug in
+    /// streetzim's Overture-places enrichment wrote POI website URLs
+    /// into `w` for any POI that had no OSM wiki tag. Every
+    /// downstream consumer (`articleByTitle`, `near_places(hasWiki)`,
+    /// the `"wikipedia"` field we forward to the LLM) treats that
+    /// value as a title-shaped tag — a URL there mismatches the tag
+    /// parser, makes `has_wiki` queries false-positive the record,
+    /// and ultimately drops the excerpt silently.
+    ///
+    /// streetzim has been fixed (field renamed to `ws`), but an
+    /// older ZIM file left on a user's device would still carry the
+    /// collision. Strip any value that contains `://` at ingest so
+    /// those stale records degrade gracefully to "no wiki tag" instead
+    /// of misbehaving. Everything that's not URL-shaped — plain
+    /// titles, language-prefixed tags, underscored or spaced —
+    /// passes through unchanged.
+    static func sanitizedWikiTag(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if raw.contains("://") { return nil }
+        return raw
+    }
+
     private func timed<T>(_ label: String, _ block: () throws -> T) rethrows -> T {
         let t0 = Date()
         let memBefore = Double(MemoryStats.physFootprintBytes()) / 1_048_576
@@ -751,7 +776,7 @@ public actor DefaultZimService: ZimService {
             let d = haversineMeters(centerLat, centerLon, rlat, rlon)
             guard d <= radiusMeters else { continue }
             if requireWiki {
-                let wiki = rec["w"] as? String ?? ""
+                let wiki = Self.sanitizedWikiTag(rec["w"] as? String) ?? ""
                 let wikidata = rec["q"] as? String ?? ""
                 if wiki.isEmpty && wikidata.isEmpty { continue }
             }
@@ -783,7 +808,7 @@ public actor DefaultZimService: ZimService {
                 lat: rlat, lon: rlon,
                 subtype: (rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "",
                 location: (rec["l"] as? String) ?? (rec["location"] as? String) ?? "",
-                wiki: rec["w"] as? String,
+                wiki: Self.sanitizedWikiTag(rec["w"] as? String),
                 wikidata: rec["q"] as? String
             )
             hits.append((p, d))
