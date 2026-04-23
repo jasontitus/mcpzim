@@ -660,8 +660,15 @@ private func reloadIfNeeded(
     endpoints: (origin: (lat: Double, lon: Double),
                 dest: (lat: Double, lon: Double))? = nil
 ) {
-    let expected = "zim://\(spec.zimName)/\(spec.mainPath)"
-    if webView.url?.absoluteString != expected {
+    // Compare decoded host/path against the spec so a ZIM name
+    // that needed percent-encoding at load time still matches
+    // across re-renders. Previously the raw-string build didn't
+    // match the WebView's encoded absoluteString — the view would
+    // hard-reload on every GPS tick.
+    let currentHost = webView.url?.host ?? ""
+    let currentPath = webView.url?.path.trimmingCharacters(
+        in: CharacterSet(charactersIn: "/")) ?? ""
+    if currentHost != spec.zimName || currentPath != spec.mainPath {
         loadSpec(
             webView, spec: spec,
             initialDriveMode: initialDriveMode, endpoints: endpoints
@@ -1053,10 +1060,17 @@ private func loadSpec(
     // `index.html` where `map-config.json` should be and then fails JSON
     // parse. Instead we let the page load cleanly and fit-bounds the route
     // ourselves from the overlay JS.
-    var components = URLComponents()
-    components.scheme = ZimURLSchemeHandler.scheme
-    components.host = spec.zimName
-    components.path = "/" + spec.mainPath
-    guard let url = components.url else { return }
+    // Build the URL as a pre-encoded string — `URLComponents.host`
+    // rejects illegal characters (spaces, in `osm-silicon-valley-
+    // 2026-04-22 3.zim`) by silently making `.url` return nil,
+    // which then blanks the route-map bubble. Same workaround as
+    // the places path; the scheme handler decodes url.host back to
+    // the original filename for the library lookup.
+    let encodedHost = spec.zimName.addingPercentEncoding(
+        withAllowedCharacters: .urlHostAllowed) ?? spec.zimName
+    let encodedPath = spec.mainPath.addingPercentEncoding(
+        withAllowedCharacters: .urlPathAllowed) ?? spec.mainPath
+    let urlString = "\(ZimURLSchemeHandler.scheme)://\(encodedHost)/\(encodedPath)"
+    guard let url = URL(string: urlString) else { return }
     webView.load(URLRequest(url: url))
 }
