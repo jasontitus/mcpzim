@@ -241,7 +241,24 @@ final class NearPlacesWikiEnrichmentTests: XCTestCase {
         return fix
     }
 
-    func testFallbackSearchFindsArticlesForUntaggedMuseums() async throws {
+    func testUntaggedPlacesGetNoWikiEnrichment() async throws {
+        // Contract (2026-04-22): "I don't want fuzzy matching of
+        // Wikipedia articles." The name-search fallback used to
+        // attach whichever Wikipedia article matched a POI's name
+        // — which produced real on-device false positives like
+        //   * "Taverna" (local Greek restaurant) → Wikipedia's
+        //     `Taverna` article about scientific-workflow software.
+        //   * "Masterworks" (local art POI) → Wikipedia's generic
+        //     `Masterworks` concept article.
+        // Even with exact-normalised title match + disambig
+        // rejection the short common-noun case slipped through.
+        //
+        // The rule now: Wikipedia enrichment fires ONLY when the
+        // streetzim carried an explicit OSM `wikipedia=` tag for
+        // the POI. This test nails the contract so a future
+        // well-intentioned "but we could enrich Palo Alto History
+        // Museum via name search!" change immediately shows up as
+        // a failure and a re-design conversation.
         let svc = StubZimService(fixture: fixtureNoWikiTagsButArticlesExist())
         let adapter = await MCPToolAdapter(service: svc, hasStreetzim: true)
 
@@ -255,31 +272,15 @@ final class NearPlacesWikiEnrichmentTests: XCTestCase {
         let rows = try XCTUnwrap(result["results"] as? [[String: Any]])
         XCTAssertEqual(rows.count, 3)
 
-        // The two museums whose Wikipedia titles close-match their
-        // place names should end up enriched.
-        let pahmOpt: [String: Any]? = rows.first {
-            ($0["name"] as? String) == "Palo Alto History Museum"
+        // None of the three museum rows have an OSM wiki tag, so
+        // none should be wiki-enriched — regardless of whether a
+        // Wikipedia article with a close-matching title exists.
+        for row in rows {
+            let name = (row["name"] as? String) ?? "(unnamed)"
+            XCTAssertNil(row["wiki_path"], "wiki_path on untagged row: \(name)")
+            XCTAssertNil(row["wiki_title"], "wiki_title on untagged row: \(name)")
+            XCTAssertNil(row["excerpt"], "excerpt on untagged row: \(name)")
         }
-        let pahm = try XCTUnwrap(pahmOpt)
-        XCTAssertEqual(pahm["wiki_path"] as? String, "A/Palo_Alto_History_Museum",
-                       "fallback name-search should pick up untagged rows")
-        XCTAssertEqual(pahm["wiki_title"] as? String, "Palo Alto History Museum")
-        let excerpt = try XCTUnwrap(pahm["excerpt"] as? String)
-        XCTAssertTrue(excerpt.contains("Palo Alto"))
-
-        let moahOpt: [String: Any]? = rows.first {
-            ($0["name"] as? String) == "Museum of American Heritage"
-        }
-        let moah = try XCTUnwrap(moahOpt)
-        XCTAssertEqual(moah["wiki_path"] as? String, "A/Museum_of_American_Heritage")
-
-        // The zoo got a bad search hit — the title-match guard must
-        // reject it rather than stapling an unrelated article on.
-        let zooOpt: [String: Any]? = rows.first {
-            ($0["name"] as? String) == "Palo Alto Junior Museum and Zoo"
-        }
-        let zoo = try XCTUnwrap(zooOpt)
-        XCTAssertNil(zoo["wiki_path"], "unrelated search hits must be rejected")
     }
 
     func testOsmTagStillWinsOverSearchFallback() async throws {

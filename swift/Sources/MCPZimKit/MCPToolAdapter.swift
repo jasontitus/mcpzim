@@ -1467,21 +1467,36 @@ public actor MCPToolAdapter {
             Self.toolLog.notice(
                 "fetchWikiExcerpts: enriched \(out.count, privacy: .public) of \(candidates.count, privacy: .public) via OSM wiki-tag"
             )
-            // Fallback pass — for rows that the streetzim index
-            // didn't cross-ref (its name+coord join is strict; see
-            // `create_osm_zim.py::extract_wiki_cross_refs`), try a
-            // direct Wikipedia search by place name. Cheap because
-            // each hit only costs one ZIM search + one lead fetch,
-            // capped to what the top-pass didn't already enrich.
-            let fallback = await fetchWikiExcerptsByNameSearch(
-                for: result, excluding: Set(out.keys), cap: cap
-            )
-            for (idx, payload) in fallback {
-                out[idx] = payload
-            }
-            Self.toolLog.notice(
-                "fetchWikiExcerpts: enriched \(fallback.count, privacy: .public) additional rows via Wikipedia name search"
-            )
+            // Name-search fallback DISABLED (2026-04-22).
+            //
+            // The fallback tried to enrich rows OSM didn't wiki-tag
+            // by running a Wikipedia search on the place name and
+            // attaching the top hit's lead. Two real-device captures
+            // show why this is almost always wrong for short,
+            // common-noun POI names:
+            //
+            //   * "Taverna" (local Greek restaurant) → Wikipedia's
+            //     `Taverna` article, which is about the scientific
+            //     workflow software of the same name. The user sees
+            //     a software description under a restaurant row.
+            //   * "Masterworks" (local art-related POI) →
+            //     Wikipedia's generic `Masterworks` concept article
+            //     (a glossary-style entry on notable artworks).
+            //
+            // Even with exact-normalised-title matching + disambig
+            // rejection, a single-word POI name that's ALSO a
+            // common-noun Wikipedia entry will pass every check the
+            // resolver runs. The article exists, the title matches,
+            // it isn't a disambig page — but it isn't ABOUT this
+            // place. The OSM wiki-tag primary path is an explicit
+            // link from the mapper who tagged the node; the
+            // fallback is a guess at string similarity.
+            //
+            // Trust the OSM tag, skip the guess. Leaving
+            // `fetchWikiExcerptsByNameSearch` in place (not deleted)
+            // so a future, stricter variant can re-enable it — the
+            // current problem is the activation gate, not the
+            // tightening we've already done.
             return out
         }
     }
