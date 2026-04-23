@@ -480,6 +480,48 @@ final class EvalHarness {
             ],
             maxPeakMB: 6500
         ),
+
+        // Three-turn WWI vs WWII chain. Tests compare_articles as the
+        // opener (a different pattern than `article_overview` → follow-
+        // ups) plus a numeric-anchored expand (casualty figures) and a
+        // strict clarify turn. Casualty numbers act as a factual
+        // anchor — response check requires both "million" and either
+        // "17" or "70" to appear (WWI total ~17M, WWII total ~70M).
+        .init(
+            name: "wwi_vs_wwii_chain",
+            turns: [
+                (
+                    user: "Compare World War I and World War II — causes and scale.",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["compare_articles", "article_overview",
+                                          "search"],
+                        responseIncludesAny: ["1914", "1939", "alliance",
+                                               "fascism", "axis", "trench"]
+                    )
+                ),
+                (
+                    user: "How many people were killed in each?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section",
+                                          "article_overview", "search"],
+                        responseIncludesAny: ["million", "casualt",
+                                               "civilian", "deaths"]
+                    )
+                ),
+                (
+                    user: "What changed between the two that made WWII so much more deadly?",
+                    expect: TurnExpect(
+                        responseIncludesAny: ["industrial", "air",
+                                               "civilian", "bomb",
+                                               "strategic", "total"],
+                        requireNoToolCall: true,
+                        referencesPriorSection: ["million", "world war",
+                                                   "axis"]
+                    )
+                ),
+            ],
+            maxPeakMB: 6500
+        ),
     ]
 
     /// Synthetic "Palo Alto → San Francisco" active route used by the
@@ -825,6 +867,7 @@ final class EvalHarness {
         Self.addWhatIsHereInSFFixture(&f)
         Self.addSkyIsBlueChainFixture(&f)
         Self.addGravWavesChainFixture(&f)
+        Self.addWWIvsWWIIChainFixture(&f)
         return f
     }
 
@@ -997,6 +1040,110 @@ final class EvalHarness {
         }
         for q in ["ligo", "ligo detectors", "interferometer"] {
             f.search[StubZimService.keySearch(query: q)] = [ligoHit, gwHit]
+        }
+    }
+
+    /// "Compare WWI and WWII" → 3-turn chain testing compare_articles
+    /// as the opener, a casualty-number expand, and a strict clarify.
+    /// Fixture covers both wars with lead + Casualties + section the
+    /// clarify turn needs to cite.
+    private static func addWWIvsWWIIChainFixture(_ f: inout StubZimService.Fixture) {
+        let wwiLead = ArticleSection(
+            title: "", level: 0,
+            text: "World War I (28 July 1914 – 11 November 1918) was a " +
+                "global conflict triggered by the assassination of " +
+                "Archduke Franz Ferdinand. Pre-war alliances between " +
+                "the Central Powers (Germany, Austria-Hungary, Ottoman " +
+                "Empire) and the Entente (France, Russia, the United " +
+                "Kingdom, later the United States) drew the whole " +
+                "continent into a four-year war of attrition fought " +
+                "largely in trenches on the Western Front."
+        )
+        let wwiCasualties = ArticleSection(
+            title: "Casualties", level: 2,
+            text: "World War I caused about 17 million deaths, " +
+                "including 10 million military personnel and 7 million " +
+                "civilians. The Entente lost about 6 million military " +
+                "dead; the Central Powers about 4 million. The 1918 " +
+                "influenza pandemic, which spread in the war's closing " +
+                "months, is sometimes counted separately and claimed " +
+                "an additional ~25-50 million lives globally."
+        )
+        let wwiiLead = ArticleSection(
+            title: "", level: 0,
+            text: "World War II (1 September 1939 – 2 September 1945) " +
+                "was the deadliest conflict in human history, fought " +
+                "between the Allies (the United States, the Soviet " +
+                "Union, the United Kingdom, China, and others) and " +
+                "the Axis (Nazi Germany, Fascist Italy, Imperial " +
+                "Japan). It began with Germany's invasion of Poland " +
+                "and ended with the atomic bombings of Hiroshima and " +
+                "Nagasaki."
+        )
+        let wwiiCasualties = ArticleSection(
+            title: "Casualties", level: 2,
+            text: "World War II caused an estimated 70-85 million " +
+                "deaths — about 3% of the 1940 world population — " +
+                "making it the deadliest war in history. About 60% of " +
+                "the dead were civilians, killed by disease, famine, " +
+                "strategic bombing, the Holocaust, and other mass " +
+                "atrocities. The Soviet Union alone lost roughly 27 " +
+                "million people, China about 20 million, and Poland " +
+                "some 6 million including 3 million Jews."
+        )
+        let wwiiTotalWar = ArticleSection(
+            title: "Industrial and total war", level: 2,
+            text: "What made World War II so much deadlier than the " +
+                "First was the explicit extension of the conflict to " +
+                "civilian populations and infrastructure — strategic " +
+                "air bombing of cities, submarine warfare against " +
+                "merchant shipping, and deliberate genocide. Full " +
+                "industrial mobilisation meant every factory, farm, " +
+                "and rail line became a military target; advances in " +
+                "aviation and long-range artillery erased the earlier " +
+                "century's distinction between front and home."
+        )
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "World War I", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/World_War_I",
+                  title: "World War I", section: wwiLead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/World_War_I")] =
+            .init(zim: "wikipedia_en.zim", title: "World War I",
+                  sections: [wwiLead, wwiCasualties])
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(
+            title: "World War II", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/World_War_II",
+                  title: "World War II", section: wwiiLead)
+        f.articleSections[StubZimService.keyArticleSections(
+            path: "A/World_War_II")] =
+            .init(zim: "wikipedia_en.zim", title: "World War II",
+                  sections: [wwiiLead, wwiiCasualties, wwiiTotalWar])
+
+        let wwiHit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/World_War_I", title: "World War I",
+            snippet: "Global war 1914–1918 between the Central Powers and the Entente."
+        )
+        let wwiiHit = SearchHitResult(
+            zim: "wikipedia_en.zim", kind: .wikipedia,
+            path: "A/World_War_II", title: "World War II",
+            snippet: "Deadliest conflict in history, 1939–1945, Allies vs Axis."
+        )
+        for q in ["world war i", "world war 1", "wwi", "first world war"] {
+            f.search[StubZimService.keySearch(query: q)] = [wwiHit, wwiiHit]
+        }
+        for q in ["world war ii", "world war 2", "wwii",
+                   "second world war"] {
+            f.search[StubZimService.keySearch(query: q)] = [wwiiHit, wwiHit]
+        }
+        for q in ["compare world wars", "world war casualties",
+                   "world war deaths", "how many killed world war"] {
+            f.search[StubZimService.keySearch(query: q)] = [wwiiHit, wwiHit]
         }
     }
 
