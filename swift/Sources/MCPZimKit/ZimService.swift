@@ -22,6 +22,16 @@ public struct SearchHitResult: Sendable {
     public let path: String
     public let title: String
     public let snippet: String
+    public init(
+        zim: String, kind: ZimKind, path: String,
+        title: String, snippet: String
+    ) {
+        self.zim = zim
+        self.kind = kind
+        self.path = path
+        self.title = title
+        self.snippet = snippet
+    }
 }
 
 public struct InventoryEntry: Sendable {

@@ -153,6 +153,18 @@ final class EvalHarness {
         var toolsNotCalled: [String] = []
         var responseIncludesAny: [String] = []
         var responseExcludes: [String] = []
+        /// On a `clarify` turn we expect the model to answer from cached
+        /// context rather than call a tool again — set `true` to assert
+        /// NO tool call happened. See EXTENDED_CONTEXT_EVAL.md §3. If
+        /// `true`, overrides `toolsCalledAny` (the turn passes only if
+        /// the model emits zero tool calls AND the response passes).
+        var requireNoToolCall: Bool = false
+        /// If non-nil, assert the reply contains at least one of these
+        /// substrings from a previous turn's `get_article_section` /
+        /// `article_overview` response — a positive signal that the
+        /// model carried prior context forward rather than
+        /// re-retrieving. Matched case-insensitively.
+        var referencesPriorSection: [String] = []
     }
 
     struct Scenario {
@@ -163,15 +175,22 @@ final class EvalHarness {
         /// Set once per scenario; scenarios that don't touch those tools
         /// leave this nil and the provider returns an empty snapshot.
         let hostState: HostStateSnapshot?
+        /// Optional per-scenario peak-RSS ceiling. When non-nil, the
+        /// scenario fails if MLX peak memory exceeds this at any turn.
+        /// Phone-target scenarios set ~5500 MB; mac-only reference
+        /// scenarios set ~12000 MB. See EXTENDED_CONTEXT_EVAL.md §3.
+        let maxPeakMB: Int?
 
         init(
             name: String,
             turns: [(user: String, expect: TurnExpect)],
-            hostState: HostStateSnapshot? = nil
+            hostState: HostStateSnapshot? = nil,
+            maxPeakMB: Int? = nil
         ) {
             self.name = name
             self.turns = turns
             self.hostState = hostState
+            self.maxPeakMB = maxPeakMB
         }
     }
 
@@ -342,6 +361,68 @@ final class EvalHarness {
                 activeRoute: EvalHarness.demoActiveRoute,
                 currentLocation: .init(lat: 37.5, lon: -122.2)
             )
+        ),
+
+        // — Phase A of EXTENDED_CONTEXT_EVAL.md: multi-turn
+        //   "walking with headphones, listening" conversations —
+
+        // Three-turn Rayleigh-scattering chain. Exercises the opener /
+        // expand / clarify pattern:
+        //   T1 opener:  "Why is the sky blue?"  → article_overview
+        //   T2 expand:  "So why are sunsets red then?" → get_article_section
+        //   T3 clarify: "Wait, what controls which wavelength wins?"
+        //               → NO tool call; answer from cached sections.
+        // Final turn sets both requireNoToolCall and
+        // referencesPriorSection — it's the sharpest test of whether
+        // the model carried prior context forward rather than
+        // re-retrieving. Fixture lives in addSkyIsBlueChainFixture.
+        .init(
+            name: "sky_is_blue_chain",
+            turns: [
+                (
+                    user: "Why is the sky blue?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["article_overview", "search",
+                                          "get_article_section"],
+                        responseIncludesAny: ["rayleigh", "scatter",
+                                               "wavelength", "shorter"]
+                    )
+                ),
+                (
+                    user: "So why are sunsets red then?",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["get_article_section",
+                                          "article_overview", "search"],
+                        responseIncludesAny: ["longer", "wavelength",
+                                               "atmosphere", "path"]
+                    )
+                ),
+                (
+                    user: "Wait, what controls which wavelength wins?",
+                    expect: TurnExpect(
+                        // Clarify: expect zero tool calls. The reply
+                        // should either name path length / atmosphere
+                        // thickness (seen during the sunset turn) or
+                        // the inverse-fourth-power law (from the
+                        // Rayleigh overview). Gemma 3 observed saying
+                        // "how far it has to travel through the
+                        // atmosphere" so we accept "travel" + "far"
+                        // alongside "path" and the math-form keywords.
+                        responseIncludesAny: ["path", "travel", "far",
+                                               "fourth", "1/λ",
+                                               "inverse", "distance"],
+                        requireNoToolCall: true,
+                        referencesPriorSection: ["rayleigh", "sunset",
+                                                   "atmosphere",
+                                                   "scattered"]
+                    )
+                ),
+            ],
+            // Phone-target ceiling. Single-conversation peak measured
+            // 5.4 GB at 40 k tokens in our Python bench; real mac eval
+            // adds ~1 GB of harness overhead so 6500 MB gives a
+            // realistic "iPhone 17 Pro Max would tolerate this" bar.
+            maxPeakMB: 6500
         ),
     ]
 
@@ -557,7 +638,20 @@ final class EvalHarness {
                 try? await Task.sleep(for: .milliseconds(200))
             }
             await probe.stop()
-            await probe.sample("post_turn.\(scen.name).t\(ti)")
+            let postTurnSample = await probe.sample("post_turn.\(scen.name).t\(ti)")
+            // Scenario-level peak-memory ceiling — if set, fail the
+            // row when any post-turn sample exceeds the cap. Used by
+            // the phone-target extended-context scenarios (see
+            // EXTENDED_CONTEXT_EVAL.md §3) where exceeding the jetsam
+            // headroom is as much a failure as a wrong tool call.
+            if let cap = scen.maxPeakMB, Int(postTurnSample.rssMB) > cap {
+                toolsOk = false
+                responseOk = false
+                errors.append(
+                    "t\(ti): peak \(Int(postTurnSample.rssMB)) MB "
+                    + "exceeds scenario cap \(cap) MB"
+                )
+            }
 
             guard !session.isGenerating else {
                 errors.append("turn \(ti) did not complete within 120s")
@@ -591,8 +685,17 @@ final class EvalHarness {
             // accepting either the new `compare_articles` or the legacy
             // `article_relationship` for the relations scenario — only
             // one gets called at runtime). Fixed 2026-04-21.
-            if !turn.expect.toolsCalledAny.isEmpty,
-               !turn.expect.toolsCalledAny.contains(where: { unique.contains($0) })
+            if turn.expect.requireNoToolCall {
+                // `clarify` turn: the model must answer from cached
+                // context only. Any tool call fails the turn.
+                if !unique.isEmpty {
+                    toolsOk = false
+                    errors.append(
+                        "t\(ti): requireNoToolCall but model called \(turnTools)"
+                    )
+                }
+            } else if !turn.expect.toolsCalledAny.isEmpty,
+                      !turn.expect.toolsCalledAny.contains(where: { unique.contains($0) })
             {
                 toolsOk = false
                 errors.append(
@@ -618,6 +721,22 @@ final class EvalHarness {
                     responseOk = false
                     errors.append("t\(ti): response contained banned '\(banned)'")
                 }
+            }
+            // Positive context-reuse signal: the model's reply name-drops
+            // a section title or phrase from a prior turn's fetched
+            // article. Useful on `clarify` turns specifically — we
+            // already require zero tool calls; this confirms the answer
+            // actually came from the prior context rather than the
+            // model's generic prior. See EXTENDED_CONTEXT_EVAL.md §3.
+            if !turn.expect.referencesPriorSection.isEmpty,
+               !turn.expect.referencesPriorSection
+                    .contains(where: { lower.contains($0.lowercased()) })
+            {
+                responseOk = false
+                errors.append(
+                    "t\(ti): reply didn't reference any prior-section "
+                    + "marker from \(turn.expect.referencesPriorSection)"
+                )
             }
         }
 
@@ -648,7 +767,70 @@ final class EvalHarness {
         Self.addRelationsUSIranFixture(&f)
         Self.addNarrateHPGarageFixture(&f)
         Self.addWhatIsHereInSFFixture(&f)
+        Self.addSkyIsBlueChainFixture(&f)
         return f
+    }
+
+    /// "Why is the sky blue?" → multi-turn Rayleigh scattering chain.
+    /// Lead + two follow-up sections ("Color of the sky", "Color of
+    /// sunsets") that the model can retrieve on turns 1 + 2, then
+    /// reference on the `clarify` turn 3 without re-retrieving.
+    private static func addSkyIsBlueChainFixture(_ f: inout StubZimService.Fixture) {
+        let lead = ArticleSection(
+            title: "", level: 0,
+            text: "Rayleigh scattering is the elastic scattering of light or " +
+                "other electromagnetic radiation by particles much smaller than " +
+                "the wavelength of the radiation. For light frequencies well " +
+                "below the resonance frequency of the scattering particle, the " +
+                "amount of scattering is inversely proportional to the fourth " +
+                "power of the wavelength — so shorter, bluer wavelengths are " +
+                "scattered much more strongly than longer red ones. This " +
+                "wavelength dependence is the primary reason the sky looks blue."
+        )
+        let colorOfSky = ArticleSection(
+            title: "Color of the sky", level: 2,
+            text: "Sunlight entering Earth's atmosphere is scattered in every " +
+                "direction by molecules of nitrogen and oxygen. Because blue " +
+                "wavelengths are scattered about 16 times more strongly than " +
+                "red ones (the inverse-fourth-power law applied to the ~400 nm " +
+                "vs ~700 nm ratio), the diffuse light reaching our eyes from " +
+                "any direction other than directly toward the Sun is biased " +
+                "toward the blue end of the visible spectrum."
+        )
+        let colorOfSunsets = ArticleSection(
+            title: "Color of sunsets", level: 2,
+            text: "Near sunrise and sunset the Sun's light traverses a much " +
+                "longer path through the atmosphere. The additional path length " +
+                "means most of the blue component is scattered out of the direct " +
+                "beam before it reaches the observer, leaving the longer red and " +
+                "orange wavelengths dominant. The same mechanism (Rayleigh " +
+                "scattering) is responsible for both the blue daytime sky and " +
+                "the red sunset: different geometry, same physics."
+        )
+
+        f.articleByTitle[StubZimService.keyArticleByTitle(title: "Rayleigh scattering", section: "lead")] =
+            .init(zim: "wikipedia_en.zim",
+                  path: "A/Rayleigh_scattering",
+                  title: "Rayleigh scattering",
+                  section: lead)
+        f.articleSections[StubZimService.keyArticleSections(path: "A/Rayleigh_scattering")] =
+            .init(zim: "wikipedia_en.zim",
+                  title: "Rayleigh scattering",
+                  sections: [lead, colorOfSky, colorOfSunsets])
+        // search("why is the sky blue") → routes to Rayleigh scattering.
+        f.search[StubZimService.keySearch(query: "why is the sky blue")] = [
+            SearchHitResult(
+                zim: "wikipedia_en.zim",
+                kind: .wikipedia,
+                path: "A/Rayleigh_scattering",
+                title: "Rayleigh scattering",
+                snippet: "Elastic scattering of light by particles small relative to the wavelength; explains why the sky is blue."
+            )
+        ]
+        f.search[StubZimService.keySearch(query: "sky blue")] =
+            f.search[StubZimService.keySearch(query: "why is the sky blue")] ?? []
+        f.search[StubZimService.keySearch(query: "sunset red")] =
+            f.search[StubZimService.keySearch(query: "why is the sky blue")] ?? []
     }
 
     // Kept under the old name for any out-of-tree callers that might
