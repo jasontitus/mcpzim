@@ -340,15 +340,18 @@ public actor MCPToolAdapter {
             MCPTool(
                 name: "narrate_article",
                 description:
-                    "THE tool for \"read me the article\" / \"read aloud\" / "
-                    + "\"recite the article about X\" / \"read the full piece\". "
-                    + "Pass `title` directly. Returns the full article body "
-                    + "cleaned for narration (headings announced as sentences, "
-                    + "citation markers stripped, boilerplate sections dropped). "
-                    + "The host streams this text directly to TTS — NO "
-                    + "follow-up model generation. Use this, NOT "
-                    + "`get_article_by_title`, when the user wants to HEAR "
-                    + "the article. Supports any loaded Wikipedia-family ZIM.",
+                    "THE tool for \"read me the article\" / \"read "
+                    + "aloud\" / \"recite the article about X\" / "
+                    + "\"read the full piece\" — the user wants to "
+                    + "HEAR the Wikipedia article body verbatim. "
+                    + "**NOT** for \"tell me something interesting\" "
+                    + "(that's `nearby_stories` if location-scoped, or "
+                    + "`article_overview` if topic-scoped). **NOT** "
+                    + "for \"tell me about X\" (that's "
+                    + "`article_overview`). Pass `title` directly. "
+                    + "Returns the full article body cleaned for "
+                    + "narration; the host streams it straight to TTS "
+                    + "with no model summarisation afterward.",
                 inputSchemaJSON: Self.narrateArticleSchema
             ),
         ]
@@ -383,18 +386,23 @@ public actor MCPToolAdapter {
                 MCPTool(
                     name: "nearby_stories",
                     description:
-                        "Return 3–5 story-ready excerpts (~1–2 paragraphs "
-                        + "each) from Wikipedia articles for places near a "
-                        + "location. The right tool for \"tell me something "
-                        + "interesting about where I am\" / \"stories about "
-                        + "this neighborhood\" / \"history of downtown "
-                        + "Portland\". Pass `place` (free-text, e.g. "
-                        + "\"Palo Alto\") for a named location; omit "
-                        + "`place` to anchor on the user's current GPS. "
-                        + "Optionally filter with `kinds` (e.g. "
-                        + "`kinds=[\"museum\"]` for \"interesting museums\"). "
-                        + "Each excerpt is substantive enough to narrate "
-                        + "directly; read them out, don't summarize.",
+                        "THE tool for \"tell me something interesting "
+                        + "about where I am\" / \"tell me something "
+                        + "interesting about <place>\" / \"stories "
+                        + "about this neighborhood\" / \"history of "
+                        + "downtown Portland\" / \"what's notable "
+                        + "around here\". Returns 3–5 story-ready "
+                        + "Wikipedia excerpts (~1–2 paragraphs each) "
+                        + "from places tagged with a Wikipedia "
+                        + "article. Pass `place` (free-text) for a "
+                        + "named location; omit `place` to anchor on "
+                        + "the user's current GPS. Optional `kinds` "
+                        + "narrows the category (museums, parks, "
+                        + "historic sites). "
+                        + "**NOT** for \"tell me about <topic>\" "
+                        + "without a location (use "
+                        + "`article_overview`). **NOT** for \"read me "
+                        + "the article\" (use `narrate_article`).",
                     inputSchemaJSON: Self.nearbyStoriesSchema(vocabulary: categoryVocabulary)
                 ),
                 MCPTool(
@@ -762,6 +770,19 @@ public actor MCPToolAdapter {
         let picked = ArticleHeuristics.pickOverview(
             sections: resolved.sections, maxSections: maxSections
         )
+        // Also surface the COMPLETE section outline (titles + levels
+        // only, no text) — replaces the retired `list_article_sections`
+        // tool. Lets the model see at a glance whether the article has
+        // e.g. "Criticism" / "Legacy" / "Gallery" sections it might
+        // want to follow up on via `get_article_section`, without
+        // needing a second round-trip just to fetch the outline.
+        let outline: [[String: Any]] = resolved.sections.map { s in
+            [
+                "title": s.title.isEmpty ? "lead" : s.title,
+                "level": s.level,
+                "bytes": s.bytes,
+            ]
+        }
         return [
             "zim": resolved.zim,
             "path": resolved.path,
@@ -775,6 +796,7 @@ public actor MCPToolAdapter {
                     "text": s.text,
                 ]
             },
+            "available_sections": outline,
         ]
     }
 

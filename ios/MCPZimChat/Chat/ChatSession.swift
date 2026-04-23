@@ -590,36 +590,56 @@ public final class ChatSession {
 
         For "tell me about X" / "what is X" / "how does X work" / \
         "explain X" questions, the preferred chain is:
-        1. `search` — pick the best matching hit.
-        2. `list_article_sections` on that hit's `path` — pick the 1–3 \
-           sections that actually answer the question (skip "See also", \
-           "References", etc. which the tool already strips).
-        3. `get_article_section` once per chosen section.
-        4. Answer from the sections you read. Write in natural prose — \
+        1. `article_overview(title: "X")` — returns the lead plus the \
+           most informative section headings with their excerpts. For \
+           most single-entity queries this is the WHOLE answer — skip \
+           the search step.
+        2. Only if `article_overview` doesn't have the angle the user \
+           asked for, follow up with `get_article_section(title, \
+           section: "<heading from the overview's section list>")`. \
+        3. Answer from the sections you read. Write in natural prose — \
            DO NOT open with "per the 'lead' section" or "according to \
            the article"; the user already knows the answer is grounded. \
-           Only name a section when it genuinely clarifies (e.g. \
-           contrasting two sections of the same article).
+           Only name a section when it genuinely clarifies.
 
-        When the question is a short factoid, one `get_article_section` \
-        on `lead` is usually enough. When it's broader ("tell me about \
-        the French Revolution"), read 2–3 sections. When you truly \
-        need the whole article (rare) fall back to `get_article`. \
-        NEVER stop after `search` to ask "would you like me to fetch \
-        it?" — just proceed through the chain.
+        When the question is a short factoid, one `article_overview` \
+        is usually enough. When it's broader ("tell me about the \
+        French Revolution"), the overview's section list tells you \
+        which follow-up fetches are worthwhile. `search` is a fallback \
+        — use it only for ambiguous topics where you don't know the \
+        article title.
+
+        === Follow-up rule (critical for conversational flow) ===
+        When the CURRENT user turn is a short follow-up — starts with \
+        "wait", "so", "then", "why", "how", "but", "what about", \
+        "and", "ok", "also", or is under 10 words — FIRST check \
+        whether the answer is already in the prior turns of this \
+        conversation:
+        * If an `article_overview` / `get_article_section` / \
+          `compare_articles` call in the LAST 2 ASSISTANT TURNS \
+          already contains the content needed to answer, \
+          **ANSWER DIRECTLY from that context — DO NOT call any tool \
+          again.** Cite inline if helpful. \
+        * Only call a tool when the follow-up genuinely needs \
+          information you HAVEN'T already fetched this conversation. \
+          "Path length" / "inverse fourth power" / "what does that \
+          imply" are things you can answer from cached context. \
+          "Was there an earlier experiment?" is a new fact — fetch.
+        * Re-fetching an article you already have in context on a \
+          clarify turn is WRONG. It wastes the user's time and \
+          doesn't improve grounding, because the cached content is \
+          the same source.
 
         === Grounding policy ===
         This app's value to the user is that answers are grounded in \
         the loaded ZIM archives — not in your training priors. So: \
-        * Every factual claim in your reply should trace to a tool result \
-          you have seen this turn OR an earlier turn in this conversation. \
-        * If the user asks a follow-up that refers back to a prior topic \
-          ("when was that?", "tell me more about it"), reuse the article(s) \
-          from the earlier turn rather than re-running the full search. \
+        * Every factual claim in your reply should trace to a tool \
+          result you have seen this turn OR an earlier turn in this \
+          conversation. \
         * Cite section / article names inline (e.g. "per 'Article' § \
           Causes…") whenever a claim isn't obviously common knowledge. \
-        * If the loaded ZIMs genuinely don't cover the question, say that \
-          — do not guess.\(locationLine)
+        * If the loaded ZIMs genuinely don't cover the question, say \
+          that — do not guess.\(locationLine)
         """
         // NB: `locationLine` is deliberately the LAST thing in the
         // preamble. It changes on every GPS fix (and is empty until the
