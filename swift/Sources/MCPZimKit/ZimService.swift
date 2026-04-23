@@ -783,7 +783,26 @@ public actor DefaultZimService: ZimService {
             if applyKindFilter {
                 let kind = ((rec["t"] as? String) ?? (rec["type"] as? String) ?? "").lowercased()
                 let subtype = ((rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "").lowercased()
-                let subtypeMatch = expandedSubtypes.contains(kind) || expandedSubtypes.contains(subtype)
+                // Exact membership — the original OSM-style check.
+                var subtypeMatch = expandedSubtypes.contains(kind)
+                    || expandedSubtypes.contains(subtype)
+                // Component-split match for Overture places' convention
+                // of `<thing>_<category>` (pizza_restaurant,
+                // italian_restaurant, food_court, coffee_shop, …).
+                // Without this, a query for "restaurant" matched only
+                // OSM's bare `restaurant` subtype and skipped every
+                // Overture-enriched row. Any underscore-separated
+                // component that's already in expandedSubtypes means
+                // the record counts — so "pizza" matches
+                // `pizza_restaurant` and "restaurant" does too.
+                if !subtypeMatch, subtype.contains("_") {
+                    for part in subtype.split(separator: "_") {
+                        if expandedSubtypes.contains(String(part)) {
+                            subtypeMatch = true
+                            break
+                        }
+                    }
+                }
                 if !subtypeMatch {
                     // Last-chance name keyword match — covers the case
                     // where OSM tags a record `amenity=restaurant` but
@@ -921,6 +940,58 @@ public actor DefaultZimService: ZimService {
                          nameKeywords: ["memorial", "monument"]),
         "zoo":          (subtypes: ["zoo", "tourism"], nameKeywords: ["zoo", "aquarium"]),
         "library":      (subtypes: ["library"], nameKeywords: ["library"]),
+        // Niche-cuisine / format synonyms. Each maps to the standard
+        // OSM subtypes those places carry (restaurant, fast_food,
+        // cafe, bakery) plus name keywords for the amenity-subtype
+        // fallback. On-device repro: "Pizza near me" returned 0
+        // because `pizza` wasn't a synonym and there's no OSM
+        // `pizza` subtype — records lived under `restaurant`.
+        "pizza":        (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["pizza", "pizzeria"]),
+        "pizzeria":     (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["pizza", "pizzeria"]),
+        "sushi":        (subtypes: ["restaurant"],
+                         nameKeywords: ["sushi"]),
+        "burger":       (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["burger"]),
+        "ramen":        (subtypes: ["restaurant"],
+                         nameKeywords: ["ramen", "noodle"]),
+        "taco":         (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["taco", "tacos", "taqueria"]),
+        "tacos":        (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["taco", "tacos", "taqueria"]),
+        "bbq":          (subtypes: ["restaurant"],
+                         nameKeywords: ["bbq", "barbecue", "smokehouse"]),
+        "thai":         (subtypes: ["restaurant"],
+                         nameKeywords: ["thai"]),
+        "indian":       (subtypes: ["restaurant"],
+                         nameKeywords: ["indian", "curry"]),
+        "mexican":      (subtypes: ["restaurant", "fast_food"],
+                         nameKeywords: ["mexican", "taqueria"]),
+        "italian":      (subtypes: ["restaurant"],
+                         nameKeywords: ["italian", "pizzeria", "trattoria"]),
+        "chinese":      (subtypes: ["restaurant"],
+                         nameKeywords: ["chinese"]),
+        "japanese":     (subtypes: ["restaurant"],
+                         nameKeywords: ["japanese", "sushi", "ramen"]),
+        "korean":       (subtypes: ["restaurant"],
+                         nameKeywords: ["korean", "bbq"]),
+        "vietnamese":   (subtypes: ["restaurant"],
+                         nameKeywords: ["vietnamese", "pho"]),
+        "vegan":        (subtypes: ["restaurant", "cafe"],
+                         nameKeywords: ["vegan", "vegetarian"]),
+        "vegetarian":   (subtypes: ["restaurant", "cafe"],
+                         nameKeywords: ["vegan", "vegetarian"]),
+        "bakery":       (subtypes: ["bakery", "cafe"],
+                         nameKeywords: ["bakery", "patisserie", "bread"]),
+        "ice_cream":    (subtypes: ["ice_cream", "cafe"],
+                         nameKeywords: ["ice cream", "gelato", "frozen yogurt"]),
+        "diner":        (subtypes: ["restaurant"],
+                         nameKeywords: ["diner"]),
+        "brunch":       (subtypes: ["restaurant", "cafe"],
+                         nameKeywords: ["brunch", "breakfast"]),
+        "breakfast":    (subtypes: ["restaurant", "cafe"],
+                         nameKeywords: ["brunch", "breakfast"]),
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for

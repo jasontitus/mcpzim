@@ -157,6 +157,22 @@ case "$cmd" in
         [ $# -ge 3 ] || usage
         cloud_pull "$3"
         ;;
+      lastN)
+        # Pull the last N reports one after another. Useful when the
+        # user reported multiple issues in a row and I want to scan
+        # all of them at once.
+        n="${3:-3}"
+        ids=$(cloud_list | awk '{print $1}' | head -n "$n")
+        if [ -z "$ids" ]; then
+          echo "no cloud reports found" >&2
+          exit 1
+        fi
+        for id in $ids; do
+          echo "────────── $id ──────────"
+          cloud_pull "$id"
+          echo
+        done
+        ;;
       latest|"")
         gid=$(cloud_list | awk '{print $1}' | head -n 1)
         if [ -z "$gid" ]; then
