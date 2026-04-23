@@ -2600,6 +2600,37 @@ public final class ChatSession {
             return true
         } catch {
             debug("fast-path dispatch failed: \(error)", category: "Tool")
+            // Geocoding misses are deterministic — the LLM has no
+            // hidden knowledge of which places are in the loaded
+            // streetzim. Burning 15–20 s to have the model re-run
+            // the same tool with the same args and hit the same
+            // miss is pure latency cost with no better outcome.
+            // On-device repro (2026-04-22 gist 007b1a69): "Bars in
+            // north beach" with only a Palo Alto streetzim loaded
+            // — fast-path said `could not resolve`, LLM was called
+            // anyway, produced the same no-results message after
+            // 20 seconds. Short-circuit with a clear error for
+            // places/routing tools; keep the LLM retry for the
+            // article path where a different title guess can help.
+            let placesAndRouting: Set<String> = [
+                "near_named_place", "near_places", "nearby_stories",
+                "nearby_stories_at_place", "route_from_places",
+                "plan_driving_route", "what_is_here",
+            ]
+            let errText = String(describing: error)
+            let isGeocodeMiss = errText.contains("could not resolve")
+                || errText.contains("noMatch")
+                || errText.contains("no matching")
+            if placesAndRouting.contains(intent.toolName), isGeocodeMiss {
+                let subject = placeSubject(from: dictArgs) ?? "that place"
+                updateAssistant(
+                    "I can't find \"\(subject)\" in the loaded maps. "
+                    + "The current streetzim may not cover that area — "
+                    + "try a place within its region, or load a "
+                    + "streetzim that includes it."
+                )
+                return true
+            }
             if let idx = messages.indices.last,
                messages[idx].role == .assistant
             {
@@ -2608,6 +2639,17 @@ public final class ChatSession {
             }
             return false
         }
+    }
+
+    /// Pull whichever "place" identifier a places/routing tool was
+    /// called with so the fast-path error caption can quote it back
+    /// to the user. Keys we've shipped over the life of the adapter:
+    /// `place`, `destination`, `origin`, `query`.
+    private func placeSubject(from args: [String: Any]) -> String? {
+        for key in ["place", "destination", "origin", "query"] {
+            if let v = args[key] as? String, !v.isEmpty { return v }
+        }
+        return nil
     }
 
     // `synthesizePlacesReply` + its helpers moved to
