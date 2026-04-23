@@ -159,6 +159,17 @@ struct PlacesWebView: View {
                                 )
                             }
                         },
+                        onDirections: { place in
+                            // Close the list first so the route bubble
+                            // that `triggerDirectionsToCoord` appends
+                            // is what the user sees next.
+                            presentList = false
+                            session.triggerDirectionsToCoord(
+                                name: place.label,
+                                lat: place.lat,
+                                lon: place.lon
+                            )
+                        },
                         onDismiss: { presentList = false }
                     )
                 }
@@ -242,6 +253,7 @@ private struct PlacesListView: View {
     let payload: PlacesPayload
     let onSelect: (Int) -> Void
     let onReadArticle: (PlacesPayload.Place) -> Void
+    let onDirections: (PlacesPayload.Place) -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -298,6 +310,20 @@ private struct PlacesListView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        // Per-row Directions affordance — mirrors the
+                        // ↪ Directions button in the map-pin popup so
+                        // the user has the same one-tap route launch
+                        // from either surface (textual list vs. pin
+                        // hover).
+                        Button {
+                            onDirections(p)
+                        } label: {
+                            Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Directions to \(p.label)")
                     }
                 }
             }
