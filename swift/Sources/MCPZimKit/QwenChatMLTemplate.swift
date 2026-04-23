@@ -278,7 +278,27 @@ public struct QwenChatMLTemplate: ModelTemplate {
             with: "\"",
             options: .regularExpression
         )
-        // (4) Brace-balance clip repair (original behaviour).
+        // (4) Doubled opening quote right after `{` or `,`. Real
+        //     capture (Qwen 3 4B 4-bit, 2026-04-22):
+        //
+        //       {"name":"near_named_place","arguments":
+        //         {""place":"north beach","kinds":["bar"]}}
+        //
+        //     The model emitted a spurious empty `""` between the
+        //     opening brace and the first key. Grace condition:
+        //     after `{` (or `,` for subsequent keys that slipped the
+        //     whitespace-wedge rule) there's `""` immediately
+        //     followed by an identifier character. Collapse the
+        //     doubled quote back to one. Lookahead on
+        //     `[A-Za-z_]` keeps us from clobbering a legitimate
+        //     empty-string value like `{"tags":""` (followed by
+        //     `,` / `}`).
+        out = out.replacingOccurrences(
+            of: #"([{,])\s*""(?=[A-Za-z_])"#,
+            with: "$1\"",
+            options: .regularExpression
+        )
+        // (5) Brace-balance clip repair (original behaviour).
         let opens = out.filter { $0 == "{" }.count
         let closes = out.filter { $0 == "}" }.count
         if opens > closes {

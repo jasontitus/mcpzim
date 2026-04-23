@@ -203,6 +203,60 @@ final class QwenClippedToolCallTests: XCTestCase {
                        ["North Korea", "South Korea"])
     }
 
+    func testRepairsDoubledOpeningQuoteOnFirstKey() {
+        // Verbatim capture from the 2026-04-22 debug gist
+        // 59d19a5f…. Qwen emitted a spurious `""` after the
+        // nested object's opening `{`. Without the repair the
+        // strict JSONSerialization decode fails and the tool call
+        // silently drops.
+        let buffer = """
+        <tool_call>
+        {"name":"near_named_place","arguments":{""place":"north beach","kinds":["bar"],"radius_km":1}}
+        </tool_call>
+        """
+        let m = tpl.firstToolCall(in: buffer)
+        XCTAssertNotNil(m, "doubled opening quote should be repaired")
+        XCTAssertEqual(m?.name, "near_named_place")
+        let args = m?.arguments ?? [:]
+        XCTAssertEqual(args["place"] as? String, "north beach")
+        XCTAssertEqual(args["kinds"] as? [String], ["bar"])
+    }
+
+    func testRepairsDoubledOpeningQuoteCombinedWithWhitespaceWedge() {
+        // Second real capture. Same emission shape plus the
+        // whitespace-only-string wedge before subsequent keys —
+        // the pattern from "Museums near north beach". Both the
+        // `{""` and the `, " "key` forms need to be repaired
+        // in the same pass.
+        let buffer = """
+        <tool_call>
+        {"name":"near_named_place","arguments":{""place":"North Beach", " "kinds":["museum"], " "radius_km":1}}
+        </tool_call>
+        """
+        let m = tpl.firstToolCall(in: buffer)
+        XCTAssertNotNil(m)
+        XCTAssertEqual(m?.name, "near_named_place")
+        let args = m?.arguments ?? [:]
+        XCTAssertEqual(args["place"] as? String, "North Beach")
+        XCTAssertEqual(args["kinds"] as? [String], ["museum"])
+    }
+
+    func testRepairPreservesLegitimateEmptyStringValue() {
+        // Guard: the doubled-quote rule only fires when the
+        // doubled pair is followed by an IDENTIFIER char — an
+        // intentional empty string value (followed by `,`, `]`,
+        // or `}`) must survive untouched.
+        let buffer = """
+        <tool_call>
+        {"name":"search","arguments":{"query":"","kind":""}}
+        </tool_call>
+        """
+        let m = tpl.firstToolCall(in: buffer)
+        XCTAssertNotNil(m)
+        XCTAssertEqual(m?.arguments["query"] as? String, "")
+        XCTAssertEqual(m?.arguments["kind"] as? String, "")
+    }
+
     func testRepairLeavesLegitimateWhitespaceStringAlone() {
         // Guard for the splice repair: a whitespace-only string that
         // IS followed by a valid JSON delimiter is real and must
