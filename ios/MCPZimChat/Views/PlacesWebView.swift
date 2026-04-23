@@ -1133,26 +1133,24 @@ private func loadPlacesSpec(
       // user-visible thing.
       waitForMap(function(m) {
         \(userDotJS)
-        var hasHook = typeof window.streetzimRouting !== "undefined"
-                    && window.streetzimRouting !== null
-                    && typeof window.streetzimRouting.showPlaces === "function";
-        if (hasHook) {
-          try {
-            if (typeof window.streetzimRouting.setChromeVisibility === "function") {
-              window.streetzimRouting.setChromeVisibility({
-                search: false, controls: false, panel: false
-              });
-            }
-            window.streetzimRouting.showPlaces(placesData, { fitBounds: true, padding: 60 });
-            console.info("mcpzim places: via hook, " + placesData.length + " pins");
-          } catch (e) {
-            console.error("mcpzim places: hook showPlaces threw, falling back", e);
-            drawPinsDirect(m, placesData);
+        // Always render pins via drawPinsDirect so the click-to-popup
+        // goes through `buildMcpzimPopupHTML` — which has the ↪
+        // Directions / 📖 Wikipedia / ⤴ Share buttons. streetzim's
+        // `showPlaces` hook renders its OWN popup (just label +
+        // description, no Directions), which is what the user was
+        // seeing before. The hook's extra benefit was chrome-hiding;
+        // we still get that via setChromeVisibility directly.
+        try {
+          if (typeof window.streetzimRouting !== "undefined"
+              && window.streetzimRouting !== null
+              && typeof window.streetzimRouting.setChromeVisibility === "function")
+          {
+            window.streetzimRouting.setChromeVisibility({
+              search: false, controls: false, panel: false
+            });
           }
-        } else {
-          console.info("mcpzim places: hook missing, drawing pins directly on captured map");
-          drawPinsDirect(m, placesData);
-        }
+        } catch (e) { /* older ZIM / hook shape change — drawPins works regardless */ }
+        drawPinsDirect(m, placesData);
         \(ringJS)
       });
     })();
