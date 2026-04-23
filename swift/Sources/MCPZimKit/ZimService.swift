@@ -804,12 +804,29 @@ public actor DefaultZimService: ZimService {
                     }
                 }
                 if !subtypeMatch {
-                    // Last-chance name keyword match — covers the case
-                    // where OSM tags a record `amenity=restaurant` but
-                    // the streetzim generator only preserved
-                    // subtype=="amenity". "Sushi House" still reads
-                    // like a restaurant from the name.
-                    if needKeywordFallback && subtype == "amenity" {
+                    // Name-keyword fallback. Covers two cases:
+                    //   • OSM tags a record `amenity=restaurant` but
+                    //     streetzim kept subtype=="amenity".
+                    //     "Sushi House" still reads as a restaurant.
+                    //   • User queries a niche cuisine ("pizza") and
+                    //     the record's subtype is a generic bucket
+                    //     like `restaurant` or `fast_food`.
+                    //     "Round Table Pizza" (subtype=restaurant)
+                    //     should match; "Round Table Sushi" (same
+                    //     subtype) shouldn't.
+                    //
+                    // We require TWO things to accept:
+                    //   (a) the subtype is a known generic parent —
+                    //       specific subtypes like `italian_restaurant`
+                    //       weren't matched by the set or the
+                    //       component-split, so they genuinely aren't
+                    //       about this cuisine and shouldn't sneak
+                    //       through on a name keyword.
+                    //   (b) the record's NAME contains at least one
+                    //       keyword from the synonym's nameKeywords.
+                    if needKeywordFallback,
+                       Self.genericParentSubtypes.contains(subtype)
+                    {
                         let name = ((rec["n"] as? String) ?? (rec["name"] as? String) ?? "").lowercased()
                         var kw = false
                         for key in nameKeywords {
@@ -940,58 +957,59 @@ public actor DefaultZimService: ZimService {
                          nameKeywords: ["memorial", "monument"]),
         "zoo":          (subtypes: ["zoo", "tourism"], nameKeywords: ["zoo", "aquarium"]),
         "library":      (subtypes: ["library"], nameKeywords: ["library"]),
-        // Niche-cuisine / format synonyms. Each maps to the standard
-        // OSM subtypes those places carry (restaurant, fast_food,
-        // cafe, bakery) plus name keywords for the amenity-subtype
-        // fallback. On-device repro: "Pizza near me" returned 0
-        // because `pizza` wasn't a synonym and there's no OSM
-        // `pizza` subtype — records lived under `restaurant`.
-        "pizza":        (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["pizza", "pizzeria"]),
-        "pizzeria":     (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["pizza", "pizzeria"]),
-        "sushi":        (subtypes: ["restaurant"],
-                         nameKeywords: ["sushi"]),
-        "burger":       (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["burger"]),
-        "ramen":        (subtypes: ["restaurant"],
-                         nameKeywords: ["ramen", "noodle"]),
-        "taco":         (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["taco", "tacos", "taqueria"]),
-        "tacos":        (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["taco", "tacos", "taqueria"]),
-        "bbq":          (subtypes: ["restaurant"],
-                         nameKeywords: ["bbq", "barbecue", "smokehouse"]),
-        "thai":         (subtypes: ["restaurant"],
-                         nameKeywords: ["thai"]),
-        "indian":       (subtypes: ["restaurant"],
-                         nameKeywords: ["indian", "curry"]),
-        "mexican":      (subtypes: ["restaurant", "fast_food"],
-                         nameKeywords: ["mexican", "taqueria"]),
-        "italian":      (subtypes: ["restaurant"],
-                         nameKeywords: ["italian", "pizzeria", "trattoria"]),
-        "chinese":      (subtypes: ["restaurant"],
-                         nameKeywords: ["chinese"]),
-        "japanese":     (subtypes: ["restaurant"],
-                         nameKeywords: ["japanese", "sushi", "ramen"]),
-        "korean":       (subtypes: ["restaurant"],
-                         nameKeywords: ["korean", "bbq"]),
-        "vietnamese":   (subtypes: ["restaurant"],
-                         nameKeywords: ["vietnamese", "pho"]),
-        "vegan":        (subtypes: ["restaurant", "cafe"],
-                         nameKeywords: ["vegan", "vegetarian"]),
-        "vegetarian":   (subtypes: ["restaurant", "cafe"],
-                         nameKeywords: ["vegan", "vegetarian"]),
-        "bakery":       (subtypes: ["bakery", "cafe"],
-                         nameKeywords: ["bakery", "patisserie", "bread"]),
-        "ice_cream":    (subtypes: ["ice_cream", "cafe"],
-                         nameKeywords: ["ice cream", "gelato", "frozen yogurt"]),
-        "diner":        (subtypes: ["restaurant"],
-                         nameKeywords: ["diner"]),
-        "brunch":       (subtypes: ["restaurant", "cafe"],
-                         nameKeywords: ["brunch", "breakfast"]),
-        "breakfast":    (subtypes: ["restaurant", "cafe"],
-                         nameKeywords: ["brunch", "breakfast"]),
+        // Niche-cuisine / format synonyms.
+        //
+        // `subtypes` is DELIBERATELY EMPTY for these. We never want a
+        // "pizza near me" query to match every restaurant in the set
+        // — it should only match:
+        //   1. Overture-style `pizza_restaurant` / `pizza_takeout` /
+        //      etc.  Caught by the underscore-component-split matcher
+        //      in `nearPlaces`: "pizza" is already in expandedSubtypes
+        //      (from the user's raw filter) so any compound subtype
+        //      whose components include "pizza" passes.
+        //   2. Records whose subtype is a generic bucket
+        //      (`restaurant`, `fast_food`, `cafe`, `amenity`, …) AND
+        //      whose NAME contains one of the keywords — e.g. OSM's
+        //      plain `restaurant` subtype on "Round Table Pizza".
+        //      Driven by `nameKeywords` + the broadened
+        //      generic-bucket fallback in `nearPlaces`.
+        // An empty `subtypes` set keeps us honest — we only accept
+        // evidence-backed matches.
+        "pizza":        (subtypes: [], nameKeywords: ["pizza", "pizzeria"]),
+        "pizzeria":     (subtypes: [], nameKeywords: ["pizza", "pizzeria"]),
+        "sushi":        (subtypes: [], nameKeywords: ["sushi"]),
+        "burger":       (subtypes: [], nameKeywords: ["burger"]),
+        "ramen":        (subtypes: [], nameKeywords: ["ramen", "noodle"]),
+        "taco":         (subtypes: [], nameKeywords: ["taco", "tacos", "taqueria"]),
+        "tacos":        (subtypes: [], nameKeywords: ["taco", "tacos", "taqueria"]),
+        "bbq":          (subtypes: [], nameKeywords: ["bbq", "barbecue", "smokehouse"]),
+        "thai":         (subtypes: [], nameKeywords: ["thai"]),
+        "indian":       (subtypes: [], nameKeywords: ["indian", "curry"]),
+        "mexican":      (subtypes: [], nameKeywords: ["mexican", "taqueria"]),
+        "italian":      (subtypes: [], nameKeywords: ["italian", "pizzeria", "trattoria"]),
+        "chinese":      (subtypes: [], nameKeywords: ["chinese"]),
+        "japanese":     (subtypes: [], nameKeywords: ["japanese", "sushi", "ramen"]),
+        "korean":       (subtypes: [], nameKeywords: ["korean"]),
+        "vietnamese":   (subtypes: [], nameKeywords: ["vietnamese", "pho"]),
+        "vegan":        (subtypes: [], nameKeywords: ["vegan", "vegetarian"]),
+        "vegetarian":   (subtypes: [], nameKeywords: ["vegan", "vegetarian"]),
+        "bakery":       (subtypes: ["bakery"], nameKeywords: ["bakery", "patisserie"]),
+        "ice_cream":    (subtypes: ["ice_cream"], nameKeywords: ["ice cream", "gelato", "frozen yogurt"]),
+        "diner":        (subtypes: [], nameKeywords: ["diner"]),
+        "brunch":       (subtypes: [], nameKeywords: ["brunch", "breakfast"]),
+        "breakfast":    (subtypes: [], nameKeywords: ["brunch", "breakfast"]),
+    ]
+
+    /// Generic OSM / OMT / Overture subtype buckets that don't carry
+    /// enough specificity on their own — when the user's query is a
+    /// niche like "pizza" or "sushi" we require the record's NAME to
+    /// back up the claim before matching. Records with a specific
+    /// subtype (`italian_restaurant`, `coffee_shop`, …) don't need
+    /// the name check — the subtype already answers the question.
+    static let genericParentSubtypes: Set<String> = [
+        "amenity", "restaurant", "fast_food", "food_court",
+        "cafe", "shop", "tourism", "attraction", "leisure",
+        "historic", "landuse", "poi",
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for
