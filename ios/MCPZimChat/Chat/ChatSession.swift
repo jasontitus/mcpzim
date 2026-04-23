@@ -1532,6 +1532,23 @@ public final class ChatSession {
             guard let self else { return }
             defer { Task { @MainActor [weak self] in self?.kvPrewarmTask = nil } }
             guard let adapter = self.adapter else { return }
+            let template = self.selectedModel.template
+            let cat = template.logCategory
+            // Skip the launch-time prewarm for families whose MLX
+            // model can't safely reuse the KV cache anyway. On
+            // Gemma 3 our `hasStaleScratchStateBug` guard forces
+            // full prefill every turn (see Gemma4Provider.generate
+            // + mlx-swift-lm#157). The prewarm is burning 2 GB
+            // transient RSS (observed 2026-04-23 on device — 5 GB
+            // peak on launch, memory warnings flooding) for a cache
+            // that will never be reused. Skip it.
+            if template.hasStaleScratchStateBug {
+                self.debug(
+                    "skipping KV prewarm — \(cat) forces full prefill every turn",
+                    category: cat
+                )
+                return
+            }
             let registry = await adapter.registry
             let toolDecls = await MainActor.run { self.toolDeclarations(registry: registry) }
             let preamble = await MainActor.run { self.systemMessageText(for: .topical) }
@@ -1539,12 +1556,10 @@ public final class ChatSession {
             // with: `<bos>` + system-turn. No user turn, no trailing
             // model-open — the upcoming send's encode will land on
             // the same first N tokens and LCP-hit.
-            let template = self.selectedModel.template
             let systemTurn = template.formatSystemTurn(
                 systemMessage: preamble, tools: toolDecls
             )
             let prompt = template.bos + systemTurn
-            let cat = template.logCategory
             self.debug("prewarming KV cache in background…", category: cat)
             do {
                 try await gemma.primeCache(prompt: prompt)
