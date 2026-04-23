@@ -33,11 +33,22 @@ public struct PlacesPayload: Equatable, Sendable {
         /// Human-readable Wikipedia title (`HP Garage`), distinct
         /// from the raw `wiki` OSM tag (`en:HP_Garage`).
         public let wikiTitle: String?
+        /// Overture-places enrichment fields. Populated when the
+        /// streetzim was built with `--overture-places`; each is
+        /// independent (a row may have a phone but no website, or
+        /// vice versa). Rendered as compact chips in the pin popup
+        /// and list row so the user can tap to call / open a site
+        /// without leaving the map surface.
+        public let website: String?
+        public let phone: String?
+        public let brand: String?
 
         public init(
             lat: Double, lon: Double,
             label: String, description: String,
-            wikiPath: String? = nil, wikiTitle: String? = nil
+            wikiPath: String? = nil, wikiTitle: String? = nil,
+            website: String? = nil, phone: String? = nil,
+            brand: String? = nil
         ) {
             self.lat = lat
             self.lon = lon
@@ -45,6 +56,9 @@ public struct PlacesPayload: Equatable, Sendable {
             self.description = description
             self.wikiPath = wikiPath
             self.wikiTitle = wikiTitle
+            self.website = website
+            self.phone = phone
+            self.brand = brand
         }
     }
 
@@ -104,6 +118,14 @@ public func parsePlacesJSON(rawResult: String) -> PlacesPayload {
             let excerpt = (r["excerpt"] as? String) ?? ""
             let wikiPath = (r["wiki_path"] as? String)?.nilIfEmpty
             let wikiTitle = (r["wiki_title"] as? String)?.nilIfEmpty
+            // Overture-places enrichment. `ws` is the website
+            // (renamed from `w` — `w` stays reserved for Wikipedia
+            // tags). `p` is a phone, `brand` is the primary brand
+            // name. All optional — older streetzims without
+            // Overture ingestion just leave them nil.
+            let website = (r["ws"] as? String)?.nilIfEmpty
+            let phone = (r["p"] as? String)?.nilIfEmpty
+            let brand = (r["brand"] as? String)?.nilIfEmpty
             // Description priority: Wikipedia excerpt (when the tool
             // enriched this row) > kind · distance. The popup + list
             // both read this field verbatim.
@@ -122,7 +144,8 @@ public func parsePlacesJSON(rawResult: String) -> PlacesPayload {
             places.append(.init(
                 lat: lat, lon: lon,
                 label: name, description: description,
-                wikiPath: wikiPath, wikiTitle: wikiTitle
+                wikiPath: wikiPath, wikiTitle: wikiTitle,
+                website: website, phone: phone, brand: brand
             ))
         }
     }

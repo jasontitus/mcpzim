@@ -883,6 +883,9 @@ private func loadPlacesSpec(
         ]
         if let wp = p.wikiPath { row["wikiPath"] = wp }
         if let wt = p.wikiTitle { row["wikiTitle"] = wt }
+        if let ws = p.website   { row["website"]  = ws }
+        if let ph = p.phone     { row["phone"]    = ph }
+        if let br = p.brand     { row["brand"]    = br }
         placeObjs.append(row)
     }
     let placesJSON: String = {
@@ -955,15 +958,23 @@ private func loadPlacesSpec(
       // two icon buttons (➤ Directions, ⤴ Share). `esc` escapes
       // angle brackets so the label/description can't close the div
       // prematurely.
-      window.buildMcpzimPopupHTML = function(label, description, coords, wikiPath) {
+      window.buildMcpzimPopupHTML = function(label, description, coords, wikiPath, extras) {
         function esc(s) { return String(s || "").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+        function escAttr(s) { return String(s || "").replace(/"/g, "&quot;"); }
         var lon = coords[0], lat = coords[1];
         var safeLabel = esc(label);
         var safeDesc = esc(description);
         var jsLabel = String(label || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
         var jsPath = String(wikiPath || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
-        var html = '<div style="font-family:var(--ui-font,system-ui);max-width:260px;">'
+        var website = (extras && extras.website) || "";
+        var phone   = (extras && extras.phone)   || "";
+        var brand   = (extras && extras.brand)   || "";
+        var html = '<div style="font-family:var(--ui-font,system-ui);max-width:280px;">'
           + '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + safeLabel + '</div>';
+        if (brand && brand !== label) {
+          html += '<div style="font-size:11px;color:#6b7280;font-style:italic;margin-bottom:4px;">'
+            + esc(brand) + '</div>';
+        }
         if (description) {
           html += '<div style="font-size:12px;color:#555;line-height:1.35;margin-bottom:6px;">'
             + safeDesc + '</div>';
@@ -972,6 +983,23 @@ private func loadPlacesSpec(
         html += '<button type="button" onclick="return window.mcpzimPopupAction(\\'directions\\', \\'' + jsLabel + '\\', ' + lat + ', ' + lon + ');"'
           + ' style="background:#2563eb;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
           + '↪ Directions</button>';
+        // Website button — opens the external URL in the default
+        // browser. Overture's places theme supplies this via the
+        // `ws` field (renamed from `w` to avoid colliding with the
+        // Wikipedia tag); plumbed through PlacesPayload.Place.website
+        // to here.
+        if (website) {
+          html += '<a href="' + escAttr(website) + '" target="_blank" rel="noopener noreferrer"'
+            + ' style="background:#0ea5e9;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;">'
+            + '🌐 Website</a>';
+        }
+        // Phone button — `tel:` URI triggers the dialer when tapped
+        // in a WKWebView.
+        if (phone) {
+          html += '<a href="tel:' + escAttr(phone) + '"'
+            + ' style="background:#22c55e;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;">'
+            + '📞 Call</a>';
+        }
         if (wikiPath) {
           // "Read article" dispatches `get_article_section(lead)`
           // via the native bridge — new chat turn with the article's
@@ -1021,7 +1049,10 @@ private func loadPlacesSpec(
               idx: i,
               label: p.label || "",
               description: p.description || "",
-              wikiPath: p.wikiPath || ""
+              wikiPath: p.wikiPath || "",
+              website: p.website || "",
+              phone: p.phone || "",
+              brand: p.brand || ""
             }
           };
         }).filter(function(f) {
@@ -1070,7 +1101,12 @@ private func loadPlacesSpec(
             var labelRaw = String(f.properties.label || "");
             var descRaw = String(f.properties.description || "");
             var wikiPath = String(f.properties.wikiPath || "");
-            var html = buildMcpzimPopupHTML(labelRaw, descRaw, coords, wikiPath);
+            var extras = {
+              website: String(f.properties.website || ""),
+              phone: String(f.properties.phone || ""),
+              brand: String(f.properties.brand || "")
+            };
+            var html = buildMcpzimPopupHTML(labelRaw, descRaw, coords, wikiPath, extras);
             var popup = new maplibregl.Popup({ offset: 14 })
               .setLngLat(coords).setHTML(html).addTo(m);
             window.__mcpzimPopup = popup;
