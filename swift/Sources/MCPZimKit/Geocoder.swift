@@ -92,7 +92,11 @@ public enum Geocoder {
             h ^= UInt32(b)
             h = h &* 0x01000193
         }
-        return Int(h) % nBuckets
+        // Take the modulo in UInt32 space before converting, so we never
+        // rely on `Int(h)` being non-negative (it is on 64-bit Swift
+        // today, but would break if the hash is ever widened to UInt64).
+        precondition(nBuckets > 0, "nBuckets must be > 0")
+        return Int(h % UInt32(nBuckets))
     }
 
     /// Expand a query prefix through the manifest's ``sub_chunks``

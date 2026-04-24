@@ -314,6 +314,51 @@ final class SZRGSpatialTests: XCTestCase {
         let loaded = await sg.cellsLoaded
         XCTAssertLessThanOrEqual(loaded, 1)
     }
+
+    // MARK: - Adversarial SZCI / SZRC parser inputs
+
+    /// A crafted SZCI with numNodes = 0xFFFFFFFF should throw a truncated
+    /// error — NOT trap on Int overflow or read off the end of the buffer.
+    func testParseIndexRejectsAdversarialNumNodes() {
+        var d = Data()
+        d.append(contentsOf: [0x53, 0x5A, 0x43, 0x49])       // SZCI
+        appendU32(&d, 1)                                       // version
+        appendU32(&d, 0xFFFFFFFF)                              // numNodes (hostile)
+        appendU32(&d, 0)                                       // numEdges
+        appendU32(&d, 0)                                       // numNames
+        appendU32(&d, 0)                                       // namesBytes
+        appendU32(&d, 0)                                       // numCells
+        appendI32(&d, 10)                                      // cellScale
+        // Header is complete (32 B) but no room for nodes; parser must
+        // reject before allocating 34 GB of UInt32s.
+        XCTAssertThrowsError(try SZCIIndex.parse(d)) { err in
+            guard case SZCIError.truncated(let msg) = err else {
+                return XCTFail("expected truncated, got \(err)")
+            }
+            XCTAssertTrue(msg.contains("nodes"), "got: \(msg)")
+        }
+    }
+
+    /// Same hostile pattern inside an SZRC cell payload: edgeCount
+    /// 0xFFFFFFFF would walk past the buffer end if unchecked.
+    func testParseCellRejectsAdversarialEdgeCount() {
+        var d = Data()
+        d.append(contentsOf: [0x53, 0x5A, 0x52, 0x43])        // SZRC
+        appendU32(&d, 1)                                       // version
+        appendU32(&d, 0)                                       // cellId
+        appendU32(&d, 0)                                       // nodeCount
+        appendU32(&d, 0xFFFFFFFF)                              // edgeCount (hostile)
+        appendU32(&d, 0)                                       // geomCount
+        appendU32(&d, 0)                                       // geomBytes
+        // Single adj offset (nodeCount + 1 = 1 entry, 4 B).
+        appendU32(&d, 0)
+        XCTAssertThrowsError(try SZRCCell.parse(d)) { err in
+            guard case SZCIError.truncated(let msg) = err else {
+                return XCTFail("expected truncated, got \(err)")
+            }
+            XCTAssertTrue(msg.contains("edges"), "got: \(msg)")
+        }
+    }
 }
 
 

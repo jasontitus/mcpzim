@@ -285,4 +285,110 @@ final class SZRGv5AndChunkedTests: XCTestCase {
         XCTAssertEqual(g.numNodes, 4)
         XCTAssertEqual(g.numEdges, 4)
     }
+
+    // MARK: - Hostile-manifest guardrails
+
+    /// A torn or hostile manifest with an absurd `total_bytes` must be
+    /// rejected before any allocation — otherwise `reserveCapacity` on a
+    /// 10 GB value would OOM iOS the moment anyone tried to open the
+    /// ZIM.
+    func testChunkedReassemblyRejectsAbsurdTotalBytes() throws {
+        let manifest: [String: Any] = [
+            "schema": 1,
+            "total_bytes": 9_999_999_999,
+            "chunks": [],
+        ]
+        let md = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(
+            try SZRGChunked.reassembleChunked(manifest: md) { _ in Data() }
+        ) { err in
+            guard case SZRGError.chunkedReassembly(let m) = err else {
+                return XCTFail("expected chunkedReassembly, got \(err)")
+            }
+            XCTAssertTrue(m.contains("total_bytes"), "got: \(m)")
+        }
+    }
+
+    func testChunkedReassemblyRejectsNegativeTotalBytes() throws {
+        let manifest: [String: Any] = [
+            "schema": 1,
+            "total_bytes": -1,
+            "chunks": [],
+        ]
+        let md = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(
+            try SZRGChunked.reassembleChunked(manifest: md) { _ in Data() }
+        ) { err in
+            guard case SZRGError.chunkedReassembly(let m) = err else {
+                return XCTFail("expected chunkedReassembly, got \(err)")
+            }
+            XCTAssertTrue(m.contains("total_bytes"), "got: \(m)")
+        }
+    }
+
+    func testChunkedReassemblyRejectsTooManyChunks() throws {
+        // Each entry tiny so the test itself stays fast; point is the count
+        // cap kicks in before we even touch the data.
+        var chunks: [[String: Any]] = []
+        for i in 0...SZRGChunked.maxChunks {
+            chunks.append(["path": "c\(i).bin", "bytes": 1])
+        }
+        let manifest: [String: Any] = [
+            "schema": 1,
+            "total_bytes": chunks.count,
+            "chunks": chunks,
+        ]
+        let md = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(
+            try SZRGChunked.reassembleChunked(manifest: md) { _ in Data([0]) }
+        ) { err in
+            guard case SZRGError.chunkedReassembly(let m) = err else {
+                return XCTFail("expected chunkedReassembly, got \(err)")
+            }
+            XCTAssertTrue(m.contains("chunk count"), "got: \(m)")
+        }
+    }
+
+    func testChunkedReassemblyRejectsChunkSumExceedsTotal() throws {
+        // Manifest claims 50 total bytes but lists three 30-byte chunks
+        // summing to 90. Fail BEFORE loading anything — the writer would
+        // never emit this, so it signals corruption or attack.
+        let manifest: [String: Any] = [
+            "schema": 1,
+            "total_bytes": 50,
+            "chunks": [
+                ["path": "a.bin", "bytes": 30],
+                ["path": "b.bin", "bytes": 30],
+                ["path": "c.bin", "bytes": 30],
+            ],
+        ]
+        let md = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(
+            try SZRGChunked.reassembleChunked(manifest: md) { _ in Data(count: 30) }
+        ) { err in
+            guard case SZRGError.chunkedReassembly(let m) = err else {
+                return XCTFail("expected chunkedReassembly, got \(err)")
+            }
+            XCTAssertTrue(m.contains("sum of chunk bytes"), "got: \(m)")
+        }
+    }
+
+    func testChunkedReassemblyRejectsChunkBytesOverflow() throws {
+        let manifest: [String: Any] = [
+            "schema": 1,
+            "total_bytes": 1,
+            "chunks": [
+                ["path": "a.bin", "bytes": SZRGChunked.maxChunkBytes + 1],
+            ],
+        ]
+        let md = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(
+            try SZRGChunked.reassembleChunked(manifest: md) { _ in Data() }
+        ) { err in
+            guard case SZRGError.chunkedReassembly(let m) = err else {
+                return XCTFail("expected chunkedReassembly, got \(err)")
+            }
+            XCTAssertTrue(m.contains("bytes"), "got: \(m)")
+        }
+    }
 }

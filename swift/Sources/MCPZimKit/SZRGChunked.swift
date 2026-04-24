@@ -34,6 +34,15 @@ import Foundation
 
 
 public enum SZRGChunked {
+    // Hard caps so a malformed or hostile manifest can't drive the iOS
+    // process into OOM before any payload is even read. The writer emits
+    // ~20-30 chunks for a continent-scale ZIM at ~256 MB each (cluster
+    // ceiling), so 256 chunks × 2 GB each is well above any legitimate
+    // value and safely under iOS's per-process memory ceiling.
+    public static let maxChunks = 256
+    public static let maxChunkBytes = 2 * 1024 * 1024 * 1024   // 2 GB
+    public static let maxTotalBytes = 4 * 1024 * 1024 * 1024   // 4 GB
+
     /// Parse the manifest, pull every chunk through `loader`, concatenate,
     /// and verify. `loader(path)` receives each chunk's manifest path
     /// (e.g. `"graph-chunk-0000.bin"`) — the caller maps that to a ZIM
@@ -65,6 +74,32 @@ public enum SZRGChunked {
             throw SZRGError.chunkedReassembly(
                 "unsupported manifest schema \(m.schema)"
             )
+        }
+        if m.total_bytes < 0 || m.total_bytes > maxTotalBytes {
+            throw SZRGError.chunkedReassembly(
+                "total_bytes \(m.total_bytes) outside [0, \(maxTotalBytes)]"
+            )
+        }
+        if m.chunks.count > maxChunks {
+            throw SZRGError.chunkedReassembly(
+                "chunk count \(m.chunks.count) exceeds \(maxChunks)"
+            )
+        }
+        // Per-chunk size sanity + overflow-safe sum check against total_bytes.
+        var declaredSum = 0
+        for ch in m.chunks {
+            if ch.bytes < 0 || ch.bytes > maxChunkBytes {
+                throw SZRGError.chunkedReassembly(
+                    "chunk \(ch.path) bytes \(ch.bytes) outside [0, \(maxChunkBytes)]"
+                )
+            }
+            let (sum, overflow) = declaredSum.addingReportingOverflow(ch.bytes)
+            if overflow || sum > m.total_bytes {
+                throw SZRGError.chunkedReassembly(
+                    "sum of chunk bytes exceeds manifest total_bytes \(m.total_bytes)"
+                )
+            }
+            declaredSum = sum
         }
 
         var out = Data()

@@ -56,6 +56,29 @@ public enum SZCIError: Error, CustomStringConvertible {
 }
 
 
+/// Bounds-check a declared length BEFORE looping over it. Parse inputs
+/// come from ZIM blobs that may be corrupt or adversarial — a raw
+/// `UInt32` count of 0xFFFFFFFF would otherwise overflow Int when
+/// multiplied by element stride or walk past the buffer end. Throws
+/// `SZCIError.truncated` with a descriptive label on overflow or
+/// insufficient remaining bytes, so the caller can skip the ZIM
+/// gracefully instead of trapping.
+@inline(__always)
+internal func requireBytes(
+    _ count: Int, perEntry: Int, remaining: Int, label: String
+) throws {
+    if count < 0 {
+        throw SZCIError.truncated("\(label): negative count \(count)")
+    }
+    let (needed, overflow) = count.multipliedReportingOverflow(by: perEntry)
+    if overflow || needed > remaining {
+        throw SZCIError.truncated(
+            "\(label): needs \(count)×\(perEntry) bytes, have \(remaining)"
+        )
+    }
+}
+
+
 /// Eager-loaded spatial index. Mirrors
 /// streetzim/tests/szrg_spatial.SZCIIndex.
 public struct SZCIIndex: Sendable {
@@ -181,7 +204,16 @@ public actor SpatialGraph {
 
     private var cells: [Int: SZRCCell] = [:]
     private var inFlight: [Int: Task<SZRCCell, Error>] = [:]
-    private var lru: [Int] = []
+    /// Monotonic access counter: each hit/load stamps the cell's entry
+    /// in `accessTime`. O(1) touch on hit; eviction pays one O(cells)
+    /// min-scan on miss when the cache is full (n = cacheLimit is
+    /// small — 32 by default — so that scan is dwarfed by the fetch +
+    /// parse cost that triggered it). Earlier revision used an
+    /// `lru: [Int]` with `firstIndex(of:) + remove(at:)` on every hit,
+    /// which is O(n) per access — A* hammers the same cells thousands
+    /// of times per route so that added up.
+    private var accessTime: [Int: UInt64] = [:]
+    private var clock: UInt64 = 0
     private let cacheLimit: Int
 
     /// Caller-supplied async fetcher. Receives a cell_id, returns the
@@ -193,6 +225,8 @@ public actor SpatialGraph {
         cacheLimit: Int = 32,
         fetch: @escaping @Sendable (Int) async throws -> Data
     ) {
+        precondition(cacheLimit > 0,
+                     "SpatialGraph cacheLimit must be > 0 (got \(cacheLimit))")
         self.index = index
         self.cacheLimit = cacheLimit
         self.fetch = fetch
@@ -239,15 +273,16 @@ public actor SpatialGraph {
 
     private func ensureCell(_ cid: Int) async throws -> SZRCCell {
         if let c = cells[cid] {
-            // LRU touch.
-            if let idx = lru.firstIndex(of: cid) {
-                lru.remove(at: idx)
-            }
-            lru.append(cid)
+            clock &+= 1
+            accessTime[cid] = clock
             return c
         }
         if let pending = inFlight[cid] {
-            return try await pending.value
+            let cell = try await pending.value
+            // Touch on wait-hit so concurrent waiters keep the cell warm.
+            clock &+= 1
+            accessTime[cid] = clock
+            return cell
         }
         let task = Task { @Sendable in
             let data = try await self.fetch(cid)
@@ -262,10 +297,19 @@ public actor SpatialGraph {
             let cell = try await task.value
             inFlight[cid] = nil
             cells[cid] = cell
-            lru.append(cid)
+            clock &+= 1
+            accessTime[cid] = clock
             if cells.count > cacheLimit {
-                let evict = lru.removeFirst()
+                // Scan for oldest access — O(cacheLimit), triggered only
+                // on a miss past the cache threshold. Far rarer than hits.
+                var evict = cid
+                var oldest = clock
+                for (k, t) in accessTime where t < oldest {
+                    oldest = t
+                    evict = k
+                }
                 cells[evict] = nil
+                accessTime[evict] = nil
             }
             return cell
         } catch {
@@ -297,6 +341,14 @@ public extension SZCIIndex {
             let cellScale = SZRGInt.readInt32LE(raw, at: 28)
 
             var off = 32
+            // Each declared-size field below drives a loop over an
+            // attacker-controllable count. Validate the total bytes
+            // needed stays inside the buffer BEFORE looping, using
+            // overflow-safe multiplication — a crafted `numNodes =
+            // 0xFFFFFFFF` otherwise either traps on Int overflow or
+            // walks off the end of `raw`.
+            try requireBytes(numNodes, perEntry: 8, remaining: raw.count - off,
+                             label: "nodes")
             var nodes: [Int32] = []
             nodes.reserveCapacity(numNodes * 2)
             for _ in 0..<(numNodes * 2) {
@@ -304,6 +356,8 @@ public extension SZCIIndex {
                 off += 4
             }
 
+            try requireBytes(numCells, perEntry: 20, remaining: raw.count - off,
+                             label: "cells")
             var cellLat = [Int32](); cellLat.reserveCapacity(numCells)
             var cellLon = [Int32](); cellLon.reserveCapacity(numCells)
             var cellNC = [UInt32](); cellNC.reserveCapacity(numCells)
@@ -323,11 +377,15 @@ public extension SZCIIndex {
                 off += 20
             }
 
+            try requireBytes(numNames + 1, perEntry: 4, remaining: raw.count - off,
+                             label: "name offsets")
             var nameOffsets = [UInt32](); nameOffsets.reserveCapacity(numNames + 1)
             for _ in 0...numNames {
                 nameOffsets.append(SZRGInt.readUInt32LE(raw, at: off))
                 off += 4
             }
+            try requireBytes(namesBytes, perEntry: 1, remaining: raw.count - off,
+                             label: "names blob")
             var namesBlob = [UInt8](); namesBlob.reserveCapacity(namesBytes)
             for i in 0..<namesBytes {
                 namesBlob.append(raw[off + i])
@@ -373,26 +431,36 @@ public extension SZRCCell {
             let geomBytes = Int(SZRGInt.readUInt32LE(raw, at: 24))
             var off = 28
 
+            try requireBytes(nodeCount, perEntry: 4, remaining: raw.count - off,
+                             label: "cell nodes")
             var cellNodes = [UInt32](); cellNodes.reserveCapacity(nodeCount)
             for _ in 0..<nodeCount {
                 cellNodes.append(SZRGInt.readUInt32LE(raw, at: off))
                 off += 4
             }
+            try requireBytes(nodeCount + 1, perEntry: 4, remaining: raw.count - off,
+                             label: "cell adj")
             var cellAdj = [UInt32](); cellAdj.reserveCapacity(nodeCount + 1)
             for _ in 0...nodeCount {
                 cellAdj.append(SZRGInt.readUInt32LE(raw, at: off))
                 off += 4
             }
+            try requireBytes(edgeCount, perEntry: 20, remaining: raw.count - off,
+                             label: "cell edges")
             var edges = [UInt32](); edges.reserveCapacity(edgeCount * 5)
             for _ in 0..<(edgeCount * 5) {
                 edges.append(SZRGInt.readUInt32LE(raw, at: off))
                 off += 4
             }
+            try requireBytes(geomCount + 1, perEntry: 4, remaining: raw.count - off,
+                             label: "geom offsets")
             var geomOffsets = [UInt32](); geomOffsets.reserveCapacity(geomCount + 1)
             for _ in 0...geomCount {
                 geomOffsets.append(SZRGInt.readUInt32LE(raw, at: off))
                 off += 4
             }
+            try requireBytes(geomBytes, perEntry: 1, remaining: raw.count - off,
+                             label: "geom blob")
             var geomBlob = [UInt8](); geomBlob.reserveCapacity(geomBytes)
             for i in 0..<geomBytes {
                 geomBlob.append(raw[off + i])
