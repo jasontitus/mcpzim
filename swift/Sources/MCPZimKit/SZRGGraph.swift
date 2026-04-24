@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: MIT
 //
-// Parser for streetzim's SZRG v2 binary routing graph (entry
+// Parser for streetzim's SZRG binary routing graph (entry
 // "routing-data/graph.bin" inside the ZIM). Byte layout mirrors the writer in
 // streetzim/create_osm_zim.py and the JS reader in resources/viewer/index.html.
 // All multi-byte integers are little-endian.
+//
+// Supports:
+//   * v2 / v3 / v4 — everything inline in one buffer (legacy path).
+//   * v5           — "split" layout. Main buffer has nodes/edges/names only;
+//                    geom_offsets + geom_blob move to a companion entry
+//                    "routing-data/graph-geoms.bin" (SZGM v1). A caller can
+//                    parse with `geomsData: nil` to skip geoms (what mcpzim
+//                    does today), or pass the SZGM buffer to hydrate them.
+//   * chunked      — either graph.bin or graph-geoms.bin can be split into
+//                    N byte-range entries plus a JSON manifest. See
+//                    `reassembleChunked(manifest:loader:)`.
 //
 // The parser is zero-copy: it reads everything via `Data.withUnsafeBytes`
 // into raw pointers and offsets, never slicing `Data` itself. The earlier
@@ -22,6 +33,12 @@ public enum SZRGError: Error, CustomStringConvertible {
     /// parsed header) to diagnose format drift — e.g. an unexpected
     /// edge-stride on a future SZRG version.
     case truncatedAt(String, pos: Int, size: Int, header: String)
+    /// SZGM companion buffer doesn't agree with the main graph's numGeoms
+    /// or has an unrecognised header. Signals a mis-paired upload.
+    case companionMismatch(String)
+    /// Chunked-layout reassembly failed: manifest missing a field, chunk
+    /// payload disagreed with the manifest, or sha256 didn't match.
+    case chunkedReassembly(String)
 
     public var description: String {
         switch self {
@@ -31,6 +48,8 @@ public enum SZRGError: Error, CustomStringConvertible {
         case .truncated(let s): return "truncated \(s)"
         case .truncatedAt(let s, let pos, let size, let hdr):
             return "truncated \(s) at pos=\(pos) size=\(size) header=[\(hdr)]"
+        case .companionMismatch(let m): return "SZGM companion mismatch: \(m)"
+        case .chunkedReassembly(let m): return "chunked reassembly: \(m)"
         }
     }
 }
@@ -79,7 +98,16 @@ public struct SZRGGraph: Sendable {
     /// around 3 s of parse time. Routing still works because A* only needs
     /// node lat/lon + edge distances; the LLM-facing `polyline` field in
     /// the route result falls back to node-sequence coordinates.
-    public static func parse(_ data: Data, decodeGeoms: Bool = true) throws -> SZRGGraph {
+    ///
+    /// For SZRG v5 (split layout) the per-edge polyline blob lives in a
+    /// separate `routing-data/graph-geoms.bin` (SZGM v1) entry. If you
+    /// want decoded polylines, pass that companion buffer as `geomsData`;
+    /// otherwise leave it `nil` and geoms come back as empty placeholders.
+    public static func parse(
+        _ data: Data,
+        geomsData: Data? = nil,
+        decodeGeoms: Bool = true
+    ) throws -> SZRGGraph {
         guard data.count >= 32 else { throw SZRGError.tooSmall }
         return try data.withUnsafeBytes { raw -> SZRGGraph in
             var p = RawCursor(base: raw, count: data.count, pos: 0)
@@ -101,7 +129,12 @@ public struct SZRGGraph: Sendable {
             //     warnings graduate out of the design doc in
             //     streetzim/docs/driving-mode-road-class-warnings.md, widen
             //     the graph struct to carry it.
-            guard version == 2 || version == 3 || version == 4 else {
+            // v5: same edge layout as v4, but geom_offsets + geom_blob are
+            //     hoisted out of this buffer into a companion SZGM entry
+            //     (see `parseSZGM`). The in-header geomBytes field is 0 as
+            //     a sentinel; numGeoms still holds the real count so edge
+            //     `geom_idx` values stay meaningful.
+            guard version == 2 || version == 3 || version == 4 || version == 5 else {
                 throw SZRGError.unsupportedVersion(version)
             }
             let numNodes = Int(try p.readU32())
@@ -145,14 +178,14 @@ public struct SZRGGraph: Sendable {
                     edgeGeomIdx.append(geomIdx24 == 0xFFFFFF ? -1 : Int32(geomIdx24))
                     edgeNameIdx.append(nameIdx)
                 } else {
-                    // v3 + v4: speed+dist packed together, geom_idx gets a
-                    // full u32. v4 adds a trailing class_access u32 we don't
-                    // consume yet — read + discard so the cursor lands at
-                    // the next edge.
+                    // v3 / v4 / v5: speed+dist packed together, geom_idx
+                    // gets a full u32. v4+v5 add a trailing class_access
+                    // u32 we don't consume yet — read + discard so the
+                    // cursor lands at the next edge.
                     let speedDist = try p.readU32()
                     let geom = try p.readU32()
                     let nameIdx = try p.readU32()
-                    if version == 4 { _ = try p.readU32() }
+                    if version == 4 || version == 5 { _ = try p.readU32() }
                     edgeTargets.append(target)
                     let distDm24 = speedDist & 0x00FFFFFF
                     edgeDistMeters.append(Double(distDm24) / 10.0)
@@ -162,18 +195,30 @@ public struct SZRGGraph: Sendable {
                 }
             }
 
-            // Geometry offsets + blob (blob stays in place; we just track
-            // its start offset and length and decode into `geoms` in one
-            // pass without any `subdata` copies).
+            // Geometry offsets + blob. For v2/v3/v4 they're inline; for v5
+            // they live in the SZGM companion (parsed below). We declare
+            // the in-main variables up front so the control flow reads
+            // linearly for all paths.
             let posAfterEdges = p.pos
-            var geomOffsets = [UInt32](); geomOffsets.reserveCapacity(numGeoms + 1)
-            for _ in 0...numGeoms { geomOffsets.append(try p.readU32()) }
-            let geomBase = p.pos
-            do {
-                try p.advance(geomBytes)
-            } catch {
+            var geomOffsets: [UInt32] = []
+            var inlineGeomBase = 0
+            if version != 5 {
+                geomOffsets.reserveCapacity(numGeoms + 1)
+                for _ in 0...numGeoms { geomOffsets.append(try p.readU32()) }
+                inlineGeomBase = p.pos
+                do {
+                    try p.advance(geomBytes)
+                } catch {
+                    throw SZRGError.truncatedAt(
+                        "geomBlob (posAfterEdges=\(posAfterEdges))",
+                        pos: p.pos, size: data.count, header: headerStr
+                    )
+                }
+            } else if geomBytes != 0 {
+                // v5 header must advertise geomBytes=0 — anything else
+                // hints at a writer/parser drift.
                 throw SZRGError.truncatedAt(
-                    "geomBlob (posAfterEdges=\(posAfterEdges))",
+                    "v5 header geomBytes expected 0",
                     pos: p.pos, size: data.count, header: headerStr
                 )
             }
@@ -191,18 +236,21 @@ public struct SZRGGraph: Sendable {
                 )
             }
 
-            // Decode polylines directly against the unsafe buffer — no copies.
-            // With `decodeGeoms=false` we allocate the outer array as empty
-            // placeholders so indices still line up; each edge's polyline
-            // falls back to its endpoint nodes' lat/lon.
+            // Decode polylines.
+            //
+            //  * v2/v3/v4 + decodeGeoms=true  → decode against `raw` (in-main blob)
+            //  * v5 + decodeGeoms=true + geomsData provided → decode against SZGM
+            //  * anything else → empty placeholders so indices line up
             var geoms: [[(lat: Double, lon: Double)]] = []
-            if decodeGeoms {
+            if decodeGeoms && version != 5 {
                 geoms.reserveCapacity(numGeoms)
                 for g in 0..<numGeoms {
-                    let start = geomBase + Int(geomOffsets[g])
-                    let end = geomBase + Int(geomOffsets[g + 1])
+                    let start = inlineGeomBase + Int(geomOffsets[g])
+                    let end = inlineGeomBase + Int(geomOffsets[g + 1])
                     geoms.append(try Self.decodeGeom(raw, start: start, end: end))
                 }
+            } else if decodeGeoms && version == 5, let gdata = geomsData {
+                geoms = try parseSZGMGeoms(gdata, expectedGeoms: numGeoms)
             } else {
                 geoms = Array(repeating: [], count: numGeoms)
             }
@@ -234,6 +282,49 @@ public struct SZRGGraph: Sendable {
                 names: names,
                 geoms: geoms
             )
+        }
+    }
+
+    /// Parse just the SZGM (graph-geoms) v1 companion buffer, returning the
+    /// decoded `[[lat, lon]]` polyline array in geom-index order. Used by
+    /// the main `parse` when it's given both `data` + `geomsData` for v5,
+    /// and exposed publicly so callers can also hydrate geoms lazily on a
+    /// pre-parsed `SZRGGraph` (not currently supported on the struct — the
+    /// main use case today is "eager attach at load time").
+    public static func parseSZGMGeoms(
+        _ data: Data,
+        expectedGeoms: Int
+    ) throws -> [[(lat: Double, lon: Double)]] {
+        guard data.count >= 16 else {
+            throw SZRGError.companionMismatch("too small (\(data.count) B)")
+        }
+        return try data.withUnsafeBytes { raw -> [[(lat: Double, lon: Double)]] in
+            var p = RawCursor(base: raw, count: data.count, pos: 0)
+            try p.expectMagic([0x53, 0x5A, 0x47, 0x4D])  // "SZGM"
+            let version = try p.readU32()
+            guard version == 1 else {
+                throw SZRGError.companionMismatch("SZGM version \(version) unsupported")
+            }
+            let numGeoms = Int(try p.readU32())
+            let geomBytes = Int(try p.readU32())
+            if numGeoms != expectedGeoms {
+                throw SZRGError.companionMismatch(
+                    "numGeoms \(numGeoms) != SZRG header \(expectedGeoms)"
+                )
+            }
+            var offsets = [UInt32](); offsets.reserveCapacity(numGeoms + 1)
+            for _ in 0...numGeoms { offsets.append(try p.readU32()) }
+            let base = p.pos
+            try p.advance(geomBytes)
+
+            var geoms: [[(lat: Double, lon: Double)]] = []
+            geoms.reserveCapacity(numGeoms)
+            for g in 0..<numGeoms {
+                let start = base + Int(offsets[g])
+                let end = base + Int(offsets[g + 1])
+                geoms.append(try Self.decodeGeom(raw, start: start, end: end))
+            }
+            return geoms
         }
     }
 

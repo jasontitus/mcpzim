@@ -24,16 +24,22 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
         self.url = url
         self.archive = try ZimArchive(fileURL: url)
         self.metadata = Self.readMetadata(archive)
+        // A chunked v5 streetzim has no single graph.bin entry — its
+        // routing graph lives behind graph-chunk-manifest.json. Treat the
+        // manifest's presence as a classification signal too, otherwise
+        // continent-scale ZIMs wouldn't be tagged ``streetzim`` on load.
+        let hasRouting = archive.hasEntry("routing-data/graph.bin")
+            || archive.hasEntry("routing-data/graph.json")
+            || archive.hasEntry("routing-data/graph-chunk-manifest.json")
         self.kind = classifyZim(
             filename: url.lastPathComponent,
             metadata: metadata,
-            hasRoutingEntry: archive.hasEntry("routing-data/graph.bin")
-                || archive.hasEntry("routing-data/graph.json"),
+            hasRoutingEntry: hasRouting,
             hasStreetzimConfig: archive.hasEntry("map-config.json")
         )
         self.hasFullTextIndex = archive.hasFulltextIndex
         self.hasTitleIndex = archive.hasTitleIndex
-        self.hasRoutingData = archive.hasEntry("routing-data/graph.bin")
+        self.hasRoutingData = hasRouting
         // Cap libzim's per-archive cluster cache. The default (~32 MB in
         // recent libzim) suits Wikipedia's small article clusters, but
         // streetzim packs its entire 700 MB routing graph into a single
