@@ -1,0 +1,16 @@
+# Local venv + cloned deps
+.venv/
+.llama.cpp-src/
+__pycache__/
+
+# Training artifacts (10s of GB each)
+ft-out/
+ft-out-*/
+
+# Failure logs (debug only)
+*_fails.jsonl
+
+# Old system-role format files (superseded by _v2 eval-matched conversions)
+train.jsonl
+train_compare.jsonl
+train_weaktools.jsonl

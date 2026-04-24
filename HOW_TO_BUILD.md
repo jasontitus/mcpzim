@@ -426,6 +426,50 @@ the safer contract.
 
 All four are covered by `QwenClippedToolCallTests` with verbatim captures from `dropped-request.log` and a guard test to prove intentional whitespace-only values aren't clobbered.
 
+## Fine-tune pipeline (Gemma 3 4B LoRA)
+
+`tools/fine-tune/` turns a teacher's synthetic tool-calling trajectories into a LoRA-fine-tuned Q4_K_M GGUF for the iOS app.
+
+```sh
+cd tools/fine-tune
+
+# 1. Generate training data (LM Studio running gemma-3-27b-it teacher
+#    on this Mac, same GPU as MLX — they CAN'T run concurrently).
+.venv/bin/python generate.py \
+  --base-url http://192.168.68.68:1234/v1 \
+  --model gemma-3-27b-it --n 550 --concurrency 4 \
+  --out train.jsonl --fail-log train_fails.jsonl
+
+# Optional: boost specific categories when tool coverage is uneven.
+#   --boost narrate=8,current_place=3,wiki_search=4
+
+# 2. Generate 2-turn chains (article_overview → get_article_section)
+#    — the single-turn generator above emits zero get_article_section
+#    calls, so chain scenarios in llama-smoke fail without these.
+.venv/bin/python generate_chains.py --n 150 --out train_chains.jsonl
+
+# 3. Train + fuse + convert + quantize.
+cat train.jsonl train_chains.jsonl > train_combined.jsonl
+bash finetune.sh train_combined.jsonl
+# → ft-out/gemma3-4b-it-ft.Q4_K_M.gguf
+```
+
+Gotchas I burned time on:
+
+1. **Prompt format must match eval/iOS exactly.** The student is trained in the distribution it'll see at inference, and the iOS Gemma3Template folds system + tool-block into the first user message (Gemma 3 has no `system` role). A training JSONL that uses `{"role": "system"}` renders to a different prompt after `apply_chat_template` and the FT silently regresses. `generate.py`'s `trajectory_to_jsonl` now emits the eval-matched fold-into-user preamble.
+
+2. **LM Studio context exceeded with long prompts.** Teacher defaults to ~2k ctx; system prompt + tool descriptions + 1024 max_tokens blew the budget ~50% of the time. Trimmed SYSTEM_PROMPT to 334 tokens + `max_tokens=640`. Use `--fail-log` to catch future regressions.
+
+3. **Metal GPU watchdog aborts long-sequence training.** `kIOGPUCommandBufferCallbackErrorImpactingInteractivity` fires at peak mem ~35 GB when training on 700+ token examples at batch-size=4, layers=16. Workaround: lower `BATCH_SIZE=2` or `LORA_LAYERS=8`. Val loss plateaus by iter 200 anyway — iter-300 checkpoint is a fine stopping point if you crash at iter 340.
+
+4. **mlx_lm fuse `--export-gguf` doesn't support gemma3.** Use the llama.cpp `convert_hf_to_gguf.py` path — but mlx's re-serialised tokenizer has a different hash than what the convert script recognises, throwing `NotImplementedError: BPE pre-tokenizer was not recognized`. `finetune.sh` copies the original tokenizer.{json,model,_config.json} from the HF base-model cache over the fused-hf copies after fuse. LoRA doesn't touch the tokenizer so this is safe.
+
+5. **`--de-quantize` → `--dequantize`.** mlx-lm renamed the flag; old `finetune.sh` silently broke.
+
+6. **`torch` missing for convert script.** llama.cpp's `convert_hf_to_gguf.py` imports torch at top-level but omits it from `requirements-convert_hf_to_gguf.txt` (platform-specific wheel). Install separately: `uv pip install torch`.
+
+A/B eval against stock: `tools/llama-smoke/grid.py --models gemma3-4b --only Q4_K_M --kv q8_0/q8_0 --out GRID_RESULTS_FT_AB.md`. The fine-tuned model has a `ModelSpec` with `local_paths={"Q4_K_M": "…/ft-out/…"}`; `eval.py` grew `--local-path` for this.
+
 ## Why this exists
 
 Every time the conversation compacts I forget how to invoke the macOS tools because the knowledge lives in scrolled-off chat, not in a file. If you add a new target or find a working incantation, add a section here.
