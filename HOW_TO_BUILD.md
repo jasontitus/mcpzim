@@ -454,6 +454,67 @@ bash finetune.sh train_combined.jsonl
 # → ft-out/gemma3-4b-it-ft.Q4_K_M.gguf
 ```
 
+### Fan out data-gen across multiple teachers
+
+Single-teacher gen on this Mac tops out around 0.9–2/min (same GPU drives the teacher and any concurrent MLX workload). Fanning out 3+ LM Studio boxes running the same 27B teacher increases throughput linearly. Typical setup while iterating:
+
+| machine          | role              | IP                   | notes                                      |
+|------------------|-------------------|----------------------|--------------------------------------------|
+| M2 Max (this Mac)| teacher + trainer | `192.168.68.68:1234` | can't run LM Studio + MLX fine-tune simultaneously; same GPU |
+| Mac Studio       | teacher           | `192.168.68.104:1234`| M2 Ultra, ~3–4× M2 Max throughput          |
+| PC (RTX 3090, WSL2) | teacher        | `192.168.68.70:1234` | fastest: ~5× M2 Max; disable LM Studio auth for LAN use |
+
+Each teacher gets a fresh seed so their sampled queries don't overlap:
+
+```sh
+# M2 Max chain gen (seed 777 for continuity with prior runs)
+.venv/bin/python generate_chains.py \
+  --base-url http://192.168.68.68:1234/v1 --model gemma-3-27b-it \
+  --n 150 --concurrency 4 --out train_chains.jsonl --seed 777 &
+
+# Mac Studio — different model name, that server uses the QAT variant
+.venv/bin/python generate_chains.py \
+  --base-url http://192.168.68.104:1234/v1 --model gemma-3-27b-it-qat \
+  --n 150 --concurrency 4 --out train_chains_studio.jsonl --seed 2025 &
+
+# 3090 — biggest throughput machine, aim it at the weakest tools
+.venv/bin/python generate.py \
+  --base-url http://192.168.68.70:1234/v1 --model gemma-3-27b-it \
+  --n 250 --concurrency 4 --max-tokens 640 --think \
+  --boost compare=10,narrate=4,current_place=2,wiki_search=4 \
+  --out train_compare.jsonl --fail-log train_compare_fails.jsonl --seed 5555 &
+```
+
+All three write to separate files (`*.jsonl`) to avoid append-write races. Concatenate at the end. Scripts are **resumable** — each counts existing lines on restart and skips that many sampled queries. If a teacher dies mid-run (LM Studio auto-unload, network blip), just rerun the same command.
+
+### Gotchas when fanning out
+
+1. **LM Studio's `Max Concurrent Predictions`** caps server-side parallelism (typically 4 by default). Client `--concurrency 8` without bumping the server just queues the extra workers. Reload the model via GUI → Developer → model settings → Max Concurrent Predictions, or `lms load <model> --parallel N --ttl 7200 -y`. The TTL prevents idle auto-unload mid-run.
+
+2. **LM Studio "Compute error"** — we saw this when MLX fine-tune started on the same Mac that was also serving the teacher; both hit Metal and the teacher's kernels got evicted. Rule: **one compute-heavy job per Mac**. Once MLX training starts on a Mac, its LM Studio becomes unreliable until training finishes.
+
+3. **Authentication on newer LM Studio** — the Mac Studio + PC builds shipped with auth enabled by default. Either provide the bearer token or disable auth in Developer → Server Settings for LAN-only use.
+
+4. **`--fail-log`** — always pass this; silent failures hide regressions. Past smoking guns caught here: `400 Context size has been exceeded` (prompt too long), `400 No models loaded` (LM Studio unloaded under idle).
+
+5. **Prompt format MUST match inference.** `generate.py`'s `trajectory_to_jsonl` folds system + tool block into the first user message (eval-matched). Older trajectories with discrete `{"role":"system"}` need to be converted via a short script (see git history around `train_compare.jsonl` → `train_compare_v2.jsonl`). Training on mismatched format silently regresses.
+
+### Multi-source training-data recipe we actually used
+
+End-state was a 1577-example dataset assembled from five parallel streams:
+
+| source                    | rows | seed  | teacher box | notes                              |
+|---------------------------|------|-------|-------------|------------------------------------|
+| `train_v2.jsonl`          | 554  | 42    | M2 Max      | original single-turn               |
+| `train_compare_v2.jsonl`  | 250  | 5555  | 3090        | `--boost compare=10,…`             |
+| `train_weaktools_v2.jsonl`| 248  | 6666  | 3090        | `--boost narrate=15,current_place=4,wiki_search=8` |
+| `train_chains.jsonl`      | 150  | 777   | M2 Max      | 2-turn chains                      |
+| `train_chains_studio.jsonl` | 146 | 2025 | Mac Studio  | 2-turn chains, QAT model           |
+| `train_chains_studio2.jsonl`| 150 | 3333 | Mac Studio  | 2-turn chains, round 2             |
+| `train_chains_3090.jsonl` | 79   | 9999  | 3090        | 2-turn chains, partial (LM Studio reload killed it) |
+
+`cat *.jsonl > train_v3.jsonl` at the end. 70% single-turn / 30% chain ratio empirically worked for our tool mix; adjust if the 13-scenario eval shows different holes.
+
 Gotchas I burned time on:
 
 1. **Prompt format must match eval/iOS exactly.** The student is trained in the distribution it'll see at inference, and the iOS Gemma3Template folds system + tool-block into the first user message (Gemma 3 has no `system` role). A training JSONL that uses `{"role": "system"}` renders to a different prompt after `apply_chat_template` and the FT silently regresses. `generate.py`'s `trajectory_to_jsonl` now emits the eval-matched fold-into-user preamble.
