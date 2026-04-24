@@ -589,13 +589,25 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         let cacheIsHybrid = existing?.contains(where: { $0 is MambaCache }) ?? false
                         // Template-declared flag for families whose MLX
                         // model carries per-eval mutable state that
-                        // leaks across calls. Gemma 3 flips this; Qwen
-                        // 3.5 (also affected) runs through the
-                        // MambaCache detection above so either guard
-                        // catches it. Detected 2026-04-23: Gemma 3
-                        // fourth-scenario crash
-                        //   [matmul] shape (…,1272) vs (…,1271)
-                        // Same root cause as mlx-swift-lm#157.
+                        // leaks across calls. Gemma 3 / Qwen 3.5 are
+                        // the known offenders (mlx-swift-lm#157:
+                        // `precomputedPositionIds` / `ropeDeltas` on
+                        // the model class, not the cache). Currently
+                        // all known affected families ALSO use hybrid
+                        // attention, so the `cacheIsHybrid` guard
+                        // above catches them; the flag is reserved
+                        // for families where we'd otherwise reuse.
+                        // Gemma 3 sets this to `false` on purpose
+                        // (see `Gemma3Template.hasStaleScratchStateBug`)
+                        // — the Mac EvalCLI repro never fired on
+                        // device, and forcing full prefill every turn
+                        // jetsams the phone at 6 GB. The diagnostic
+                        // block below is the tripwire: if the stale-
+                        // state bug DOES fire on device, the MLX
+                        // SIGABRT truncates Swift logs, so we dump
+                        // cache layer shapes + offsets + LCP state
+                        // right before `generateTokens` so the OS
+                        // log tail captures what we handed MLX.
                         let templateBugsReuse = self.template.hasStaleScratchStateBug
                         if common == cached.count, common > 0, let existing, !existing.isEmpty,
                            !cacheIsHybrid, !templateBugsReuse
@@ -620,14 +632,31 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         // FULL cache contents.
                         self.cachedTokens = tokens32
                         self.generatedTokensThisTurn = []
+                        let cacheShape = Self.describeCache(kvCache)
                         if hit {
-                            self.debug("cache hit: reusing \(common)/\(tokens32.count) prompt tokens, prefilling \(inputTokens.count) new")
+                            self.debug("cache HIT: reusing \(common)/\(tokens32.count) prompt tokens, prefilling \(inputTokens.count) new · cache=\(cacheShape)")
                         } else {
                             // Emit the LCP length so we can tell whether
                             // we're a byte off the end of the cache
                             // (tokenizer boundary issue) or missing
                             // because the prompt legitimately changed.
-                            self.debug("cache miss: full prefill \(inputTokens.count) tokens (LCP=\(common), cached.count=\(cached.count), prompt.count=\(tokens32.count))")
+                            // Also tag WHY we missed — stale-state
+                            // flag, hybrid cache, or LCP divergence —
+                            // so the reason is obvious from the log
+                            // line alone.
+                            let reason: String
+                            if templateBugsReuse {
+                                reason = "forced by hasStaleScratchStateBug"
+                            } else if cacheIsHybrid {
+                                reason = "forced by hybrid MambaCache"
+                            } else if existing == nil || (existing?.isEmpty ?? true) {
+                                reason = "no existing cache"
+                            } else if common == 0 {
+                                reason = "LCP=0 (prompt reset)"
+                            } else {
+                                reason = "LCP<cached.count (prompt diverged)"
+                            }
+                            self.debug("cache MISS: full prefill \(inputTokens.count) tokens — \(reason) (LCP=\(common), cached.count=\(cached.count), prompt.count=\(tokens32.count)) · cache=\(cacheShape)")
                             if common > 0 && common + 1 >= cached.count && cached.count > 0 {
                                 // Very close — log a few tokens around the divergence point
                                 let divergeIdx = common
@@ -636,6 +665,16 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                                 self.debug("cache diverge near idx \(divergeIdx): cached=[\(before.map(String.init).joined(separator: ","))] prompt=[\(after.map(String.init).joined(separator: ","))]")
                             }
                         }
+                        // Canary: the MLX C++ layer can SIGABRT inside
+                        // `generateTokens` before any Swift catch runs
+                        // (stale-state shape mismatch, mutex lock, OOM
+                        // from Metal pool). Log cache shape + input
+                        // token count RIGHT before the call so the OS
+                        // log tail captures the last known good state.
+                        // If the process dies without a matching
+                        // "stream opened" line, the crash was inside
+                        // `generateTokens` with this payload.
+                        self.debug("generateTokens ← input=\(inputTokens.count) tokens, cache=\(cacheShape), hit=\(hit)")
                         let input = LMInput(tokens: MLXArray(inputTokens))
                         let stream = try MLXLMCommon.generateTokens(
                             input: input, cache: kvCache,
@@ -804,6 +843,22 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         var i = 0
         while i < n && a[i] == b[i] { i += 1 }
         return i
+    }
+
+    /// Compact one-line dump of a KV cache: layer count, the set of
+    /// underlying types (e.g. `Rotating/Standard/Mamba`), and the
+    /// min/max/first layer offsets. Used as pre-`generateTokens`
+    /// breadcrumb so an MLX SIGABRT leaves us something to diagnose.
+    /// Cheap — just reads `.offset` and class names, no MLXArray
+    /// traversal.
+    private static func describeCache(_ cache: [KVCache]) -> String {
+        guard !cache.isEmpty else { return "empty" }
+        let offsets = cache.map { $0.offset }
+        let typeNames = cache.map { String(describing: type(of: $0)).split(separator: ".").last.map(String.init) ?? "?" }
+        let uniq = Array(Set(typeNames)).sorted().joined(separator: "/")
+        let minO = offsets.min() ?? 0
+        let maxO = offsets.max() ?? 0
+        return "\(cache.count)L[\(uniq)] off=\(minO)…\(maxO)"
     }
 }
 

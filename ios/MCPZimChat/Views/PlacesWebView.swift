@@ -502,6 +502,30 @@ private struct PlacesWebContainer: UIViewRepresentable {
         reloadPlacesIfNeeded(uiView, spec: spec, payload: payload)
         applyFocusIfChanged(uiView, focus: focus, payload: payload)
     }
+    // SwiftUI invokes this when the representable is removed from the
+    // view hierarchy — i.e. when `isLatestAssistant` in ChatView flips
+    // from true→false because a newer assistant turn appended. The
+    // *Swift* side of the WKWebView deallocs on ARC release, but its
+    // WebContent process (where MapLibre + the ~25 vector tiles live)
+    // can linger for many seconds, holding ~500–800 MB that stacks on
+    // top of the next turn's LLM prefill and trips the iPhone 6 GB
+    // jetsam cap (2026-04-23: confirmed on Jazzman 17 — Qwen 3 4B
+    // entering prefill at 5322 MB vs 2600 MB on Mac eval, delta is
+    // the map WebContent process).
+    //
+    // Force the WebContent process to drop its heap immediately by
+    // (a) stopping any in-flight loads,
+    // (b) clearing the viewport's associated coordinator so MapLibre
+    //     has nothing live to draw,
+    // (c) navigating to `about:blank` — this tells WebKit the page
+    //     and its render buffers can be released now, not on the
+    //     next GC.
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: ()) {
+        uiView.stopLoading()
+        uiView.navigationDelegate = nil
+        uiView.uiDelegate = nil
+        uiView.load(URLRequest(url: URL(string: "about:blank")!))
+    }
 }
 #endif
 
@@ -1112,8 +1136,11 @@ private func loadPlacesSpec(
             window.__mcpzimPopup = popup;
           });
         }
-        // Fit-bounds. If a single pin, centre at z=15. For a spread,
-        // fit with padding and a maxZoom that keeps the pins useful.
+        // Fit-bounds. Single pin → z=15. Multi-pin → fitBounds with
+        // padding, with a generous maxZoom so tight clusters (a few
+        // bars on one block) actually zoom in instead of hitting a
+        // z=14 ceiling and stranding the pins as a tiny red clump in
+        // the middle of a whole-neighbourhood view.
         if (features.length === 1) {
           m.easeTo({
             center: features[0].geometry.coordinates,
@@ -1125,7 +1152,7 @@ private func loadPlacesSpec(
             features[0].geometry.coordinates
           );
           features.forEach(function(f) { b.extend(f.geometry.coordinates); });
-          m.fitBounds(b, { padding: 60, duration: 600, maxZoom: 14 });
+          m.fitBounds(b, { padding: 80, duration: 600, maxZoom: 17 });
         }
         console.info("mcpzim places direct: drew " + features.length + " pins");
       }

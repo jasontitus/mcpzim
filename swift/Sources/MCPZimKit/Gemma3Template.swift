@@ -64,10 +64,22 @@ public struct Gemma3Template: ModelTemplate {
     /// prefix on a second call inherits the stale values from the
     /// previous call, producing an off-by-one in the attention-shape
     /// broadcast that MLX detects as a C++ fatal error before Swift
-    /// can catch. Same root cause as Qwen 3.5 / mlx-swift-lm#157. Opt
-    /// the provider into full-prefill-every-turn until upstream lands
-    /// the `LMOutput.State` refactor.
-    public var hasStaleScratchStateBug: Bool { true }
+    /// can catch. Same root cause as Qwen 3.5 / mlx-swift-lm#157.
+    ///
+    /// 2026-04-23: flipped OFF on iOS. The `true` setting forces full
+    /// prefill every turn, which spikes ~1–2 GB of transient Metal
+    /// activation buffers per query on a 4–6K-token prompt and jetsams
+    /// iPhone 17 Pro Max at the 6 GB cap. The `[matmul] shape
+    /// (…,1272) vs (…,1271)` crash that motivated the flag was only
+    /// reproduced on Mac EvalCLI scenario 4 — never on-device. Left
+    /// `false` so we get KV-cache reuse (delta prefill only) and
+    /// rely on the new per-turn diagnostics in
+    /// `Gemma4Provider.generate` to surface the stale-state bug if it
+    /// actually fires on a real device. If it does, the OS log tail
+    /// before the SIGABRT will show cache layer shapes + offsets +
+    /// LCP state so we can decide whether to re-arm this flag or
+    /// ship an MLX-side scratch reset.
+    public var hasStaleScratchStateBug: Bool { false }
 
     public func formatSystemTurn(
         systemMessage: String, tools: [ModelToolDeclaration]

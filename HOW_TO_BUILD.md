@@ -2,6 +2,26 @@
 
 Durable notes on every working build + run incantation in this repo. Update this file whenever you add a target or discover a working invocation. The context window is not durable; this file is.
 
+## First-time setup after a fresh clone
+
+The prebuilt `llama.xcframework` (~562 MB, 6 platform slices) isn't
+checked in. Restore it once:
+
+```sh
+cd ios/LocalPackages/llama.cpp-swift
+TAG=b8911   # stay in sync with the comment in Package.swift
+curl -L -o /tmp/llama.zip \
+  "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-xcframework.zip"
+rm -rf llama.xcframework
+unzip -q /tmp/llama.zip -d /tmp/llama-zip
+mv /tmp/llama-zip/build-apple/llama.xcframework .
+rm -rf /tmp/llama.zip /tmp/llama-zip
+```
+
+Without this, SPM fails to resolve `LlamaCppSwift` and the iOS build
+errors out on `import llama`. See `ios/LocalPackages/llama.cpp-swift/README.md`
+for the upgrade procedure.
+
 ## iOS app (on physical iPhone)
 
 ```sh

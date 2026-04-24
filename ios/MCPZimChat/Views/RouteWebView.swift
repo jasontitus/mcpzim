@@ -462,6 +462,15 @@ private struct WebViewContainer: UIViewRepresentable {
             initialDriveMode: initialDriveMode, endpoints: endpoints
         )
     }
+    // See PlacesWebView.PlacesWebContainer.dismantleUIView — same
+    // WebContent-process leak on iOS. Force release when SwiftUI
+    // demotes this representable (i.e. `isLatestAssistant` flipped).
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: ()) {
+        uiView.stopLoading()
+        uiView.navigationDelegate = nil
+        uiView.uiDelegate = nil
+        uiView.load(URLRequest(url: URL(string: "about:blank")!))
+    }
 }
 #endif
 

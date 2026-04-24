@@ -40,6 +40,11 @@ struct EvalCLI {
             await ProbeE2ECLI.run(args: Array(args))
             return
         }
+        if args.first == "--probe-llama" {
+            _ = args.removeFirst()
+            await LlamaCppProbeCLI.run(args: Array(args))
+            return
+        }
         while let a = args.first {
             args = args.dropFirst()
             switch a {

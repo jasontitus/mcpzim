@@ -244,18 +244,20 @@ public final class ChatSession {
         refreshLocationIfStale()
         prewarmBackgroundCaches()
         await runSetupIfNeeded()
-        // Prewarm the KV cache with the system-turn + tool-declaration
-        // prefix now. Re-added 2026-04-21 after a brief rollback: the
-        // 2.6 GB of KV tensors this allocates gets allocated EITHER WAY
-        // as soon as the user sends their first real query, so
-        // postponing doesn't lower the steady-state peak — it just
-        // delays it. Prewarming at launch means the first `send()`
-        // finds a warm cache and skips the ~18 s cold prefill. The
-        // real fix for the "cache gets dropped after one turn" symptom
-        // isn't to skip the prewarm; it's to make the memory-warning
-        // handler stop nuking the cache on the first iOS gripe (see
-        // the handler at `didReceiveMemoryWarningNotification`).
-        prewarmGemmaKVCacheIfIdle()
+        // Launch-time KV prewarm DISABLED 2026-04-23 after the race
+        // crash on Jazzman 17: prewarm kicks off at t+1s after model
+        // load, encodes the 5,665-token system turn + tool decls, and
+        // spends ~15s prefilling Metal activation buffers (+500 MB
+        // transient, peaking around 3.6 GB). If the user voice-chats
+        // a query within that window (like "Bars in SF") the fast-
+        // path tool dispatch + voice TTS + ZIM search all compound
+        // on top of the in-flight prefill and jetsam fires. The
+        // compose-focus handler (`prewarmSelectedModel`, called from
+        // ChatView's `.onAppear`-style hooks) still triggers prewarm
+        // lazily when the user taps the input — so text-chat keeps
+        // the warm-cache win, and voice-chat pays one full prefill
+        // on the first query (~15s) instead of crashing. Steady-state
+        // peak is unchanged; only the WHEN it spikes moves.
     }
 
     /// Warm the expensive start-up caches off the user's hot path.
@@ -1010,7 +1012,25 @@ public final class ChatSession {
             // budget so it can reliably finish both reasoning + tool.
             replyTokensFloor: 1024
         )
-        var providers: [any ModelProvider] = [gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b]
+        // Gemma 3 4B IT Q4_K_M via llama.cpp. The memory-first path we
+        // ported to on 2026-04-23 after confirming the MLX provider
+        // peaks ~6.3 GB on multi-turn 5-6k-token prompts (iPhone 17
+        // Pro Max jetsams at ~6 GB). llama.cpp + iSWA rotation-pruning
+        // + Q8_0 KV keeps the same model under 3.2 GB peak at 20k
+        // tokens. See tools/llama-smoke/RESULTS_2026-04-23_SEQ.md +
+        // LlamaCppProvider.swift header for the full numbers.
+        let gemma3_4b_gguf = LlamaCppProvider(
+            id: "gemma3-4b-it-q4km-gguf",
+            displayName: "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
+            huggingFaceRepo: "bartowski/google_gemma-3-4b-it-GGUF",
+            ggufFilename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+            approximateMemoryMB: 3200,
+            template: Gemma3Template()
+        )
+        var providers: [any ModelProvider] = [
+            gemma3_4b_gguf,
+            gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b,
+        ]
         #if os(macOS)
         // Gemma 3 12B IT QAT-4bit — mac-only reference model. Benched 9/9
         // on the mac-only eval scorecard (perfect tool-calling across
@@ -1049,7 +1069,31 @@ public final class ChatSession {
         // don't have to re-pick (and re-pay load costs for models you
         // weren't using).
         let savedId = UserDefaults.standard.string(forKey: Self.selectedModelKey)
-        self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma
+        // Default flipped to Gemma 3 4B Q4_K_M via llama.cpp on
+        // 2026-04-23. See tools/llama-smoke/RESULTS_2026-04-23_SEQ.md.
+        // The MLX variants of Gemma 3 blew past the iPhone 17 Pro Max
+        // 6 GB jetsam cap on multi-turn prefill; llama.cpp's
+        // iSWA-rotation pruning + Q8_0 KV + flash-attn keeps the same
+        // model at 3.2 GB peak even at 20k-token context. Qwen 3 4B
+        // MLX is kept as a picker alternative (4.6 GB peak, correct
+        // but tight) for anyone who wants to A/B the runtimes.
+        //
+        // On iOS, silently redirect a previously-saved Gemma-3-MLX
+        // choice to the llama.cpp variant — we'd rather the user land
+        // on a model that doesn't crash than on "the one they picked
+        // last time". They can still repick the MLX one via the
+        // picker to reproduce the crash.
+        #if os(iOS)
+        let crashesOnDevice: Set<String> = [
+            "gemma3-4b-it-text-4bit",
+            "gemma3-12b-it-text-4bit",
+        ]
+        let resolvedId = crashesOnDevice.contains(savedId ?? "")
+            ? gemma3_4b_gguf.id : savedId
+        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? gemma3_4b_gguf
+        #else
+        self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma3_4b_gguf
+        #endif
         startObservingSelectedModel()
         // Wire every Gemma4Provider instance (which includes Qwen
         // variants — same class, different template) to the debug
@@ -1851,6 +1895,30 @@ public final class ChatSession {
             } else {
                 let preamble = Self.toolsPreamble(registry: registry)
                 prompt = selectedModel.formatTranscript(systemPreamble: preamble, turns: turns)
+            }
+            // Yield to SwiftUI before iter 0 so the prior assistant's
+            // `PlacesWebView` / `RouteWebView` (guarded by
+            // `isLatestAssistant` in ChatView.MessageRow) has time to
+            // swap to `MapPlaceholder` and WebKit can release its
+            // ~700–1000 MB of tile/JS buffers BEFORE our prefill
+            // allocates another ~1 GB of Metal activations. Without
+            // this, the follow-up voice query after "Bars in SC"
+            // stacked the live places map on top of a 5,726-token
+            // cache-miss prefill and jetsammed the app at ~5 GB RSS
+            // (2026-04-23, confirmed via mcp-logs tail + new
+            // `cache MISS — no existing cache` diagnostic). Only yields
+            // on iter 0 — tool-response round-trips inside the same
+            // turn don't remount the WebView, so no need to delay.
+            if iter == 0 {
+                let hasPriorAssistant = messages
+                    .dropLast()
+                    .contains(where: { $0.role == .assistant && !$0.toolCalls.isEmpty })
+                if hasPriorAssistant {
+                    debug("yielding 250ms for prior map WebView teardown before prefill",
+                          category: "Chat")
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    debug("map teardown wait done", category: "Chat")
+                }
             }
             let genStart = Date()
             debug("iter \(iter) · generate(prompt=\(prompt.count) chars)", category: "Chat")

@@ -620,6 +620,49 @@ final class EvalHarness {
             ],
             maxPeakMB: 6500
         ),
+
+        // Repro scenario for the 2026-04-23 iPhone 17 Pro Max jetsam:
+        // user says "Bars in San Carlos", fast-path dispatches
+        // near_named_place with a 25-place response, then on-device
+        // follow-up "Which is closest to Caltrain?" forces a full
+        // LLM prefill of (preamble + 10 tool decls + prior user turn +
+        // 25-place tool response + new user turn). Phone peaked ~5.5 GB
+        // RSS mid-prefill and was jetsammed. This scenario runs the
+        // exact transcript on Mac so we get the `MemoryProbe` peak
+        // without the jetsam. Fixture: 25 synthetic bars spread
+        // around San Carlos (37.51, -122.26) to match the real OSM
+        // payload size from the phone run.
+        .init(
+            name: "bars_sc_caltrain_chain",
+            turns: [
+                (
+                    user: "Bars in San Carlos",
+                    expect: TurnExpect(
+                        toolsCalledAny: ["near_places", "near_named_place"],
+                        responseIncludesAny: ["bar", "san carlos",
+                                               "tavern", "found"]
+                    )
+                ),
+                (
+                    user: "Which is closest to Caltrain?",
+                    expect: TurnExpect(
+                        // Follow-up reasons over the prior 25-place
+                        // payload. Don't require a specific tool —
+                        // the model might re-query nearby transit or
+                        // just reason from distances in the prior
+                        // turn. What we care about here is memory
+                        // peak, not semantic correctness.
+                        responseIncludesAny: ["caltrain", "station",
+                                               "close", "near", "bar"]
+                    )
+                ),
+            ],
+            hostState: HostStateSnapshot(
+                activeRoute: nil,
+                currentLocation: .init(lat: 37.5124, lon: -122.2606)
+            ),
+            maxPeakMB: 6500
+        ),
     ]
 
     /// Synthetic "Palo Alto → San Francisco" active route used by the
@@ -956,6 +999,7 @@ final class EvalHarness {
     static func fixtureForEval() -> StubZimService.Fixture {
         var f = StubZimService.Fixture()
         Self.addRestaurantsInSFFixture(&f)
+        Self.addBarsInSanCarlosFixture(&f)
         Self.addNearbyStoriesHereFixture(&f)
         Self.addNearbyStoriesAtPlaceFixture(&f)
         Self.addArticleOverviewPaloAltoFixture(&f)
@@ -1408,6 +1452,65 @@ final class EvalHarness {
     }
 
     // MARK: Fixture builders — one per scenario
+
+    /// "Bars in San Carlos" → near_named_place with 25 synthetic bars
+    /// spread around the San Carlos (37.51, -122.26) bounding box.
+    /// Sized to approximate the real OSM payload the phone saw on
+    /// 2026-04-23 (25 results per `limit: 25` default). The *quality*
+    /// of the data doesn't matter — this fixture exists to reproduce
+    /// the 5-6k-token prompt + 25-place tool response that drives
+    /// the multi-turn memory peak on-device.
+    private static func addBarsInSanCarlosFixture(_ f: inout StubZimService.Fixture) {
+        let sanCarlosCenter = Place(
+            name: "San Carlos", kind: "place",
+            lat: 37.5124, lon: -122.2606,
+            subtype: "city", location: "California, USA"
+        )
+        // 25 bars: name + small lat/lon offsets so `distanceMeters`
+        // varies, mirroring real OSM output. Names + distances are
+        // synthetic but in the ballpark the phone saw.
+        let bars: [(place: Place, distanceMeters: Double)] = (0..<25).map { i in
+            let latOff = Double(i % 5) * 0.004 - 0.008  // ≈ ±900 m
+            let lonOff = Double(i / 5) * 0.006 - 0.012  // ≈ ±1 km
+            let names = [
+                "Highlands Sports Bar & Grill", "The Office Bar",
+                "Orchid Room", "Sneakers American Grill",
+                "Devil's Canyon Brewing", "Broadway Pub",
+                "The Laurel Room", "Nini's Coffee",
+                "Town Irish Pub", "Scratch Sports Bar",
+                "Refuge Belgian", "Little Sky Bakery",
+                "Cuban Kitchen", "Bianchini's Market",
+                "Taverna", "Telefèric Barcelona",
+                "Palmetto Superfoods", "Boichik Bagels",
+                "Cyclismo Cafe", "Milagros",
+                "Village Pub", "The Crystal Lounge",
+                "Old Pro", "Dutch Goose",
+                "Rose & Crown"
+            ]
+            let p = Place(
+                name: names[i],
+                kind: "poi",
+                lat: 37.5124 + latOff,
+                lon: -122.2606 + lonOff,
+                subtype: "bar",
+                location: "San Carlos"
+            )
+            return (p, distanceMeters: 200 + Double(i) * 150)
+        }
+        let result = NearPlacesResult(
+            totalInRadius: bars.count,
+            breakdown: ["bar": bars.count],
+            results: bars
+        )
+        for kinds in [["bar"], nil, []] as [[String]?] {
+            f.nearNamedPlace[
+                StubZimService.keyNearNamedPlace(place: "san carlos", kinds: kinds)
+            ] = .init(resolved: sanCarlosCenter, result: result)
+            f.nearNamedPlace[
+                StubZimService.keyNearNamedPlace(place: "San Carlos", kinds: kinds)
+            ] = .init(resolved: sanCarlosCenter, result: result)
+        }
+    }
 
     /// "Are there any good restaurants in San Francisco?" → near_named_place.
     private static func addRestaurantsInSFFixture(_ f: inout StubZimService.Fixture) {

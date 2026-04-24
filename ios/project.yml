@@ -61,6 +61,15 @@ packages:
   MLXUtilsLibrary:
     url: https://github.com/mlalma/MLXUtilsLibrary.git
     from: 0.0.6
+  # Wrapper SPM package over the upstream llama.cpp XCFramework
+  # (pinned b8911 today — bump by replacing the unzipped framework
+  # on disk; see LocalPackages/llama.cpp-swift/Package.swift header).
+  # Exposes the `llama` C module so LlamaCppProvider.swift can hit
+  # the full `llama_context_params` surface (swa_full, type_k/v,
+  # flash_attn_type) that no maintained Swift wrapper currently
+  # surfaces.
+  LlamaCppSwift:
+    path: LocalPackages/llama.cpp-swift
 targets:
   MCPZimChat:
     type: application
@@ -102,6 +111,8 @@ targets:
         codeSign: true
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
+      - package: LlamaCppSwift
+        product: LlamaCppSwift
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
@@ -177,6 +188,8 @@ targets:
         product: Tokenizers
       - package: swift-huggingface
         product: HuggingFace
+      - package: LlamaCppSwift
+        product: LlamaCppSwift
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
@@ -230,6 +243,8 @@ targets:
         codeSign: true
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
+      - package: LlamaCppSwift
+        product: LlamaCppSwift
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false

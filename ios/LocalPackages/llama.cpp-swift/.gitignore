@@ -1,0 +1,8 @@
+# Prebuilt xcframework (~562 MB) is not checked in — pulled from the
+# upstream llama.cpp GitHub release. See README.md for the restore
+# command. Package.swift pins the expected release tag.
+llama.xcframework/
+
+# SPM build artifacts
+.build/
+.swiftpm/
