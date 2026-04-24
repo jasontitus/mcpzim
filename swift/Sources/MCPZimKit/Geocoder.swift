@@ -46,20 +46,71 @@ public struct Place: Equatable, Sendable {
 }
 
 public enum Geocoder {
-    /// Normalize a free-text query into the 2-character prefix used to pick a
-    /// `search-data/{prefix}.json` chunk. Matches the JS viewer exactly:
-    /// lowercase, first two codepoints, spaces → `_`, non-alphanumeric → `_`,
-    /// right-padded with `_` if shorter than 2.
+    /// Normalize a free-text query into the chunk key used to pick a
+    /// `search-data/{prefix}.json` chunk. Must match the writer
+    /// `_prefix_key` in streetzim/create_osm_zim.py and the JS viewer
+    /// ``keyFor`` — Latin-leading queries get a 2-char ASCII-alnum
+    /// prefix, non-ASCII leading queries bucket into
+    /// ``"u" + lowercase hex of the first codepoint``.
+    ///
+    /// Before this split, all non-ASCII names collapsed into a single
+    /// ``__.json`` chunk — 350 MB on Japan, 230 MB on Iran — which
+    /// crashed Kiwix Desktop on "find". The non-ASCII bucket now spreads
+    /// across one chunk per distinct leading codepoint.
     public static func normalizePrefix(_ query: String) -> String {
-        let lowered = query.lowercased()
-        var prefix = String(lowered.prefix(2))
-        prefix = prefix.replacingOccurrences(of: " ", with: "_")
-        prefix = String(prefix.map { ch -> Character in
-            let ok = (ch == "_") || ch.isASCII && (ch.isLetter || ch.isNumber)
-            return ok ? ch : "_"
-        })
-        while prefix.count < 2 { prefix.append("_") }
+        let lowered = query.lowercased().replacingOccurrences(of: " ", with: "_")
+        guard let c0 = lowered.first else { return "__" }
+        // Non-ASCII → codepoint hex bucket (matches writer _prefix_key).
+        if !c0.isASCII, let scalar = c0.unicodeScalars.first {
+            return "u" + String(scalar.value, radix: 16)
+        }
+        // ASCII path: alnum or '_' kept; anything else → '_'.
+        func asciiNorm(_ ch: Character) -> Character {
+            if ch == "_" { return "_" }
+            if ch.isASCII && (ch.isLetter || ch.isNumber) { return ch }
+            return "_"
+        }
+        var prefix = String(asciiNorm(c0))
+        if lowered.count >= 2 {
+            let c1 = lowered[lowered.index(lowered.startIndex, offsetBy: 1)]
+            // 2nd char non-ASCII → collapse to '_' (bucket keyed by c0).
+            prefix.append(c1.isASCII ? asciiNorm(c1) : "_")
+        } else {
+            prefix.append("_")
+        }
         return prefix
+    }
+
+    /// Sub-bucket hash used when a search-data chunk was split into
+    /// `{prefix}-{hex}` sub-files during repackage. Must match the
+    /// writer (`cloud/repackage_zim._sub_bucket_for_name`) and JS
+    /// (`resources/viewer/index.html` `subBucketFor`). FNV-1a 32-bit
+    /// over the UTF-8 bytes; result mod ``nBuckets``.
+    public static func subBucketFor(name: String, nBuckets: Int = 16) -> Int {
+        var h: UInt32 = 0x811C9DC5
+        for b in name.utf8 {
+            h ^= UInt32(b)
+            h = h &* 0x01000193
+        }
+        // Take the modulo in UInt32 space before converting, so we never
+        // rely on `Int(h)` being non-negative (it is on 64-bit Swift
+        // today, but would break if the hash is ever widened to UInt64).
+        precondition(nBuckets > 0, "nBuckets must be > 0")
+        return Int(h % UInt32(nBuckets))
+    }
+
+    /// Expand a query prefix through the manifest's ``sub_chunks``
+    /// dictionary. Returns a list of actual chunk prefixes to fetch.
+    /// When the query's prefix wasn't hot-split, returns a single-item
+    /// list with that prefix unchanged; when it WAS split, returns the
+    /// sub-bucket list the writer emitted (so callers fetch every
+    /// sub-file to cover all possible hits for that query).
+    public static func expandPrefix(_ prefix: String,
+                                     manifest: [String: Any]) -> [String] {
+        if let subs = (manifest["sub_chunks"] as? [String: [String]])?[prefix] {
+            return subs
+        }
+        return [prefix]
     }
 
     /// Filter a decoded `search-data/{prefix}.json` chunk for records whose

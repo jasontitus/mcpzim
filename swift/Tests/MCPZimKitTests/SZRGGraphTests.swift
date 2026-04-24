@@ -74,4 +74,19 @@ final class SZRGGraphTests: XCTestCase {
         XCTAssertEqual(Geocoder.normalizePrefix("42nd Street"), "42")
         XCTAssertEqual(Geocoder.normalizePrefix("_private"), "_p")
     }
+
+    func testGeocoderPrefixNonAscii() {
+        // Non-ASCII first char → codepoint-hex bucket. Prevents all CJK /
+        // Cyrillic / Arabic records from collapsing into a single __.json.
+        //
+        // Note: Swift's ``lowercased`` doesn't do NFKD decomposition, so
+        // diacritics survive here. The Python writer DOES apply NFKD,
+        // which strips combining marks but leaves CJK/Cyrillic/Arabic
+        // base characters intact — so the codepoint in the bucket key
+        // matches for non-decomposable scripts, which is the case we
+        // care about.
+        XCTAssertEqual(Geocoder.normalizePrefix("東京"), "u6771")
+        XCTAssertEqual(Geocoder.normalizePrefix("Подвесной мост"), "u43f")
+        XCTAssertEqual(Geocoder.normalizePrefix("ابوظبي"), "u627")
+    }
 }

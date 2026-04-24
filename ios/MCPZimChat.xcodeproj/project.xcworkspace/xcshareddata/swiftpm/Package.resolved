@@ -129,7 +129,7 @@
     {
       "identity" : "swift-transformers",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/huggingface/swift-transformers.git",
+      "location" : "https://github.com/huggingface/swift-transformers",
       "state" : {
         "revision" : "b38443e44d93eca770f2eb68e2a4d0fa100f9aa2",
         "version" : "1.3.0"

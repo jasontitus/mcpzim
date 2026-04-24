@@ -1175,17 +1175,38 @@ public actor DefaultZimService: ZimService {
 
     private func loadGraph(pair: (name: String, reader: ZimReader)) throws -> SZRGGraph {
         if let cached = graphs[pair.name] { return cached }
+        // Spatial ZIMs can't be fed into the sync `aStar(graph:…)` code
+        // path — they require async cell loading. Detect up front and
+        // point callers at the new spatial API instead of silently
+        // degrading (or worse, throwing a vague "no graph.bin" error).
+        if try pair.reader.read(path: "routing-data/graph-cells-index.bin") != nil {
+            log("\(pair.name) uses the spatial SZCI layout — the current "
+                + "ZimService A* path is monolithic; use `loadSpatialGraph` "
+                + "+ the async spatial router instead, or repackage this ZIM "
+                + "without --spatial-chunk-scale.")
+            throw ZimServiceError.noStreetzim
+        }
         let memStart = MemoryStats.physFootprintMB()
         log("loading routing-data/graph.bin from \(pair.name)…")
-        let entry = try timed("read graph.bin") {
-            try pair.reader.read(path: "routing-data/graph.bin")
+        // Prefer the single-entry layout. If it's missing, fall back to
+        // the chunked layout — large regions (Japan, Europe) split the
+        // graph across N byte-range entries to side-step libzim's per-
+        // cluster size ceiling.
+        let graphBytes: Data = try timed("read graph.bin") {
+            try Self.readRoutingBlob(
+                reader: pair.reader,
+                primary: "routing-data/graph.bin",
+                manifest: "routing-data/graph-chunk-manifest.json"
+            )
         }
-        guard let entry else { throw ZimServiceError.noStreetzim }
-        log(String(format: "graph.bin = %.1f MB, parsing (skip geoms)…", Double(entry.content.count) / 1_048_576))
+        log(String(format: "graph.bin = %.1f MB, parsing (skip geoms)…", Double(graphBytes.count) / 1_048_576))
         // Skip per-edge polyline decoding — A* only reads node positions
         // and edge distances. Saves ~600 MB on country-scale graphs. Any
-        // client that wants precise polylines can reparse with decodeGeoms=true.
-        let g = try timed("parse graph") { try SZRGGraph.parse(entry.content, decodeGeoms: false) }
+        // client that wants precise polylines can reparse with decodeGeoms=true
+        // (and attach the SZGM companion for v5 split ZIMs).
+        let g = try timed("parse graph") {
+            try SZRGGraph.parse(graphBytes, geomsData: nil, decodeGeoms: false)
+        }
         let memAfter = MemoryStats.physFootprintMB()
         let est = g.estimatedBytes
         log(String(
@@ -1194,6 +1215,73 @@ public actor DefaultZimService: ZimService {
         ))
         graphs[pair.name] = g
         return g
+    }
+
+    /// Load a lazy, cell-based spatial graph from a ZIM that carries the
+    /// SZCI index. Returns ``nil`` when the ZIM is monolithic (caller
+    /// should fall back to the sync ``loadGraph`` / ``aStar`` path).
+    ///
+    /// The returned actor eager-holds only the SZCI index (nodes + names
+    /// + cell metadata — ~150 MB on Japan-scale ZIMs). Cell edge buffers
+    /// fetch lazily via ``pair.reader.read(path:)`` as the async router
+    /// walks into them. Callers drive the LRU via ``cacheLimit``.
+    public func loadSpatialGraph(
+        zimName: String,
+        cacheLimit: Int = 32
+    ) throws -> SpatialGraph? {
+        guard let pair = readers.first(where: { $0.name == zimName }) else {
+            throw ZimServiceError.unknownZim(zimName)
+        }
+        guard let indexEntry = try pair.reader.read(path: "routing-data/graph-cells-index.bin")
+        else {
+            return nil
+        }
+        let idx = try SZCIIndex.parse(indexEntry.content)
+        log(String(format: "spatial index loaded from %@: %d nodes · %d edges · %d cells",
+                   pair.name, idx.numNodes, idx.numEdges, idx.numCells))
+        let reader = pair.reader
+        return SpatialGraph(index: idx, cacheLimit: cacheLimit) { cellId in
+            // Cell file names: 5-digit zero-pad. Match the writer in
+            // streetzim/cloud/repackage_zim.py `_emit_spatial_graph`.
+            let path = String(format: "routing-data/graph-cell-%05d.bin", cellId)
+            guard let entry = try reader.read(path: path) else {
+                throw SZCIError.cellNotFound(cellId)
+            }
+            return entry.content
+        }
+    }
+
+    /// Read a routing-graph-sized blob from a ZIM. If ``primary`` isn't an
+    /// entry but ``manifest`` is, reassemble the chunked layout.
+    /// ``SZRGError.noStreetzim``-style failures propagate as regular
+    /// ``ZimServiceError.noStreetzim`` so upstream fallback logic is
+    /// undisturbed.
+    private static func readRoutingBlob(
+        reader: ZimReader,
+        primary: String,
+        manifest manifestPath: String
+    ) throws -> Data {
+        if let entry = try reader.read(path: primary) {
+            return entry.content
+        }
+        guard let manifest = try reader.read(path: manifestPath) else {
+            throw ZimServiceError.noStreetzim
+        }
+        // Manifest lists chunk paths relative to its own directory.
+        let dir: String
+        if let slash = manifestPath.lastIndex(of: "/") {
+            dir = String(manifestPath[..<manifestPath.index(after: slash)])
+        } else {
+            dir = ""
+        }
+        return try SZRGChunked.reassembleChunked(manifest: manifest.content) { chunkName in
+            guard let ch = try reader.read(path: dir + chunkName) else {
+                throw SZRGError.chunkedReassembly(
+                    "chunk entry \(dir + chunkName) not found in ZIM"
+                )
+            }
+            return ch.content
+        }
     }
 
     private func loadManifest(pair: (name: String, reader: ZimReader)) throws -> [String: Int] {
