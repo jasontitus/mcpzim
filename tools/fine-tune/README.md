@@ -95,9 +95,20 @@ output file and skips if present.
 bash finetune.sh train_v3.jsonl
 
 # override defaults via env
-BATCH_SIZE=8 ITERS=500 LORA_RANK=16 LORA_LAYERS=16 \
+BATCH_SIZE=8 ITERS=500 LORA_LAYERS=16 MAX_SEQ_LEN=2048 \
     bash finetune.sh train_v3.jsonl
+
+# watchdog-safe combo (system busy / display in heavy use)
+BATCH_SIZE=2 MAX_SEQ_LEN=1024 OUT_DIR=ft-out-v7b \
+    bash finetune.sh train_v7b.jsonl
 ```
+
+**Note on `LORA_RANK`**: the env var is *not* wired through to
+`mlx_lm lora` — that flag has no `--rank` CLI option, only a `-c
+CONFIG` YAML file. Every run so far has trained at mlx-lm's default
+**rank 8**, regardless of `LORA_RANK=...`. If you genuinely want a
+different rank, write a YAML config with `lora_parameters.rank: N`
+and pass `-c <config.yaml>` directly to `mlx_lm`.
 
 Outputs land under `ft-out/` (gitignored):
 
@@ -133,15 +144,67 @@ quantization can wash out LoRA effects so measure what ships.
 - **Val interval**: mlx-lm only runs validation every 200 iters by
   default — you won't have an overfitting signal before that. Train
   loss alone isn't enough to judge generalization.
+- **macOS GPU watchdog (`ImpactingInteractivity`)**: when the display
+  is actively in use (Kiwix browsing, Chrome rendering, etc.), Metal
+  kills any single command buffer that runs longer than ~5 s to keep
+  the system responsive. Failure looks like
+  `[METAL] Command buffer execution failed: Impacting Interactivity
+  (0000000e:kIOGPUCommandBufferCallbackErrorImpactingInteractivity)`
+  followed by `Abort trap: 6`. Distinct from `InnocentVictim` — this
+  is the kernel killing *you* for being too slow, not collateral
+  damage. Mitigation: shrink the per-step compute with
+  `BATCH_SIZE=2 MAX_SEQ_LEN=1024`. Smaller batch + half-length
+  sequences cleared every watchdog kill we saw. A foreground display
+  is required — running headless avoids it entirely.
+- **Val loss does not predict eval-grid behaviour**. Across runs the
+  *lowest* val loss has matched the *worst* scenario score. v6 had
+  val 0.254 (best of any run) and 5/13 passes (worst); v4 had val
+  0.269 and 8/13 passes (best). Treat val as a *training-health*
+  signal (no overfitting / no divergence) and the A/B grid as the
+  *behaviour* signal — they answer different questions. Always
+  ship the model that wins the grid, not the one with the lowest
+  val.
 
 ## Run log
 
-| date | data | rows | iters | batch | rank / layers | val@end | train@end | peak mem | wall | artifact |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 2026-04-24 | `train_v3.jsonl` | 1499 | 500 | 8 | 16 / 16 | 0.269 | 0.222 | 68.6 GB | ~100 min | `gemma3-4b-it-ft.Q4_K_M.gguf` |
+All runs on Mac Studio M1 Ultra 128 GB, base model
+`mlx-community/gemma-3-4b-it-bf16`, `LORA_LAYERS=16`, mlx-lm default
+rank 8 (regardless of `LORA_RANK` setting — see note above), val
+every 200 iters. Val batches was mlx-lm default (25) for the v3-v6
+runs; v7a/v7b ran after the script was changed to default 5 so
+those numbers are noisier. *Pass* column is the count of
+passing scenarios on the 13-scenario A/B grid at Q4_K_M / KV
+q8_0/q8_0 — see `../llama-smoke/GRID_RESULTS_FT_*.md`.
 
-2026-04-24 run — val trajectory 3.510 → 0.282 → 0.272 → 0.269 (iter
-1 / 200 / 400 / 500). Tight train/val gap throughout (≤0.06), no
-overfitting; curve decelerated cleanly by iter 50. 500 iters looked
-well-calibrated — further training likely to invert val. Machine:
-Mac Studio M1 Ultra 128 GB.
+| run | data | rows | iters | batch | seq | val end | pass | wall | artifact |
+|---|---|---|---|---|---|---|---|---|---|
+| stock | — | — | — | — | — | — | 6/13 | — | upstream `gemma3-4b-it` Q4_K_M |
+| v3 | `train_v3.jsonl` | 1577 | 500 | 8 | 2048 | 0.269 | 7/13 | ~100 min | `ft-out-v3/` |
+| **v4** | `train_v4.jsonl` (+ chains_3090b) | 1685 | 500 | 8 | 2048 | 0.269 | **8/13** | ~60 min | `ft-out-v4/` ← **ship candidate** |
+| v5-it200 | `train_v5.jsonl` (+ places_diverse) | 2115 | 200 | 8 | 2048 | 0.286 | 7/13 | crashed @ 270 | `ft-out-v5-iter200/` |
+| v6-it200 | `train_v6.jsonl` (+ chains_3090c, places_diverse2) | 3013 | 200 | 4 | 2048 | 0.269 | 6/13 | crashed @ 430 | `ft-out-v6-iter200/` |
+| v6-it400 | same | 3013 | 400 | 4 | 2048 | 0.254 | 5/13 | crashed @ 430 | `ft-out-v6-iter400/` |
+| v7a | `train_v7a.jsonl` (v4 + chains_3090c) | 2079 | 500 | 2 | 1024 | 0.229 | 8/13 | ~25 min | `ft-out-v7a/` |
+| v7b | `train_v7b.jsonl` (v4 + places_diverse2) | 2177 | 500 | 2 | 1024 | 0.230 | 7/13 | ~25 min | `ft-out-v7b/` |
+
+### Key observations
+
+- **v4 is the current ship candidate** — 8/13, beats stock by 2 and
+  every later run. The `restaurants_in_sf` regression that motivated
+  this whole exercise is fixed in v4.
+- **v6 collapsed despite the best val loss**. Adding all four data
+  augmentations on top of v3 (chains_3090b, chains_3090c,
+  places_diverse, places_diverse2 → 3013 rows) drove val to 0.254
+  but cratered the grid to 5/13. See the val-loss-doesn't-predict
+  gotcha above.
+- **v7a/v7b bisection isolated `places_diverse2` as mildly negative**
+  (8 → 7 grid pass) and `chains_3090c` as roughly neutral (8 → 8,
+  trades `nearby_stories_pa` for `french_revolution_chain`). Neither
+  alone explains the v6 drop, so the v6 collapse is most likely
+  *interaction effects* of stacking many overlapping data adds.
+- **batch-2 / seq-1024 is the watchdog-safe profile**. v7a/v7b ran
+  cleanly while batch-4/seq-2048 got `ImpactingInteractivity`-killed
+  early. Tradeoff: ~4× fewer samples seen at iter 500 → undertrained
+  vs v4. Hitting v4-equivalent grid (8/13) at 1/4 the exposure
+  argues those data adds are *helpful*, just not enough to
+  outweigh the watchdog penalty in this regime.
