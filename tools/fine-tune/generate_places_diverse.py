@@ -115,18 +115,19 @@ PLACES = [
 ]
 
 
-# Bucketed count distribution. Weighted to reflect realistic
-# offline-OSM result sizes — most queries return 5-25; the long tail
-# of zero-hits and 100+ teaches the student to handle both extremes.
+# Bucketed count distribution. Capped at 25 because LM Studio's
+# default context (~2k) plus the schema overhead leaves little room
+# for tool_response output once result counts climb past ~30. The
+# original revision included 26-50/51-100/100+ buckets but every one
+# of those triggered "Context size has been exceeded" on the 3090
+# teacher. The grounding lesson is the same at 25 results as at 100,
+# and capping keeps yield high.
 COUNT_BUCKETS: list[tuple[int, tuple[int, int]]] = [
-    (8,  (0, 0)),       # ~8% zero-hit counterfactual
-    (4,  (1, 1)),
-    (18, (2, 5)),
-    (22, (6, 12)),
-    (22, (13, 25)),
-    (14, (26, 50)),
-    (8,  (51, 100)),
-    (4,  (101, 250)),
+    (10, (0, 0)),       # ~10% zero-hit counterfactual
+    (5,  (1, 1)),
+    (25, (2, 5)),
+    (30, (6, 12)),
+    (30, (13, 25)),
 ]
 
 
@@ -141,49 +142,21 @@ def sample_count() -> int:
 # Teacher prompt — strict grounding contract.
 # ----------------------------------------------------------------------
 TEACHER_SYS = """\
-You are a teacher generating ONE training example for a small on-device
-assistant. The assistant calls tools to find places and then writes a
-reply.
+Generate ONE near_places training example. JSON with three keys.
 
-Inputs you'll receive: a kind, a place, and a target_count. You produce
-a SINGLE JSON object with keys `tool_call`, `tool_response`,
-`assistant_reply`.
-
-HARD GROUNDING RULES — the trainer rejects outputs that violate any:
-
-1. `tool_call.function` MUST be `near_places` or `near_named_place`.
-   Use `near_named_place` when the place is a named string; use
-   `near_places` when you want to attach an explicit lat/lon.
-
-2. `tool_response.results` length MUST equal exactly the target_count
-   you were given. Even when target_count is 0 — emit
-   `{"results": [], "total_in_radius": 0, "by_category": {}}`.
-
-3. Every result MUST be a plausible name for that kind in that place.
-   Do NOT recycle "Bar 1, Bar 2" — invent specific realistic names
-   (you may use real establishments you know, or fully invented ones,
-   as long as they sound right for the locale and kind). Each result
-   has fields: `name`, `type`, `subtype`, `lat`, `lon`, `distance_m`.
-
-4. `assistant_reply` MUST satisfy ALL of:
-   a. State the actual count of results (or say "no <kind> found"
-      when zero).
-   b. Mention by name AT LEAST 2 specific entries from
-      tool_response.results (1 if total_count is 1; 0 if zero-hit).
-   c. Mention at least one specific number — a distance in meters,
-      a count, a coordinate — drawn from tool_response.
-   d. NEVER use a fixed template like "I found 25 [X] in [Y]!" or
-      "There are several …". Vary your phrasing each time. Treat the
-      reply as something a friend would actually say aloud.
-   e. Keep it 1-3 sentences. No preamble, no markdown, no emoji.
-
-5. For zero-hit cases, the reply should be plain and useful:
-   acknowledge the empty result, suggest a sensible alternative
-   (broaden radius, try a related kind, try a nearby place), and
-   stop. Never invent results.
-
-Stay grounded in tool_response. Don't add facts (open hours,
-ratings, prices) the tool didn't provide.
+Rules (trainer rejects violations):
+- tool_call.function: `near_places` or `near_named_place`.
+- tool_response.results length == target_count exactly. For
+  target_count=0 emit `{"results":[], "total_in_radius":0, "by_category":{}}`.
+- Each result has name/type/subtype/lat/lon/distance_m. Names must
+  be realistic for the kind+place combo (real or invented).
+- assistant_reply: 1-3 sentences. State the exact count. Mention >=2
+  specific names from results (1 if count==1; 0 if zero-hit). No
+  fixed templates ("I found 25 X in Y") — phrase naturally each time.
+  No emoji, no markdown.
+- Zero-hit replies: plainly say none found, suggest broadening
+  radius / nearby place / related kind. Don't invent results.
+- Stay grounded — no hours, ratings, prices the tool didn't provide.
 """
 
 
@@ -448,10 +421,11 @@ def main() -> None:
     ap.add_argument("--n",        type=int, default=400)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.85)
-    ap.add_argument("--max-tokens",  type=int, default=900,
-                    help="A 100-result tool_response with realistic "
-                         "names + distances easily clears 600 tokens "
-                         "and the reply is another 100; 900 covers it.")
+    ap.add_argument("--max-tokens",  type=int, default=640,
+                    help="With target_count capped at 25, a typical "
+                         "trajectory fits in ~400 output tokens; 640 "
+                         "leaves headroom without blowing through the "
+                         "default LM Studio 2k context budget.")
     ap.add_argument("--out", default="train_places_diverse.jsonl")
     ap.add_argument("--fail-log", default=None)
     ap.add_argument("--seed", type=int, default=22222)
