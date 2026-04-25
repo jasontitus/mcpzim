@@ -108,7 +108,10 @@ if [[ ! -f "$ADAPTERS_DIR/adapters.safetensors" ]]; then
         --num-layers "$LORA_LAYERS" \
         --batch-size "$BATCH_SIZE" \
         --learning-rate "$LEARN_RATE" \
-        --fine-tune-type lora
+        --fine-tune-type lora \
+        --max-seq-length "${MAX_SEQ_LEN:-2048}" \
+        --val-batches "${VAL_BATCHES:-5}" \
+        --grad-checkpoint
 fi
 
 # ---------------------------------------------------------------
