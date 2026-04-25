@@ -95,6 +95,72 @@ fi
 # vs tokenizer.json. If conversion errors with "BPE pre-tokenizer was not
 # recognized", uncomment and adapt the cp from finetune.sh's Mac block.
 
+# --- Step 3.5: strip out-of-bounds multimodal tokens from fused tokenizer.
+# Gemma 3's tokenizer ships with <image_soft_token> at id == vocab_size,
+# which trips convert_hf_to_gguf.py's strict
+#   assert max(tokenizer.vocab.values()) < vocab_size
+# in get_vocab_base(). The text-only models have no embedding row for
+# that token, so dropping it is safe. Idempotent — bails fast if every
+# token is already in-bounds.
+"$VENV_PY" - "$FUSED_DIR" <<'PY'
+import json, os, sys
+fused = sys.argv[1]
+cfg_path = os.path.join(fused, "config.json")
+if not os.path.exists(cfg_path):
+    sys.exit(0)
+cfg = json.load(open(cfg_path))
+vocab_size = cfg.get("vocab_size") or cfg.get("text_config", {}).get("vocab_size")
+if not vocab_size:
+    sys.exit(0)
+
+def load(p):
+    return json.load(open(p)) if os.path.exists(p) else None
+def save(p, o):
+    json.dump(o, open(p, "w"), ensure_ascii=False, indent=2)
+
+changed = False
+tj = load(os.path.join(fused, "tokenizer.json"))
+if tj is not None:
+    n0 = len(tj.get("added_tokens", []))
+    if "added_tokens" in tj:
+        tj["added_tokens"] = [t for t in tj["added_tokens"] if t.get("id", -1) < vocab_size]
+    if "model" in tj and "vocab" in tj["model"]:
+        tj["model"]["vocab"] = {k: v for k, v in tj["model"]["vocab"].items() if v < vocab_size}
+    if len(tj.get("added_tokens", [])) != n0:
+        save(os.path.join(fused, "tokenizer.json"), tj)
+        changed = True
+        print(f"  tokenizer.json: dropped {n0 - len(tj['added_tokens'])} OOB tokens")
+
+tc = load(os.path.join(fused, "tokenizer_config.json"))
+if tc is not None:
+    drop = []
+    if "added_tokens_decoder" in tc:
+        for k in list(tc["added_tokens_decoder"]):
+            if int(k) >= vocab_size:
+                tc["added_tokens_decoder"].pop(k); drop.append(k)
+    # Multimodal hooks that AutoTokenizer re-adds the OOB token from.
+    for k in ["image_token", "boi_token", "eoi_token",
+              "model_specific_special_tokens", "processor_class"]:
+        if k in tc:
+            tc.pop(k); drop.append(k)
+    if drop:
+        save(os.path.join(fused, "tokenizer_config.json"), tc)
+        changed = True
+        print(f"  tokenizer_config.json: dropped {drop}")
+
+at = load(os.path.join(fused, "added_tokens.json"))
+if at is not None:
+    drop = [k for k, v in at.items() if v >= vocab_size]
+    for k in drop: at.pop(k)
+    if drop:
+        save(os.path.join(fused, "added_tokens.json"), at)
+        changed = True
+        print(f"  added_tokens.json: dropped {drop}")
+
+if changed:
+    print(">> stripped OOB multimodal tokens from fused tokenizer")
+PY
+
 # --- Step 4: HF → GGUF F16 ---
 if [[ ! -d "$LLAMA_CPP_SRC" ]]; then
     echo ">> cloning llama.cpp source"
