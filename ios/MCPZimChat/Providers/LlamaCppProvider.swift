@@ -279,26 +279,22 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         let tokens = Self.tokenize(vocab: vocab, prompt: prompt)
         log.notice("generate: \(tokens.count) prompt tokens")
 
-        // Prefill via `llama_batch_get_one` — the canonical path in
-        // llama.cpp/examples/simple.cpp. It constructs a view batch
-        // over the full prompt and llama_decode internally chunks
-        // into n_batch-sized sub-batches, handling pos/seq_id/logits
-        // defaults correctly. Our earlier attempt with manual
-        // `llama_batch_init` + `llama_batch_add` chunking failed with
-        // `llama_decode prefill failed at pos=512` on every multi-
-        // batch prompt (tried various logits-anchor patterns, none
-        // worked). Switching to the library's internal split is
-        // both simpler and matches what the example + main.cpp do.
+        // Clear seq 0's KV from any previous turn. Same `ctx` is
+        // reused across turns, so turn N-1's tokens stay in seq-0
+        // cells; writing turn N at pos=0 over those stale slots
+        // makes llama_decode return rc=-1 (slot manager can't
+        // reconcile pos overlap with existing entries). Hit in the
+        // wild on 2026-04-25 — gist 80daf913 — turn 2 prefill of
+        // 4003 tokens failed at batch 0..<512.
         //
-        // KV cache clear between turns: llama.cpp's examples don't
-        // call this explicitly and the library handles seq_id 0
-        // reset on its own. Explicit `llama_memory_clear` on a
-        // fresh context was a suspected crash source (iOS 2026-04-24
-        // silent process death right after prefill started).
-        // Skipping it entirely — every new Llama() already starts
-        // with empty memory, and we currently treat each turn as a
-        // cold prefill (no cache reuse). When we add LCP-match reuse
-        // later we'll revisit this.
+        // Using `llama_memory_seq_rm` (per-seq) instead of
+        // `llama_memory_clear` (global). The latter was suspected
+        // of causing silent process death on iOS 2026-04-24 right
+        // after prefill started. seq_rm with p0=0, p1=-1 wipes the
+        // single seq we use without touching any other state.
+        if let mem = llama_get_memory(ctx) {
+            _ = llama_memory_seq_rm(mem, 0, 0, -1)
+        }
         // Prefill via manual chunking — llama.cpp b8911 asserts
         // `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` in
         // llama-context.cpp:1599, so llama_batch_get_one(whole_prompt)
