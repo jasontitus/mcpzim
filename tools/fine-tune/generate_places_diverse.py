@@ -115,17 +115,22 @@ PLACES = [
 ]
 
 
-# Bucketed count distribution. Wide range from zero-hit through 100+
-# so the student sees every realistic result-set size.
+# Bucketed count distribution. Tilted toward the 50+ tail because
+# real OSM searches in cities routinely return 100+. The earlier
+# distribution had only 12% in 26+ buckets and the validator rejected
+# almost all of those (truncation at max_tokens=1800), so 0% of
+# examples on disk had >25 results — exactly the case the model
+# handles worst on the phone. With max_tokens raised to 4096 we
+# can actually generate 100+ result trajectories now.
 COUNT_BUCKETS: list[tuple[int, tuple[int, int]]] = [
-    (8,  (0, 0)),       # ~8% zero-hit counterfactual
-    (4,  (1, 1)),
-    (18, (2, 5)),
-    (22, (6, 12)),
-    (22, (13, 25)),
-    (14, (26, 50)),
-    (8,  (51, 100)),
-    (4,  (101, 200)),
+    (5,  (0, 0)),       # 5% zero-hit
+    (5,  (1, 1)),
+    (12, (2, 5)),
+    (13, (6, 12)),
+    (15, (13, 25)),
+    (15, (26, 50)),
+    (20, (51, 100)),
+    (15, (101, 200)),
 ]
 
 
@@ -419,11 +424,12 @@ def main() -> None:
     ap.add_argument("--n",        type=int, default=400)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.85)
-    ap.add_argument("--max-tokens",  type=int, default=1800,
-                    help="A 100-result tool_response with realistic "
-                         "names + distances can run ~1400 tokens; 1800 "
-                         "covers it. Requires the LM Studio teacher to "
-                         "be loaded with context >= ~3k (we use 9606).")
+    ap.add_argument("--max-tokens",  type=int, default=4096,
+                    help="Each result is ~30-50 tokens (name + lat/lon "
+                         "+ distance); 200-result responses run ~6-8k "
+                         "tokens with reply. 4096 covers up to ~150 "
+                         "comfortably. Requires teacher context >= ~6k "
+                         "(we use 9606 on the 3090).")
     ap.add_argument("--out", default="train_places_diverse.jsonl")
     ap.add_argument("--fail-log", default=None)
     ap.add_argument("--seed", type=int, default=22222)

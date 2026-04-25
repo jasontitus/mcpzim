@@ -50,9 +50,28 @@ assistant:
     reply (2-4 sentences) drawing only from section_body.
 
 The JSON has keys: tool_call_1, tool_response_1, reply_1, followup,
-tool_call_2, tool_response_2, reply_2. All tool_* objects should look
-realistic (real article titles, 4-8 plausible section names, etc.).
-Keep invented content factually plausible."""
+tool_call_2, tool_response_2, reply_2.
+
+CRITICAL — `title` field rules (both tool_calls + tool_response_1):
+
+- Use the PLAIN canonical Wikipedia article title only. Examples:
+  "Industrial Revolution", "Immune system", "World War II",
+  "CRISPR", "Photosynthesis".
+- DO NOT decorate with prepositions, dates, or article-of-titles:
+  ❌ "A History of the Immune System"
+  ❌ "The Industrial Revolution (1760–1840)"
+  ❌ "An Introduction to CRISPR"
+  ✅ "Immune system"
+  ✅ "Industrial Revolution"
+  ✅ "CRISPR"
+- The student is going to lookup this title against a real ZIM index
+  at inference; ornate titles miss the index. Use the bare canonical
+  string a Wikipedia URL would use.
+- The same title MUST appear identically in tool_call_1, tool_call_2,
+  and tool_response_1.title.
+
+Keep invented section_body and lead content factually plausible.
+4-8 plausible section names per article."""
 
 
 SCHEMA: dict[str, Any] = {
