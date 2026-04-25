@@ -1027,7 +1027,24 @@ public final class ChatSession {
             approximateMemoryMB: 3200,
             template: Gemma3Template()
         )
+        // LoRA-fine-tuned Gemma 3 4B IT — tool-calling-grounded variant
+        // (V7C, run 2026-04-25). Same Q4_K_M / iSWA-pruning / Q8_0 KV
+        // layout as stock so memory profile is identical (~3.2 GB peak).
+        // V7C scored 10/13 on the llama-smoke eval grid vs stock's 6/13
+        // (+4: gained sky_is_blue, nearby_stories, tell_me_about,
+        // french_revolution, crispr; lost narrate_hp_garage). Default
+        // for new installs and migrated for existing stock-Q4 picks.
+        // See tools/llama-smoke/GRID_RESULTS_FT_V7C.md.
+        let gemma3_4b_gguf_ft = LlamaCppProvider(
+            id: "gemma3-4b-it-q4km-gguf-ft",
+            displayName: "Gemma 3 4B IT FT (Q4_K_M · llama.cpp)",
+            huggingFaceRepo: "sliderforthewin/gemma-3-4b-it-ft-GGUF",
+            ggufFilename: "gemma-3-4b-it-ft.Q4_K_M.gguf",
+            approximateMemoryMB: 3200,
+            template: Gemma3Template()
+        )
         var providers: [any ModelProvider] = [
+            gemma3_4b_gguf_ft,
             gemma3_4b_gguf,
             gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b,
         ]
@@ -1088,11 +1105,18 @@ public final class ChatSession {
             "gemma3-4b-it-text-4bit",
             "gemma3-12b-it-text-4bit",
         ]
-        let resolvedId = crashesOnDevice.contains(savedId ?? "")
-            ? gemma3_4b_gguf.id : savedId
-        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? gemma3_4b_gguf
+        // Migrate previous-default stock Gemma 3 4B Q4 picks to the FT
+        // variant (V7C, +4 vs stock on the eval grid). Same memory
+        // footprint and template; pickers can repick stock to A/B.
+        var resolvedId: String? = savedId
+        if crashesOnDevice.contains(savedId ?? "") {
+            resolvedId = gemma3_4b_gguf_ft.id
+        } else if savedId == gemma3_4b_gguf.id {
+            resolvedId = gemma3_4b_gguf_ft.id
+        }
+        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? gemma3_4b_gguf_ft
         #else
-        self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma3_4b_gguf
+        self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma3_4b_gguf_ft
         #endif
         startObservingSelectedModel()
         // Wire every Gemma4Provider instance (which includes Qwen
