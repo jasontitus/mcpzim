@@ -158,8 +158,9 @@ quantization can wash out LoRA effects so measure what ships.
   is required — running headless avoids it entirely.
 - **Val loss does not predict eval-grid behaviour**. Across runs the
   *lowest* val loss has matched the *worst* scenario score. v6 had
-  val 0.254 (best of any run) and 5/13 passes (worst); v4 had val
-  0.269 and 8/13 passes (best). Treat val as a *training-health*
+  val 0.254 (lowest) and 5/13 passes (worst); v7c is the ship
+  candidate at 10/13 with val 0.255 — and v7a's 0.229 val (lower
+  than v7c's) only got 8/13. Treat val as a *training-health*
   signal (no overfitting / no divergence) and the A/B grid as the
   *behaviour* signal — they answer different questions. Always
   ship the model that wins the grid, not the one with the lowest
@@ -180,7 +181,7 @@ q8_0/q8_0 — see `../llama-smoke/GRID_RESULTS_FT_*.md`.
 |---|---|---|---|---|---|---|---|---|---|
 | stock | — | — | — | — | — | — | 6/13 | — | upstream `gemma3-4b-it` Q4_K_M |
 | v3 | `train_v3.jsonl` | 1577 | 500 | 8 | 2048 | 0.269 | 7/13 | ~100 min | `ft-out-v3/` |
-| **v4** | `train_v4.jsonl` (+ chains_3090b) | 1685 | 500 | 8 | 2048 | 0.269 | **8/13** | ~60 min | `ft-out-v4/` ← **ship candidate** |
+| v4 | `train_v4.jsonl` (+ chains_3090b) | 1685 | 500 | 8 | 2048 | 0.269 | 8/13 | ~60 min | `ft-out-v4/` |
 | v5-it200 | `train_v5.jsonl` (+ places_diverse) | 2115 | 200 | 8 | 2048 | 0.286 | 7/13 | crashed @ 270 | `ft-out-v5-iter200/` |
 | v6-it200 | `train_v6.jsonl` (+ chains_3090c, places_diverse2) | 3013 | 200 | 4 | 2048 | 0.269 | 6/13 | crashed @ 430 | `ft-out-v6-iter200/` |
 | v6-it400 | same | 3013 | 400 | 4 | 2048 | 0.254 | 5/13 | crashed @ 430 | `ft-out-v6-iter400/` |
