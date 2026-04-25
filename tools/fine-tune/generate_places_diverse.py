@@ -115,19 +115,17 @@ PLACES = [
 ]
 
 
-# Bucketed count distribution. Capped at 25 because LM Studio's
-# default context (~2k) plus the schema overhead leaves little room
-# for tool_response output once result counts climb past ~30. The
-# original revision included 26-50/51-100/100+ buckets but every one
-# of those triggered "Context size has been exceeded" on the 3090
-# teacher. The grounding lesson is the same at 25 results as at 100,
-# and capping keeps yield high.
+# Bucketed count distribution. Wide range from zero-hit through 100+
+# so the student sees every realistic result-set size.
 COUNT_BUCKETS: list[tuple[int, tuple[int, int]]] = [
-    (10, (0, 0)),       # ~10% zero-hit counterfactual
-    (5,  (1, 1)),
-    (25, (2, 5)),
-    (30, (6, 12)),
-    (30, (13, 25)),
+    (8,  (0, 0)),       # ~8% zero-hit counterfactual
+    (4,  (1, 1)),
+    (18, (2, 5)),
+    (22, (6, 12)),
+    (22, (13, 25)),
+    (14, (26, 50)),
+    (8,  (51, 100)),
+    (4,  (101, 200)),
 ]
 
 
@@ -421,11 +419,11 @@ def main() -> None:
     ap.add_argument("--n",        type=int, default=400)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.85)
-    ap.add_argument("--max-tokens",  type=int, default=640,
-                    help="With target_count capped at 25, a typical "
-                         "trajectory fits in ~400 output tokens; 640 "
-                         "leaves headroom without blowing through the "
-                         "default LM Studio 2k context budget.")
+    ap.add_argument("--max-tokens",  type=int, default=1800,
+                    help="A 100-result tool_response with realistic "
+                         "names + distances can run ~1400 tokens; 1800 "
+                         "covers it. Requires the LM Studio teacher to "
+                         "be loaded with context >= ~3k (we use 9606).")
     ap.add_argument("--out", default="train_places_diverse.jsonl")
     ap.add_argument("--fail-log", default=None)
     ap.add_argument("--seed", type=int, default=22222)
