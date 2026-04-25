@@ -71,12 +71,17 @@ def load_base(model_name: str, dtype=torch.bfloat16):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if _is_multimodal(model_name):
-        print(f"  multimodal base: loading via AutoModelForImageTextToText "
-              f"and extracting .language_model")
-        full = AutoModelForImageTextToText.from_pretrained(
-            model_name, torch_dtype=dtype,
+        # transformers 4.55+ dropped the convenient `.language_model`
+        # attribute on Gemma3ForConditionalGeneration (it now lives at
+        # `.model.language_model`, a bare decoder, not a CausalLM).
+        # Use Gemma3ForCausalLM directly — same weights, no vision
+        # tower, valid CausalLM forward pass for PEFT/training.
+        print(f"  multimodal base: loading as Gemma3ForCausalLM (text-only)")
+        from transformers import Gemma3ForCausalLM
+        full = Gemma3ForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype, attn_implementation="sdpa",
         ).to(device)
-        return full.language_model, full, tokenizer
+        return full, full, tokenizer
 
     full = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=dtype,
