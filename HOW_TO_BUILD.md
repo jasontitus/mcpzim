@@ -551,6 +551,30 @@ Gotchas I burned time on:
 
 A/B eval against stock: `tools/llama-smoke/grid.py --models gemma3-4b --only Q4_K_M --kv q8_0/q8_0 --out GRID_RESULTS_FT_AB.md`. The fine-tuned model has a `ModelSpec` with `local_paths={"Q4_K_M": "…/ft-out/…"}`; `eval.py` grew `--local-path` for this.
 
+### Train multiple base models in parallel
+
+`finetune.sh` reads `BASE_MODEL`, `MODEL_TAG`, and `OUT_DIR` env vars so any base + tag can be paired. `train_all.sh` is a wrapper that walks a list of candidates (gemma 3 4b, gemma 3 1b, qwen 3.5 4b, qwen 3.5 1.7b by default) and runs them sequentially:
+
+```sh
+cat train_v2.jsonl train_compare_v2.jsonl train_weaktools_v2.jsonl \
+    train_chains*.jsonl train_places_diverse*.jsonl > train_v4_combined.jsonl
+bash train_all.sh train_v4_combined.jsonl
+```
+
+Each candidate produces `ft-out-<tag>/<tag>.Q4_K_M.gguf`. Skip-if-exists guard means it's safe to re-run after partial completion. `grid.py` already has `ModelSpec` entries pointing at each output path, so:
+
+```sh
+cd ../llama-smoke
+.venv/bin/python grid.py \
+  --models gemma3-4b,gemma3-1b,qwen3.5-4b,qwen3.5-1.7b \
+  --only Q4_K_M --kv q8_0/q8_0 --out GRID_RESULTS_FT_MATRIX.md
+```
+
+A few practical notes:
+- **Qwen has a real `system` role**, while our training data folds preamble into the first user turn (Gemma 3 has no system role). Inference-time iOS uses `QwenChatMLTemplate` which DOES use system role. The Qwen FT may need a one-shot dataset re-emit (system + user split) if val loss plateaus high — watch the curve.
+- **Qwen 3.5 hybrid-cache reuse bug** (see "Qwen 3.5 hybrid-cache cannot reuse across turns" further down) is an upstream MLX/llama.cpp issue that breaks multi-turn KV reuse; ggml-org are working on it. Until fixed, expect Qwen multi-turn scenarios to be slower than Gemma even after fine-tune. Worth shipping anyway as a backup tier.
+- **Smaller bases (1B, 1.7B)** absorb the same dataset on less LoRA capacity — drop `LORA_RANK` from 16 to 8 if you see overfit signal in val loss (`LORA_RANK=8 bash train_all.sh ...`).
+
 ## Why this exists
 
 Every time the conversation compacts I forget how to invoke the macOS tools because the knowledge lives in scrolled-off chat, not in a file. If you add a new target or find a working incantation, add a section here.

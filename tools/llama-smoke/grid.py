@@ -78,15 +78,40 @@ MODELS: list[ModelSpec] = [
         prefix="Qwen3.5-2B",
         quants=["Q4_K_M", "Q5_K_M", "Q8_0"],
     ),
-    # LoRA-fine-tuned Gemma 3 4B on our 548-trajectory tool-calling set
-    # (see tools/fine-tune/train.jsonl). Compare against stock gemma3-4b
-    # Q4_K_M at KV q8_0/q8_0 — our shipping config.
+    # LoRA-fine-tuned variants — produced by tools/fine-tune/train_all.sh
+    # against the v4 dataset (train_v4_combined.jsonl, ~3000 examples
+    # mixing single-turn + chains + grounded near_places). Each candidate
+    # uses its own OUT_DIR so the GGUFs sit side-by-side.
     ModelSpec(
         key="gemma3-4b-ft",
         quants=["Q4_K_M"],
         local_paths={
             "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
-                      "fine-tune/ft-out/gemma3-4b-it-ft.Q4_K_M.gguf",
+                      "fine-tune/ft-out-gemma3-4b/gemma3-4b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
+        key="gemma3-1b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-gemma3-1b/gemma3-1b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
+        key="qwen3.5-4b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3.5-4b/qwen3.5-4b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
+        key="qwen3.5-1.7b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3.5-1.7b/qwen3.5-1.7b-it-ft.Q4_K_M.gguf",
         },
     ),
 ]

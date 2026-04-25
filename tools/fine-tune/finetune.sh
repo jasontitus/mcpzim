@@ -38,6 +38,10 @@ fi
 # Config (override via env)
 # ---------------------------------------------------------------
 BASE_MODEL="${BASE_MODEL:-mlx-community/gemma-3-4b-it-bf16}"
+# MODEL_TAG drives the GGUF filenames so multiple base models can
+# share the same parent OUT_DIR without artifact collisions. Default
+# is derived from BASE_MODEL's short name + "-ft".
+MODEL_TAG="${MODEL_TAG:-$(basename "$BASE_MODEL" | sed -E 's/-bf16$//; s/-it$/-it/' )-ft}"
 ITERS="${ITERS:-500}"
 LORA_LAYERS="${LORA_LAYERS:-16}"
 LORA_RANK="${LORA_RANK:-16}"
@@ -49,8 +53,8 @@ LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-$HERE/../../ios/LocalPackages/llama.cpp-swift}"
 
 ADAPTERS_DIR="$OUT_DIR/adapters"
 FUSED_DIR="$OUT_DIR/fused-hf"
-GGUF_F16="$OUT_DIR/gemma3-4b-it-ft.f16.gguf"
-GGUF_Q4="$OUT_DIR/gemma3-4b-it-ft.Q4_K_M.gguf"
+GGUF_F16="$OUT_DIR/${MODEL_TAG}.f16.gguf"
+GGUF_Q4="$OUT_DIR/${MODEL_TAG}.Q4_K_M.gguf"
 VAL_SPLIT="$OUT_DIR/valid.jsonl"
 TRAIN_SPLIT="$OUT_DIR/train.jsonl"
 
