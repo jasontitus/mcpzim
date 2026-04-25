@@ -111,7 +111,7 @@ if [[ ! -f "$ADAPTERS_DIR/adapters.safetensors" ]]; then
         --fine-tune-type lora \
         --max-seq-length "${MAX_SEQ_LEN:-2048}" \
         --val-batches "${VAL_BATCHES:-5}" \
-        --grad-checkpoint
+        ${GRAD_CKPT:+--grad-checkpoint}
 fi
 
 # ---------------------------------------------------------------
