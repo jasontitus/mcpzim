@@ -186,25 +186,26 @@ q8_0/q8_0 — see `../llama-smoke/GRID_RESULTS_FT_*.md`.
 | v6-it400 | same | 3013 | 400 | 4 | 2048 | 0.254 | 5/13 | crashed @ 430 | `ft-out-v6-iter400/` |
 | v7a | `train_v7a.jsonl` (v4 + chains_3090c) | 2079 | 500 | 2 | 1024 | 0.229 | 8/13 | ~25 min | `ft-out-v7a/` |
 | v7b | `train_v7b.jsonl` (v4 + places_diverse2) | 2177 | 500 | 2 | 1024 | 0.230 | 7/13 | ~25 min | `ft-out-v7b/` |
+| **v7c** | `train_v7c.jsonl` (v4 + places_diverse) | 2115 | 500 | 2 | 1024 | 0.255 | **10/13** | ~25 min | `ft-out-v7c/` ← **ship candidate** |
 
 ### Key observations
 
-- **v4 is the current ship candidate** — 8/13, beats stock by 2 and
-  every later run. The `restaurants_in_sf` regression that motivated
-  this whole exercise is fixed in v4.
+- **v7c is the current ship candidate** — 10/13, beating v4 by 2 and
+  stock by 4. Adding `train_places_diverse.jsonl` (the original
+  436-row diversity batch) to the v4 corpus picked up
+  `sky_is_blue_chain` and `french_revolution_chain` without losing
+  any of v4's wins.
+- **The v7a/v7b/v7c bisection isolated each new batch's effect on
+  top of v4**. See [`DATA_RECIPE.md`](DATA_RECIPE.md) for the full
+  per-batch impact and what to generate next.
 - **v6 collapsed despite the best val loss**. Adding all four data
   augmentations on top of v3 (chains_3090b, chains_3090c,
   places_diverse, places_diverse2 → 3013 rows) drove val to 0.254
-  but cratered the grid to 5/13. See the val-loss-doesn't-predict
-  gotcha above.
-- **v7a/v7b bisection isolated `places_diverse2` as mildly negative**
-  (8 → 7 grid pass) and `chains_3090c` as roughly neutral (8 → 8,
-  trades `nearby_stories_pa` for `french_revolution_chain`). Neither
-  alone explains the v6 drop, so the v6 collapse is most likely
-  *interaction effects* of stacking many overlapping data adds.
-- **batch-2 / seq-1024 is the watchdog-safe profile**. v7a/v7b ran
+  but cratered the grid to 5/13. The pieces that work alone (v7c at
+  +2) cancel out and become net negative when stacked together —
+  classic overlapping-data interaction effect.
+- **batch-2 / seq-1024 is the watchdog-safe profile**. v7a/b/c ran
   cleanly while batch-4/seq-2048 got `ImpactingInteractivity`-killed
   early. Tradeoff: ~4× fewer samples seen at iter 500 → undertrained
-  vs v4. Hitting v4-equivalent grid (8/13) at 1/4 the exposure
-  argues those data adds are *helpful*, just not enough to
-  outweigh the watchdog penalty in this regime.
+  vs v4 (which ran batch 8). v7c hitting 10/13 anyway argues
+  the data is the dominant factor, not the training depth.
