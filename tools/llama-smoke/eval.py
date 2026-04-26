@@ -1019,6 +1019,12 @@ def main():
     elif args.swa_full == "false":
         swa_full_arg = False
     t_load = time.perf_counter()
+    chat_template_kwargs = {}
+    chat_template_path = os.environ.get("CHAT_TEMPLATE")
+    if chat_template_path:
+        with open(chat_template_path) as fh:
+            chat_template_kwargs["chat_template"] = fh.read()
+        print(f"       overriding chat template from {chat_template_path}")
     llm = Llama(
         model_path=gguf_path,
         n_ctx=args.n_ctx,
@@ -1028,6 +1034,7 @@ def main():
         flash_attn=args.flash_attn,
         swa_full=swa_full_arg,
         verbose=False,
+        **chat_template_kwargs,
     )
     print(f"       load: {time.perf_counter()-t_load:.2f}s · "
           f"rss: {rss_mb():.0f} MB")
