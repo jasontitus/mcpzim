@@ -149,8 +149,8 @@ MODELS: list[ModelSpec] = [
         quants=["Q4_K_M"],
         local_paths={
             "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
-                      "fine-tune/ft-out-qwen3.6-27b-unsloth/"
-                      "qwen3.6-27b-it-ft-iter100.Q4_K_M.gguf",
+                      "fine-tune/ft-out-qwen3.6-27b-unsloth-bsz2/"
+                      "qwen3.6-27b-it-ft-iter500.Q4_K_M.gguf",
         },
     ),
 ]
