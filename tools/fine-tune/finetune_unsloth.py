@@ -143,6 +143,13 @@ def main() -> int:
         desc="valid",
     )
 
+    # IMPORTANT: eval_strategy="no". Mid-run eval on a 27B at the
+    # 24 GB-3090 ceiling pushes Unsloth to enable "smartly offload
+    # gradients to save VRAM" — saves memory but cuts throughput
+    # ~5-7×. Once on, it stays on for the rest of training. We
+    # skip mid-run eval and rely on grid eval against saved
+    # checkpoints. The valid set is still used by SFTTrainer for
+    # final-epoch metrics if it falls within max_steps.
     sft_cfg = SFTConfig(
         dataset_text_field="text",
         max_seq_length=args.max_seq_length,
@@ -152,8 +159,7 @@ def main() -> int:
         max_steps=args.iters,
         learning_rate=args.learning_rate,
         logging_steps=10,
-        eval_strategy="steps",
-        eval_steps=args.save_every,
+        eval_strategy="no",
         save_strategy="steps",
         save_steps=args.save_every,
         output_dir=f"{args.adapter_path}-trainer",
@@ -166,7 +172,6 @@ def main() -> int:
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_ds,
-        eval_dataset=valid_ds,
         args=sft_cfg,
     )
     trainer.train()
