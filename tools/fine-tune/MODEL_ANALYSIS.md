@@ -25,6 +25,7 @@ data. Sizes/peaks are at inference time.
 | qwen3.5-9b-v7c | pcgaming PEFT | 4/13 | 5.8 GB | 5.3 GB | ~22 s | (looping in thinking mode) |
 | gemma3-1b-v7c | pcgaming PEFT | 1/13 | 1.0 GB | 769 MB | ~2 s | regression vs stock |
 | qwen3.6-27b-v7c | Mac mlx-lm | 0/13 | 16 GB | 15 GB | ~12 s | ⚠️ broken (see below) |
+| qwen3.6-27b-v7c (iter 100) | pcgaming Unsloth | not graded yet | ~16 GB | 15 GB | ~80 s | ✅ coherent CoT, hits thinking-loop on grader |
 
 `narrate_hp_garage`, `grav_waves_chain`, `wwi_vs_wwii_chain`,
 `french_revolution_chain` were "stuck" (everyone failing). Of those,
@@ -142,19 +143,50 @@ gemma3-1b is purely capacity-limited. v7c training drops it to
 to fit. Don't ship a 1B — anything under 2B regresses against the
 stock Gemma 4B at this task.
 
-### Qwen 3.6 27B: pipeline broken
+### Qwen 3.6 27B: mlx-lm IS the bug, not the model
 
-Discussed above. Open question: is it (a) mlx-lm's Qwen 3.6
-implementation, (b) some interaction with v7c data and Qwen 3.6's
-specific tokenizer, or (c) the LoRA application + 27B size + the
-specific `<think>` chat template? We don't know yet.
+**2026-04-26 update — definitively answered.** Trained Qwen 3.6 27B
+on pcgaming via Unsloth (4-bit base + LoRA on `Qwen/Qwen3.6-27B`).
+Pulled the iter-100 adapter to Mac, fused against the upstream bf16
+base, converted to Q4_K_M, and ran a one-shot eval. Output:
 
-Path forward: **try Qwen 3.6 27B via QLoRA on pcgaming**. Different
-training framework (PEFT + bitsandbytes) is a strong control vs
-mlx-lm. If pcgaming QLoRA also produces garbage, the issue is
-deeper than mlx-lm. If pcgaming QLoRA works, we have an
-independent route to a 27B FT (and learn that mlx-lm's Qwen 3.6
-support is the bug).
+> "The user is asking for good restaurants in San Francisco. I
+> tried to call near_named_place with 'San Francisco', but it
+> failed with 'no fixture for place=san francisco'. This suggests
+> the specific..."
+
+Coherent CoT, valid tool calls, accurate diagnosis of fixture
+errors. Same training step that produced `'*dx!nfrdb-related/'`
+random tokens via mlx-lm now produces fluent reasoning via
+Unsloth/PEFT. Conclusion: **mlx-lm's Qwen 3.6 implementation is
+broken**; the underlying weights and our v7c data are fine.
+
+Two follow-ups for the iter-100 model to actually score on the grid:
+
+1. **Disable thinking mode at inference** — the embedded
+   `chat_template.jinja` still sets `<think>\n` at the assistant
+   turn. The model loops on tool calls inside its reasoning,
+   never emits a `final_content`. Fix: patch the GGUF's chat
+   template OR pass `enable_thinking=false` via
+   llama-cpp-python's chat completion args. Until this lands, the
+   13-scenario grid will mark Qwen 3.6 ✗ on most rows for the
+   wrong reason.
+2. **Don't fuse against `mlx-community/Qwen3.6-27B-bf16`** — its
+   layer naming or quantization differs from upstream
+   `Qwen/Qwen3.6-27B` enough that PEFT's `merge_and_unload()`
+   shows MISSING weights for 64 layers' `up_proj`, plus
+   `embed_tokens`, `norm`, and `lm_head`. Resulting fused-hf is
+   randomly initialized and useless. Always fuse against the
+   exact upstream HF repo the LoRA was trained against.
+
+Open question for next round: **Unsloth gradient offload kicks in
+at the iter-100 eval boundary on a 24 GB 3090** (VRAM hits 24.3/
+24.5 GB during eval, Unsloth enables "smartly offload gradients to
+save VRAM," and per-iter time blows up 34 s → 633 s — projected
+67 h to finish 500 iters). Iter-100 is the realistic ceiling on
+this hardware unless we drop effective batch from 4 to 2 (BATCH_SIZE=1
+GRAD_ACCUM=2) to avoid the offload trip-wire. Worth retrying with
+that smaller config to get a full iter-500 run.
 
 ## Recommendations for next round
 
