@@ -86,7 +86,8 @@ if [[ ! -f "$FUSED_DIR/config.json" ]]; then
         --batch-size "$BATCH_SIZE" \
         --learning-rate "$LEARN_RATE" \
         --max-seq-length "${MAX_SEQ_LEN:-2048}" \
-        --val-batches "${VAL_BATCHES:-5}"
+        --val-batches "${VAL_BATCHES:-5}" \
+        ${QLORA:+--qlora}
 fi
 
 # --- Step 3 (optional): restore upstream tokenizer into fused dir ---
