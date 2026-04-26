@@ -44,11 +44,14 @@ from transformers import (
 )
 
 
-def _is_multimodal(model_name: str) -> bool:
-    """True if the HF config has a `text_config` sub-config (composite
-    image-text-to-text model). Triggers the language_model-extraction path."""
+def _is_gemma3_multimodal(model_name: str) -> bool:
+    """True only for Gemma 3 multimodal bases (e.g. gemma-3-4b-it).
+    Distinguished from text-only Gemma 3 (1B) and from non-Gemma models
+    that happen to have a `text_config` field (Qwen 3.5+ does too).
+    Uses the architectures list — that's the unambiguous signal."""
     cfg = AutoConfig.from_pretrained(model_name)
-    return getattr(cfg, "text_config", None) is not None
+    archs = getattr(cfg, "architectures", []) or []
+    return any("Gemma3ForConditionalGeneration" in a for a in archs)
 
 
 def load_base(model_name: str, dtype=torch.bfloat16):
@@ -70,12 +73,16 @@ def load_base(model_name: str, dtype=torch.bfloat16):
     # the move is fast (1B–4B fits in seconds) and unambiguous.
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if _is_multimodal(model_name):
+    if _is_gemma3_multimodal(model_name):
         # transformers 4.55+ dropped the convenient `.language_model`
         # attribute on Gemma3ForConditionalGeneration (it now lives at
         # `.model.language_model`, a bare decoder, not a CausalLM).
         # Use Gemma3ForCausalLM directly — same weights, no vision
         # tower, valid CausalLM forward pass for PEFT/training.
+        # NOTE: Q4_K_M output from this path produced newline-only
+        # generations on the smoke grid (0/13 vs Mac mlx-lm at 10/13)
+        # — pipeline issue not fully diagnosed. Prefer the Mac
+        # finetune.sh route for gemma-3-4b until this is fixed.
         print(f"  multimodal base: loading as Gemma3ForCausalLM (text-only)")
         from transformers import Gemma3ForCausalLM
         full = Gemma3ForCausalLM.from_pretrained(
