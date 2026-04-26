@@ -907,7 +907,12 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
         messages.append({"role": "user", "content": user_text})
         final_content = ""
         tool_calls_seen: list[str] = []
-        for iter_ in range(4):
+        # 4 was the historical default; bump to 8 for exploration-heavy
+        # models like Qwen 3.6 27B that often spend several tool calls
+        # diagnosing fixture errors before settling on a final response.
+        # Override via TOOL_ITER_BUDGET=N for one-off tests.
+        max_iters = int(os.environ.get("TOOL_ITER_BUDGET", "8"))
+        for iter_ in range(max_iters):
             t_iter = time.perf_counter()
             resp = llm.create_chat_completion(
                 messages=messages,

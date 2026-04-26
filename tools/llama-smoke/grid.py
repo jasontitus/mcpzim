@@ -99,6 +99,22 @@ MODELS: list[ModelSpec] = [
         },
     ),
     ModelSpec(
+        key="qwen3-4b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3-4b/qwen3-4b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
+        key="qwen3-1.7b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3-1.7b/qwen3-1.7b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
         key="qwen3.5-4b-ft",
         quants=["Q4_K_M"],
         local_paths={
@@ -107,11 +123,34 @@ MODELS: list[ModelSpec] = [
         },
     ),
     ModelSpec(
-        key="qwen3.5-1.7b-ft",
+        key="qwen3-8b-ft",
         quants=["Q4_K_M"],
         local_paths={
             "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
-                      "fine-tune/ft-out-qwen3.5-1.7b/qwen3.5-1.7b-it-ft.Q4_K_M.gguf",
+                      "fine-tune/ft-out-qwen3-8b/qwen3-8b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    ModelSpec(
+        key="qwen3.5-9b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3.5-9b/qwen3.5-9b-it-ft.Q4_K_M.gguf",
+        },
+    ),
+    # Mac mlx-lm fine-tunes (single-machine experiments, ship-tier).
+    # 2026-04-26: replaced the Mac mlx-lm 27B (was broken, 0/13) with the
+    # pcgaming Unsloth iter-100 build. Run with
+    # CHAT_TEMPLATE=/tmp/qwen36_patched_chat_template.jinja TOOL_ITER_BUDGET=8
+    # in the env so eval.py disables thinking-mode and gives the model
+    # enough tool-call budget to recover from fixture errors.
+    ModelSpec(
+        key="qwen3.6-27b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-qwen3.6-27b-unsloth/"
+                      "qwen3.6-27b-it-ft-iter100.Q4_K_M.gguf",
         },
     ),
 ]
