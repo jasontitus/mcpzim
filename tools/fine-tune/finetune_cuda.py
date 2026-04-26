@@ -200,6 +200,10 @@ def main() -> int:
     ap.add_argument("--max-seq-length", type=int, default=2048)
     ap.add_argument("--val-batches", type=int, default=5)
     ap.add_argument("--val-every", type=int, default=100)
+    ap.add_argument("--save-every", type=int, default=200,
+                    help="Save an intermediate adapter checkpoint every N "
+                         "iters (in addition to the final). Lets us "
+                         "smoke-eval mid-run on long trainings.")
     ap.add_argument("--warmup-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--grad-accum", type=int, default=1)
@@ -344,6 +348,15 @@ def main() -> int:
         if step % args.val_every == 0 or step == args.iters:
             v = run_val(args.val_batches)
             print(f"Iter {step}: Val loss {v:.3f}", flush=True)
+
+        # Periodic adapter checkpoint so we can mid-stream-eval long
+        # runs (and recover from crashes without restarting from 0).
+        if step % args.save_every == 0 and step != args.iters:
+            ckpt_dir = f"{args.adapter_path}-iter{step}"
+            model.save_pretrained(ckpt_dir)
+            tokenizer.save_pretrained(ckpt_dir)
+            print(f"Iter {step}: Saved adapter checkpoint to {ckpt_dir}",
+                  flush=True)
 
     print("saving adapter")
     model.save_pretrained(args.adapter_path)
