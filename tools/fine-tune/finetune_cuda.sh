@@ -51,6 +51,15 @@ if [[ ! -x "$VENV_PY" ]]; then
     exit 1
 fi
 
+# bitsandbytes (used by the QLoRA path) needs libnvJitLink.so.13, but
+# the system CUDA is 12.x. The venv ships the cu13 jitlink shared
+# object — point ld at it. Harmless when QLoRA isn't used.
+VENV_DIR="$(dirname "$(dirname "$VENV_PY")")"
+CU13_LIB="$VENV_DIR/lib/python3.12/site-packages/nvidia/cu13/lib"
+if [[ -d "$CU13_LIB" ]]; then
+    export LD_LIBRARY_PATH="$CU13_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 # --- Step 1: 95/5 split (same logic as finetune.sh) ---
 if [[ ! -f "$TRAIN_SPLIT" || ! -f "$VAL_SPLIT" ]]; then
     echo ">> splitting $TRAIN_DATA into train/valid (95/5)"
