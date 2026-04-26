@@ -189,6 +189,31 @@ q8_0/q8_0 — see `../llama-smoke/GRID_RESULTS_FT_*.md`.
 | v7b | `train_v7b.jsonl` (v4 + places_diverse2) | 2177 | 500 | 2 | 1024 | 0.230 | 7/13 | ~25 min | `ft-out-v7b/` |
 | **v7c** | `train_v7c.jsonl` (v4 + places_diverse) | 2115 | 500 | 2 | 1024 | 0.255 | **10/13** | ~25 min | `ft-out-v7c/` ← **ship candidate** |
 
+### Cross-base experiments
+
+In addition to the Mac mlx-lm Gemma 3 4B path above, we tried other
+bases on pcgaming (PEFT for Qwen 3.x, Unsloth for Qwen 3.6 27B
+since standard PEFT QLoRA on Qwen 3.5/3.6 is officially discouraged).
+Full per-scenario results: see [`MODEL_ANALYSIS.md`](MODEL_ANALYSIS.md)
+and the `../llama-smoke/GRID_RESULTS_FT_*.md` files. Highlights:
+
+| base | pipeline | data | iters | pass | size | notes |
+|---|---|---|---|---|---|---|
+| gemma3-4b | Mac mlx-lm | v7c | 500 | **10/13** | 2.7 GB | ship |
+| qwen3-8b | pcgaming PEFT | v7c | 500 | 9/13 | 4.7 GB | first to pass `wwi_vs_wwii_chain` |
+| qwen3.5-4b | pcgaming PEFT | v7c | 500 | 7/13 | 2.5 GB | thinking-mode loops on a few |
+| qwen3-4b | pcgaming PEFT | v7c | 500 | 6/13 | 2.5 GB | same size as Gemma 4B, weaker |
+| qwen3-1.7b | pcgaming PEFT | v7c | 500 | 5/13 | 1.0 GB | tiny option |
+| qwen3.5-9b | pcgaming PEFT | v7c | 500 | 4/13 | 5.3 GB | persistent thinking-loops |
+| **qwen3.6-27b** | pcgaming Unsloth | v7c | 100 | **7/13** | 15 GB | first to pass `narrate_hp_garage` |
+| qwen3.6-27b | pcgaming Unsloth | v7c | 500 | 5/13 | 15 GB | overtrained vs iter-100 |
+| qwen3.6-27b | Mac mlx-lm | v7c | 500 | 0/13 | 15 GB | mlx-lm Qwen 3.6 is broken — produces garbage tokens |
+| gemma3-1b | pcgaming PEFT | v7c | 500 | 1/13 | 769 MB | too small / regression vs stock |
+
+Qwen 3.6 27B grid runs require chat-template surgery + a wider tool-call
+budget at inference time — see `MODEL_ANALYSIS.md` "Qwen 3.6 27B" section
+for the exact env vars (`CHAT_TEMPLATE=...` + `TOOL_ITER_BUDGET=8`).
+
 ### Key observations
 
 - **v7c is the current ship candidate** — 10/13, beating v4 by 2 and

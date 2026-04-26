@@ -24,15 +24,19 @@ data. Sizes/peaks are at inference time.
 | qwen3-1.7b-v7c | pcgaming PEFT | 5/13 | 1.7 GB | 1.0 GB | ~1 s | tiny |
 | qwen3.5-9b-v7c | pcgaming PEFT | 4/13 | 5.8 GB | 5.3 GB | ~22 s | (looping in thinking mode) |
 | gemma3-1b-v7c | pcgaming PEFT | 1/13 | 1.0 GB | 769 MB | ~2 s | regression vs stock |
-| qwen3.6-27b-v7c | Mac mlx-lm | 0/13 | 16 GB | 15 GB | ~12 s | ⚠️ broken (see below) |
-| qwen3.6-27b-v7c (iter 100) | pcgaming Unsloth | not graded yet | ~16 GB | 15 GB | ~80 s | ✅ coherent CoT, hits thinking-loop on grader |
+| qwen3.6-27b-v7c | Mac mlx-lm | 0/13 | 16 GB | 15 GB | ~12 s | ⚠️ broken (mlx-lm bug; see below) |
+| qwen3.6-27b-v7c (iter 100) | pcgaming Unsloth | **7/13** | 16 GB | 15 GB | ~70 s | works but not ship-tier |
+| qwen3.6-27b-v7c (iter 500) | pcgaming Unsloth | 5/13 | 16 GB | 15 GB | ~85 s | regressed vs iter 100 (overfit / smaller eff. batch) |
+
+Qwen 3.6 27B grid runs require `CHAT_TEMPLATE=/tmp/qwen36_patched_chat_template.jinja TOOL_ITER_BUDGET=8` env to disable the model's open-thinking-block behavior at inference and give it enough tool-call budget to recover from fixture errors.
 
 `narrate_hp_garage`, `grav_waves_chain`, `wwi_vs_wwii_chain`,
 `french_revolution_chain` were "stuck" (everyone failing). Of those,
-**qwen3-8b is the first model to pass `wwi_vs_wwii_chain`**, and
-gemma3-4b-v7c is the only one passing `french_revolution_chain`
-consistently. So bigger base models do unlock specific stuck
-scenarios — they're not just data-bound.
+**qwen3-8b is the first model to pass `wwi_vs_wwii_chain`**,
+gemma3-4b-v7c passes `french_revolution_chain` consistently, and
+**Qwen 3.6 27B picks up `narrate_hp_garage`** at iter 100 (and
+keeps it at iter 500). So bigger base models do unlock specific
+stuck scenarios — they're not just data-bound.
 
 ## Pipeline-by-pipeline
 
@@ -143,7 +147,7 @@ gemma3-1b is purely capacity-limited. v7c training drops it to
 to fit. Don't ship a 1B — anything under 2B regresses against the
 stock Gemma 4B at this task.
 
-### Qwen 3.6 27B: mlx-lm IS the bug, not the model
+### Qwen 3.6 27B: mlx-lm IS the bug, not the model — full results
 
 **2026-04-26 update — definitively answered.** Trained Qwen 3.6 27B
 on pcgaming via Unsloth (4-bit base + LoRA on `Qwen/Qwen3.6-27B`).
@@ -160,6 +164,29 @@ errors. Same training step that produced `'*dx!nfrdb-related/'`
 random tokens via mlx-lm now produces fluent reasoning via
 Unsloth/PEFT. Conclusion: **mlx-lm's Qwen 3.6 implementation is
 broken**; the underlying weights and our v7c data are fine.
+
+**Full grid results** (with `CHAT_TEMPLATE=patched_template.jinja
+TOOL_ITER_BUDGET=8`):
+
+| checkpoint | passes | effective batch | wall avg | notes |
+|---|---|---|---|---|
+| iter 100 (bsz=1, ga=4) | **7/13** | 4 | 70 s | best Qwen 3.6 result |
+| iter 500 (bsz=1, ga=2) | 5/13 | 2 | 85 s | overtrained / smaller effective batch |
+
+iter-100 nails `narrate_hp_garage` (a previously-stuck scenario) and
+holds `restaurants_in_sf`, `nearby_stories_palo_alto`,
+`tell_me_about_palo_alto`, `compare_musk_bezos`, `relations_us_iran`,
+`what_is_here_in_sf`, `crispr_chain`. iter-500 loses
+`relations_us_iran` and `crispr_chain` — within single-trial noise
+range but the trend is clear: more training at smaller effective
+batch on this corpus is starting to overfit on a model that's already
+big enough to do the task at iter-100.
+
+**Net of the experiment**: Qwen 3.6 27B is real and trainable on a
+24 GB 3090 via Unsloth, but at 7/13 vs Mac gemma3-4b-v7c at 10/13,
+and with 5–6× the disk and ~10× the inference wall-time, **it's
+not a ship contender for our use case.** Gemma 3 4B + v7c remains
+the right answer.
 
 Two follow-ups for the iter-100 model to actually score on the grid:
 
@@ -179,14 +206,28 @@ Two follow-ups for the iter-100 model to actually score on the grid:
    randomly initialized and useless. Always fuse against the
    exact upstream HF repo the LoRA was trained against.
 
-Open question for next round: **Unsloth gradient offload kicks in
-at the iter-100 eval boundary on a 24 GB 3090** (VRAM hits 24.3/
-24.5 GB during eval, Unsloth enables "smartly offload gradients to
-save VRAM," and per-iter time blows up 34 s → 633 s — projected
-67 h to finish 500 iters). Iter-100 is the realistic ceiling on
-this hardware unless we drop effective batch from 4 to 2 (BATCH_SIZE=1
-GRAD_ACCUM=2) to avoid the offload trip-wire. Worth retrying with
-that smaller config to get a full iter-500 run.
+**Pipeline gotchas captured in the second run**:
+
+- **Unsloth gradient-offload tank.** On a 24 GB 3090 at effective
+  batch 4 (or 2), the iter-100 eval pass pushes VRAM over the
+  ceiling and Unsloth's autodetect enables "smartly offload
+  gradients to save VRAM" mid-run. Once on, throughput drops 5–7×
+  (saw 34 s → 633 s/iter at batch 4; ~17 s → 100 s+ at batch 2).
+  **Fix: `eval_strategy="no"` in SFTConfig + rely on saved adapter
+  checkpoints + offline grid eval for quality signal.** This is
+  baked into `finetune_unsloth.py` since b4e8571.
+- **Fuse step OOMs on pcgaming.** finetune_unsloth.py's fuse loads
+  bf16 base via transformers + `.to("cuda")` for the merge. On a
+  24 GB 3090 with a 27B model that's a guaranteed CUDA OOM. Pull
+  the adapter to Mac and fuse there (M1 Ultra 128 GB unified mem
+  has plenty of room). Each fuse takes ~2 min on Mac CPU.
+- **mlx-community/Qwen3.6-27B-bf16 is a bad fuse base.** Whatever
+  mlx-community did when packaging that mirror, it diverges from
+  upstream `Qwen/Qwen3.6-27B` enough that PEFT's `merge_and_unload()`
+  reports MISSING weights for 64 layers' `up_proj`, plus
+  `embed_tokens`, `norm`, and `lm_head`. The resulting fused-hf
+  has those weights randomly initialized — useless. Always fuse
+  against the exact upstream HF repo the LoRA was trained against.
 
 ## Recommendations for next round
 
