@@ -22,6 +22,24 @@ Without this, SPM fails to resolve `LlamaCppSwift` and the iOS build
 errors out on `import llama`. See `ios/LocalPackages/llama.cpp-swift/README.md`
 for the upgrade procedure.
 
+## Metal Toolchain (Xcode 26+, one-time)
+
+Xcode 26 split the `metal` shader compiler into a separately-downloaded
+component. Without it the build dies at the first `CompileMetalFile` (e.g.
+`mlx-swift_Cmlx` → `arg_reduce.metal`) with:
+
+> error: cannot execute tool 'metal' due to missing Metal Toolchain; use:
+> xcodebuild -downloadComponent MetalToolchain
+
+Fix once (~688 MB, no Apple-ID auth needed):
+
+```sh
+xcodebuild -downloadComponent MetalToolchain
+```
+
+Same class of one-time prerequisite as the iOS platform SDK — survives
+across builds, only needed after a fresh Xcode (re)install/upgrade.
+
 ## iOS app (on physical iPhone)
 
 ```sh
