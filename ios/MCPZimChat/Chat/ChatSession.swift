@@ -1920,32 +1920,20 @@ public final class ChatSession {
                 return
             }
 
-            // Prompt shape per provider:
-            //   • Gemma 4 → native Gemma system turn + tool DSL.
-            //   • Everyone else → generic preamble + formatTranscript.
-            //     The preamble carries both tool schemas AND
-            //     behavioural rules (how to read `by_category`,
-            //     "don't invent names", etc.) — dropping it for
-            //     native-tools models saves ~2 KB of prefill but
-            //     degrades answer quality noticeably, so we keep it.
-            let prompt: String
-            if selectedModel is Gemma4Provider {
-                prompt = selectedModel.template.renderTranscript(
-                    systemPreamble: systemMessage,
-                    tools: toolDecls,
-                    turns: turns
-                )
-            } else {
-                // Non-Gemma4 (llama.cpp / MLX) models: lead with the rich
-                // systemMessage (location + behavioural rules + tool recipes),
-                // THEN the tool schemas. This path previously used only
-                // `toolsPreamble`, so gguf models — including the shipped
-                // LFM2.5 FT — never saw the user's location and refused
-                // "nearest X" queries even with a live GPS fix. The Gemma4
-                // branch already passes systemMessage; this brings parity.
-                let preamble = systemMessage + "\n\n" + Self.toolsPreamble(registry: registry)
-                prompt = selectedModel.formatTranscript(systemPreamble: preamble, turns: turns)
-            }
+            // Every provider renders via its OWN template, which folds the
+            // systemMessage (incl. the `=== Current location ===` block) and
+            // the tool schemas into the model's TRAINED prompt shape. The
+            // LFM2.5 and Gemma-3-gguf FTs were trained on exactly this
+            // (system prose + JSON tool block folded into the first user
+            // turn) — also what the llama-smoke eval scores 12/13 on. The old
+            // `toolsPreamble` + formatTranscript path fed them an
+            // off-distribution generic format, so even with the location
+            // present in the prompt they ignored it and refused "nearest X".
+            let prompt = selectedModel.template.renderTranscript(
+                systemPreamble: systemMessage,
+                tools: toolDecls,
+                turns: turns
+            )
             // Yield to SwiftUI before iter 0 so the prior assistant's
             // `PlacesWebView` / `RouteWebView` (guarded by
             // `isLatestAssistant` in ChatView.MessageRow) has time to
@@ -2256,18 +2244,10 @@ public final class ChatSession {
             )
             var finalTurns = turns
             finalTurns.append(summaryInstruction)
-            if selectedModel is Gemma4Provider {
-                summaryPrompt = selectedModel.template.renderTranscript(
-                    systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
-                )
-            } else {
-                // Keep the location/behaviour context on the tool-result
-                // continuation too, matching the iter-0 preamble above.
-                let preamble = systemMessage + "\n\n" + Self.toolsPreamble(registry: registry)
-                summaryPrompt = selectedModel.formatTranscript(
-                    systemPreamble: preamble, turns: finalTurns
-                )
-            }
+            // Same trained-format path as iter-0 (see the note there).
+            summaryPrompt = selectedModel.template.renderTranscript(
+                systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
+            )
             var buffer = ""
             let params = GenerationParameters(maxTokens: 256, temperature: 0.3, topP: 0.9)
             do {
@@ -3194,27 +3174,6 @@ public final class ChatSession {
             }
             return .init(name: tool.name, description: tool.description, parameters: params)
         }
-    }
-
-    /// Produces the plain-text instructions the model sees at the top of the
-    /// transcript. Providers wrap this in their own template — Gemma-4 folds
-    /// it into the first user turn, the generic template emits a `<|system|>`
-    /// block.
-    private static func toolsPreamble(registry: MCPToolRegistry) -> String {
-        var lines: [String] = [
-            "You are a helpful assistant running on-device. You have access to the following tools.",
-            "To call a tool, emit a single line:",
-            "<tool_call>{\"name\":\"TOOL_NAME\",\"arguments\":{...}}</tool_call>",
-            "and wait for the <tool_response> turn before continuing.",
-            "",
-            "Available tools:",
-        ]
-        for tool in registry.tools {
-            let schema = String(data: tool.inputSchemaJSON, encoding: .utf8) ?? "{}"
-            lines.append("- \(tool.name): \(tool.description)")
-            lines.append("  input: \(schema)")
-        }
-        return lines.joined(separator: "\n")
     }
 
     /// Accept the selected model's native tool-call format first, then
