@@ -178,6 +178,173 @@ private func reconstructRoute(
     )
 }
 
+// MARK: - Spatial (SZCI/SZRC) async A*
+//
+// Mirrors the streetzim JS viewer's `findRouteSpatialAStar` /
+// `findRouteSpatialFiltered` (resources/viewer/index.html). Required for
+// large-country ZIMs built with `--spatial-chunk-scale`: those ship no
+// monolithic graph.bin (it wouldn't fit in mobile RAM) — the routing graph
+// is a lazily-fetched cell grid behind `SpatialGraph`. Same 80 km/h
+// heuristic ceiling, greedy weights, pop limits, and crow-distance
+// thresholds as the viewer, so on-device routes match the map UI.
+
+/// Nearest graph node to (lat, lon) by squared e7 distance — linear scan
+/// over the eager node table (matches the JS `nearestNode`).
+public func nearestNodeSpatial(index: SZCIIndex, lat: Double, lon: Double) -> Int {
+    let latE7 = Int32((lat * 1e7).rounded())
+    let lonE7 = Int32((lon * 1e7).rounded())
+    let nodes = index.nodesScaled
+    var best = -1
+    var bestDist = Double.infinity
+    var i = 0
+    let n = nodes.count
+    while i + 1 < n {
+        let dlat = Double(nodes[i] - latE7)
+        let dlon = Double(nodes[i + 1] - lonE7)
+        let d = dlat * dlat + dlon * dlon
+        if d < bestDist { bestDist = d; best = i / 2 }
+        i += 2
+    }
+    return best
+}
+
+private struct SpatialPrevEdge {
+    let source: Int
+    let speedDist: UInt32
+    let geomLocal: UInt32
+    let nameIdx: UInt32
+}
+
+/// Core spatial A* (mirrors `findRouteSpatialAStar`, highwayOnly=false).
+/// `greedyWeight` 1.0 = optimal; >1 inflates the heuristic for a faster,
+/// slightly-suboptimal search on long routes. Returns nil if it exceeds
+/// `popLimit` (caller retries greedier) or no path exists. Sparse Maps so
+/// memory scales with nodes VISITED, not the graph's millions.
+func aStarSpatial(
+    graph: SpatialGraph, index: SZCIIndex,
+    origin: Int, goal: Int,
+    greedyWeight: Double, popLimit: Int
+) async -> Route? {
+    @inline(__always) func coord(_ node: Int) -> (lat: Double, lon: Double) {
+        (Double(index.nodesScaled[node * 2]) / 1e7,
+         Double(index.nodesScaled[node * 2 + 1]) / 1e7)
+    }
+    let goalC = coord(goal)
+    let speedCeil = 80.0 / 3.6   // mirror the JS viewer's heuristic ceiling
+    @inline(__always) func heur(_ node: Int) -> Double {
+        let c = coord(node)
+        return haversineMeters(c.lat, c.lon, goalC.lat, goalC.lon) / speedCeil
+    }
+    if origin == goal {
+        let c = coord(origin)
+        return Route(origin: c, destination: c, originNode: origin,
+                     destinationNode: goal, distanceMeters: 0, durationSeconds: 0,
+                     roads: [], polyline: [c])
+    }
+
+    var gScore: [Int: Double] = [origin: 0]
+    var prevEdge: [Int: SpatialPrevEdge] = [:]
+    var closed = Set<Int>()
+    var open = MinHeap<QueueItem>()
+    var counter = 0
+    open.push(QueueItem(f: heur(origin), tiebreaker: counter, node: origin)); counter += 1
+    var pops = 0
+
+    while let item = open.pop() {
+        let current = item.node
+        pops += 1
+        if pops > popLimit { return nil }
+        if current == goal { break }
+        if closed.contains(current) { continue }
+        closed.insert(current)
+        let curG = gScore[current] ?? .infinity
+        let edges: [SpatialEdge]
+        do { edges = try await graph.edgesOfNode(current) } catch { return nil }
+        for e in edges {
+            let target = Int(e.target)
+            if closed.contains(target) { continue }
+            let speed = Double(e.speedKmh)
+            if speed == 0 { continue }
+            let cost = e.distanceMeters * 3.6 / speed
+            let tentative = curG + cost
+            if tentative < (gScore[target] ?? .infinity) {
+                gScore[target] = tentative
+                prevEdge[target] = SpatialPrevEdge(
+                    source: current, speedDist: e.speedDist,
+                    geomLocal: e.geomLocal, nameIdx: e.nameIdx)
+                let c = coord(target)
+                let h = haversineMeters(c.lat, c.lon, goalC.lat, goalC.lon)
+                    / speedCeil * greedyWeight
+                open.push(QueueItem(f: tentative + h, tiebreaker: counter, node: target))
+                counter += 1
+            }
+        }
+    }
+
+    guard let totalSeconds = gScore[goal], prevEdge[goal] != nil else { return nil }
+    // Reconstruct goal → origin, then forward.
+    var rev: [(pe: SpatialPrevEdge, node: Int)] = []
+    var node = goal
+    while node != origin {
+        guard let pe = prevEdge[node] else { break }
+        rev.append((pe, node))
+        node = pe.source
+    }
+    rev.reverse()
+
+    var polyline: [(lat: Double, lon: Double)] = [coord(origin)]
+    var roads: [RoadSegment] = []
+    var totalMeters = 0.0
+    for (pe, thisNode) in rev {
+        let speed = max(1.0, Double((pe.speedDist >> 24) & 0xFF))
+        let dist = Double(pe.speedDist & 0x00FFFFFF) / 10.0
+        let seconds = dist * 3.6 / speed
+        totalMeters += dist
+        if let pts = try? await graph.decodeGeomForEdge(
+                sourceNode: pe.source, geomLocal: pe.geomLocal) {
+            polyline.append(contentsOf: pts.dropFirst())
+        } else {
+            polyline.append(coord(thisNode))
+        }
+        let name = index.name(pe.nameIdx)
+        if var last = roads.last, last.name == name {
+            roads.removeLast()
+            last = RoadSegment(name: last.name,
+                               distanceMeters: last.distanceMeters + dist,
+                               durationSeconds: last.durationSeconds + seconds)
+            roads.append(last)
+        } else {
+            roads.append(RoadSegment(name: name, distanceMeters: dist,
+                                     durationSeconds: seconds))
+        }
+    }
+
+    return Route(origin: coord(origin), destination: coord(goal),
+                 originNode: origin, destinationNode: goal,
+                 distanceMeters: totalMeters, durationSeconds: totalSeconds,
+                 roads: roads, polyline: polyline)
+}
+
+/// Optimal-then-greedy wrapper (mirrors `findRouteSpatialFiltered`,
+/// highwayOnly=false): try the admissible search under a pop budget, fall
+/// back to a greedy search on bail/skip so long routes still return.
+func routeSpatial(graph: SpatialGraph, index: SZCIIndex,
+                  origin: Int, goal: Int) async -> Route? {
+    func coord(_ n: Int) -> (Double, Double) {
+        (Double(index.nodesScaled[n * 2]) / 1e7, Double(index.nodesScaled[n * 2 + 1]) / 1e7)
+    }
+    let o = coord(origin), g = coord(goal)
+    let crowKm = haversineMeters(o.0, o.1, g.0, g.1) / 1000
+    if crowKm <= 800 {
+        if let r = await aStarSpatial(graph: graph, index: index, origin: origin,
+                                      goal: goal, greedyWeight: 1.0, popLimit: 200_000) {
+            return r
+        }
+    }
+    return await aStarSpatial(graph: graph, index: index, origin: origin,
+                              goal: goal, greedyWeight: 1.5, popLimit: 400_000)
+}
+
 private func distSq(_ a: (lat: Double, lon: Double), _ b: (lat: Double, lon: Double)) -> Double {
     let dla = a.lat - b.lat
     let dlo = a.lon - b.lon

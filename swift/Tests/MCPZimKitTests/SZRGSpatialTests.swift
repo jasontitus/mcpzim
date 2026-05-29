@@ -280,6 +280,40 @@ final class SZRGSpatialTests: XCTestCase {
         XCTAssertEqual(cids.sorted(), [0, 1])
     }
 
+    // MARK: - Spatial A* (the async router wired into planDrivingRoute)
+
+    func testSpatialAStarRoutesThreeNodeLine() async throws {
+        // A(0,0) — B(0,0.001) — C(0,0.002): a 222 m line on "Main St", one
+        // cell, bidirectional edges. routeSpatial(A,C) must walk A→B→C.
+        let idx = try SZCIIndex.parse(packIndex(
+            nodes: [(0, 0), (0, 10_000), (0, 20_000)],
+            cellEntries: [(lat: 0, lon: 0, nodes: 3, edges: 4, geoms: 0)],
+            names: ["", "Main St"]))
+        let sd = (UInt32(50) << 24) | 1110     // 50 km/h, 111.0 m (1110 dm)
+        func edge(_ target: UInt32) -> SpatialEdge {
+            SpatialEdge(target: target, speedDist: sd,
+                        geomLocal: 0xFFFF_FFFF, nameIdx: 1, classAccess: 1)
+        }
+        let cell = packCell(
+            cellId: 0, nodesGlobal: [0, 1, 2], adjOffsets: [0, 1, 3, 4],
+            edges: [edge(1), edge(0), edge(2), edge(1)])  // A→B, B→A, B→C, C→B
+        let g = SpatialGraph(index: idx) { _ in cell }
+
+        let routeOpt = await routeSpatial(graph: g, index: idx, origin: 0, goal: 2)
+        let route = try XCTUnwrap(routeOpt, "A→B→C must be routable")
+        XCTAssertEqual(route.originNode, 0)
+        XCTAssertEqual(route.destinationNode, 2)
+        XCTAssertEqual(route.distanceMeters, 222.0, accuracy: 1.0)   // 2 × 111 m
+        XCTAssertGreaterThan(route.durationSeconds, 0)
+        XCTAssertEqual(route.roads.map { $0.name }, ["Main St"],
+                       "consecutive same-name edges merge into one road")
+        XCTAssertGreaterThanOrEqual(route.polyline.count, 3)  // origin + B + C
+
+        // nearestNode picks the closest of the three.
+        XCTAssertEqual(nearestNodeSpatial(index: idx, lat: 0, lon: 0.0019), 2)
+        XCTAssertEqual(nearestNodeSpatial(index: idx, lat: 0, lon: 0.0001), 0)
+    }
+
     func testSpatialGraphCacheLimitEvicts() async throws {
         // Build 3 cells, cache limit 1 → each query evicts the prior.
         let idx = try SZCIIndex.parse(packIndex(

@@ -123,6 +123,7 @@ public protocol ZimService: Sendable {
 public actor DefaultZimService: ZimService {
     private let readers: [(name: String, reader: ZimReader)]
     private var graphs: [String: SZRGGraph] = [:]
+    private var spatialGraphs: [String: SpatialGraph] = [:]
     private var chunks: [String: [String: [[String: Any]]]] = [:]
     private var manifests: [String: [String: Int]] = [:]
     /// Cached streetzim bbox (minLat, minLon, maxLat, maxLon), loaded
@@ -547,6 +548,21 @@ public actor DefaultZimService: ZimService {
 
     public func planDrivingRoute(_ req: RouteRequest) async throws -> Route {
         guard let pair = try pickStreetzim(req.zim) else { throw ZimServiceError.noStreetzim }
+        // Spatial (SZCI/SZRC) ZIMs — built with --spatial-chunk-scale, the
+        // only layout whose routing graph fits a large country in mobile RAM
+        // — have no monolithic graph.bin. Route via the async cell-based A*
+        // (mirrors the streetzim JS viewer). `cachedSpatialGraph` returns nil
+        // for ordinary monolithic ZIMs, which fall through to the sync path.
+        if let spatial = try cachedSpatialGraph(for: pair) {
+            let index = spatial.index
+            let origin = nearestNodeSpatial(index: index, lat: req.originLat, lon: req.originLon)
+            let goal = nearestNodeSpatial(index: index, lat: req.destLat, lon: req.destLon)
+            guard origin >= 0, goal >= 0,
+                  let route = await routeSpatial(graph: spatial, index: index,
+                                                 origin: origin, goal: goal)
+            else { throw ZimServiceError.noRoute }
+            return route
+        }
         let graph = try loadGraph(pair: pair)
         let origin = graph.nearestNode(lat: req.originLat, lon: req.originLon)
         let goal = graph.nearestNode(lat: req.destLat, lon: req.destLon)
@@ -554,6 +570,16 @@ public actor DefaultZimService: ZimService {
             throw ZimServiceError.noRoute
         }
         return route
+    }
+
+    /// Memoized `loadSpatialGraph` — parses the SZCI index once per ZIM
+    /// (it's tens of MB) and reuses the actor (its cell cache warms across
+    /// routes). Returns nil for monolithic ZIMs.
+    private func cachedSpatialGraph(for pair: (name: String, reader: ZimReader)) throws -> SpatialGraph? {
+        if let cached = spatialGraphs[pair.name] { return cached }
+        guard let g = try loadSpatialGraph(zimName: pair.name) else { return nil }
+        spatialGraphs[pair.name] = g
+        return g
     }
 
     public func geocode(query: String, limit: Int, zim: String?, kinds: [String]?) async throws -> [Place] {
