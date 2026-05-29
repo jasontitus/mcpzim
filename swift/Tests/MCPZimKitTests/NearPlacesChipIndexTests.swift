@@ -115,6 +115,27 @@ final class NearPlacesChipIndexTests: XCTestCase {
         XCTAssertEqual(r.results.map { $0.place.name }, ["Blue Bottle Coffee"])
     }
 
+    func testDuplicateRecordsAreCollapsed() async throws {
+        // The merged OSM+Overture data lists the same venue twice. near_places
+        // must collapse name+coordinate dups (keeping the nearest), not narrate
+        // "Peet's, Peet's". A same-named venue a block away stays distinct.
+        var json = newZimWithChips()
+        json["category-index/chip-cafes.json"] = """
+        [{"n":"Peet's Coffee","t":"poi","s":"cafe","a":37.4419,"o":-122.1550,"l":"PA"},
+         {"n":"Peet's Coffee","t":"poi","s":"coffee_shop","a":37.4419,"o":-122.1550,"l":"PA"},
+         {"n":"Peet's Coffee","t":"poi","s":"cafe","a":37.4360,"o":-122.1490,"l":"PA"}]
+        """
+        let svc = service(json)
+        let r = try await svc.nearPlaces(
+            lat: lat, lon: lon, radiusKm: 5, limit: 20,
+            kinds: ["cafe"], zim: nil, hasWiki: false)
+        // 3 raw records → 2 distinct (the on-corner dup collapses; the
+        // block-away one stays).
+        XCTAssertEqual(r.totalInRadius, 2, "on-corner duplicate collapsed")
+        XCTAssertEqual(r.results.filter { $0.place.name == "Peet's Coffee" }.count, 2,
+                       "only the two distinct locations remain")
+    }
+
     func testMultiWordKindResolvesToChip() async throws {
         // The model emits kinds=["coffee shop"] (two words). It must resolve
         // to the cafes chip via chipsFor's word-split — NOT miss every chip

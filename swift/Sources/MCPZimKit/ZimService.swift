@@ -809,15 +809,29 @@ public actor DefaultZimService: ZimService {
     /// in-radius hit list. Subtype is preferred (e.g. "cafe", "bar");
     /// if a record is subtype-less we fall back to its kind.
     private func summarize(hits: [(Place, Double)], limit: Int) -> NearPlacesResult {
+        // Dedup: the merged OSM + Overture data lists the same venue more
+        // than once — e.g. "Peet's Coffee" twice on the same corner — so the
+        // model narrated "Peet's, Peet's, Douce France, Douce France…" and
+        // the count was inflated. Collapse by name + ~11 m coordinate cell,
+        // keeping the nearest instance (we iterate distance-ascending). Two
+        // same-name venues a block apart stay distinct (different cell).
+        let sorted = hits.sorted { $0.1 < $1.1 }
+        var seen = Set<String>()
+        var deduped: [(Place, Double)] = []
+        for (p, d) in sorted {
+            let cellLat = Int((p.lat * 1e4).rounded())
+            let cellLon = Int((p.lon * 1e4).rounded())
+            let key = "\(p.name.lowercased())|\(cellLat)|\(cellLon)"
+            if seen.insert(key).inserted { deduped.append((p, d)) }
+        }
         var breakdown: [String: Int] = [:]
-        for pair in hits {
-            let key = pair.0.subtype.isEmpty ? pair.0.kind : pair.0.subtype
+        for (p, _) in deduped {
+            let key = p.subtype.isEmpty ? p.kind : p.subtype
             breakdown[key, default: 0] += 1
         }
-        let sorted = hits.sorted { $0.1 < $1.1 }
-        let top = Array(sorted.prefix(max(1, limit)))
+        let top = Array(deduped.prefix(max(1, limit)))
         return NearPlacesResult(
-            totalInRadius: hits.count,
+            totalInRadius: deduped.count,
             breakdown: breakdown,
             results: top
         )
