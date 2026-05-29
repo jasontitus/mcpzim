@@ -96,18 +96,27 @@ public struct Gemma3Template: ModelTemplate {
         }
         if !tools.isEmpty {
             if !out.isEmpty { out += "\n" }
-            out += "# Tools\n\n"
-            out += "You may call one or more functions to assist with the user query.\n\n"
-            out += "Emit each call as:\n"
-            out += "<tool_call>\n"
-            out += "{\"name\": <function-name>, \"arguments\": <args-as-JSON-object>}\n"
-            out += "</tool_call>\n\n"
-            out += "Here are the available tools:\n"
-            out += "<tools>\n"
+            // COMPACT one-line-per-tool block — the format the v4 fine-tune
+            // corpus trained on (tools/llama-smoke/eval.py `_build_tool_block`).
+            // The previous full-JSON-schema dump (~13 KB for 10 tools) is
+            // wildly off-distribution for the gguf FTs: on a real device the
+            // LFM2.5 FT ignored the injected location and reached for the
+            // wrong tool (`what_is_here`) or refused outright. Restoring the
+            // compact block — verified on the local GGUF — makes it reliably
+            // pick `near_places` and honour the location. The model emits
+            // ```tool_call fences with {"function","parameters"} (its trained
+            // shape); `firstToolCall` already parses that.
+            out += "You have these tools (call one when needed):\n"
             for t in tools {
-                out += Self.toolJSONLine(t) + "\n"
+                let args = t.parameters.map { p in
+                    "\(p.name)\(p.required ? "*" : ""):\(p.type.rawValue.lowercased())"
+                }.joined(separator: ", ")
+                out += "- \(t.name)(\(args)) — \(t.description)\n"
             }
-            out += "</tools>"
+            out += "\nTo call a tool, respond with ONLY a code fence:\n"
+            out += "```tool_call\n{\"function\":\"<name>\",\"parameters\":{...}}\n```\n"
+            out += "After the tool result returns (in a <tool_response> turn), "
+            out += "answer in natural prose. Keep replies concise."
         }
         return out
     }
