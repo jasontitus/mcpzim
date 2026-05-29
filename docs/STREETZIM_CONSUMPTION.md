@@ -14,7 +14,10 @@ single-process, pure Swift (no HTTP, no runtime network).
 | `routing-data/graph-chunk-manifest.json` + `routing-data/graph-chunk-NNNN.bin` | `SZRGChunked.reassembleChunked` | Byte-range split of graph.bin for continent-scale ZIMs. Manifest validates schema (== 1), each chunk's declared byte count, total bytes, and sha256 of the reassembled buffer. Same layout applies to `graph-geoms-chunk-manifest.json` + `graph-geoms-chunk-NNNN.bin` for the v5 companion. `ZimService.loadGraph` tries the single-file primary first and only falls back to the chunked layout when the primary entry is missing, so old ZIMs keep working unchanged. |
 | `routing-data/graph.bin` or `routing-data/graph-chunk-manifest.json` presence | `classifyZim` (`ZimReader.swift`) | Either triggers `ZimKind.streetzim` classification. |
 | `search-data/manifest.json` | `ZimService.loadManifest` | `{"chunks": {prefix → count}}`. Used to skip prefixes that have no records when geocoding, and to enumerate chunks for `near_places`. |
-| `search-data/<prefix>.json` | `ZimService.loadChunk` | Array of place records: `[{name, type, subtype, location, lat, lon}, …]`. `type` ≈ OSM top-level key (e.g. "place"), `subtype` ≈ more specific (e.g. "city"). |
+| `search-data/<prefix>.json` | `ZimService.loadChunk` | Array of place records: `[{n, t, s, l, a, o, …}, …]` (`n`ame, `t`ype, `s`ubtype, `l`ocation, `a`=lat, `o`=lon; optional `ws`/`p`/`brand`/`w`/`q`). `t` ≈ OSM top-level key (e.g. "place"), `s` ≈ more specific (e.g. "city"). |
+| `category-index/manifest.json` | `ZimService.loadCategoryManifest` | `{"total", "categories": {slug → {…}}, "chips": {id → {label, count, …}}}`. `categories` lists the light web categories shipped (place/park/water/airport/peak); `chips` lists the Find-page chips. Drives `near_places`' fast path + `categoryVocabulary()`. |
+| `category-index/chip-<id>.json` | `ZimService.loadCategoryChunk` | The web Find-page slices — one pre-filtered file per common kind (restaurants, cafes, bars, hotels, museums, landmarks, parks, libraries, health, shops, fuel). Same record shape as search-data. Source of truth: streetzim `cloud/chip_rules.py`, mirrored in `ZimService.chipsForKind`. New `--no-llm-bundle` ZIMs ship these **instead of** the old `category-index/{poi,addr,street}.json` LLM bundle. |
+| `category-index/<slug>.json` | `ZimService.loadCategoryChunk` | Per-top-level-category record arrays. New ZIMs ship the light web set (place/park/water/…). Old ZIMs additionally shipped the `poi`/`addr`/`street` "LLM bundle" — now omitted by `--no-llm-bundle`; mcpzim only reads it as a legacy fallback. |
 | `map-config.json` (presence only) | `classifyZim` | Another classification signal for `streetzim`. We don't read contents. |
 
 ## What the tools do with that data
@@ -24,7 +27,7 @@ single-process, pure Swift (no HTTP, no runtime network).
 | `plan_driving_route(origin_lat, origin_lon, dest_lat, dest_lon, zim?)` | `graph.bin` → `nearestNode()` on origin/dest → `aStar()` → returns distance, duration, polyline (from node seq), `roads` list grouped by `edgeNameIdx`, and a simple `turn_by_turn` array of `"<road> for X km (~Y min)"` strings. |
 | `geocode(query, limit, kinds?, zim?)` | `manifest.json` + one `<prefix>.json` chunk. Ranks by `Geocoder.rank(…)` (name match quality, type priority). |
 | `route_from_places(origin, destination, zim?)` | `geocode` twice, then `plan_driving_route`. If `zim` is missing or not a loaded filename, falls through every loaded streetzim and picks the first one where both endpoints resolve — so a DC query finds the DC streetzim even with a baltics one also loaded. |
-| `near_places(lat, lon, radius_km, kinds?, limit, zim?)` | Scans **every** `search-data/*.json` chunk, filters by haversine distance, optionally filters by `type`/`subtype` (e.g. `kinds=["restaurant","cafe"]`), sorts by distance. **This is linear in the total number of POIs** — a category index (see "asks" below) would turn it into a single file read. |
+| `near_places(lat, lon, radius_km, kinds?, limit, zim?)` | Three-layer fast path, newest first: (1) **chips** — maps each `kind` to its `category-index/chip-<id>.json` via `ZimService.chipsForKind` (the web Find-page data) and reads only those; a broad kind (`restaurant`) returns the whole chip, a niche one (`pizza`) narrows within it; (2) **light categories** — `kinds=["place"]` → `category-index/place.json`; (3) **legacy poi bundle** — only on old ZIMs that still ship `poi.json`. A generic query (no `kinds`) or a kind with no chip falls through to scanning **every** `search-data/*.json` chunk (the web search-box data) by haversine distance. So new `--no-llm-bundle` ZIMs answer "restaurants near me" from one chip file, not an O(N) scan, and never depend on the removed LLM bundle. |
 | `list_libraries` | ZIM metadata (`Name`, `Title`, `Description`, `Language`, `Creator`, `Publisher`, `Date`, `Tags`, `Counter`) + the classification bit from above. |
 
 ## Model-facing trimming (what the LLM actually sees)
@@ -77,12 +80,15 @@ Prioritized by ROI for the MCP agent, not necessarily by your cost:
 2. **Wikipedia/Wikidata cross-refs on POI records** — see the dedicated
    "Cross-ZIM linking" section below for the full field spec.
 
-3. **Category index** — `category-index/amenity.json`,
-   `category-index/tourism.json`, etc. Same record shape you already emit
-   (`{name, lat, lon, subtype, location}`), pre-grouped by OSM top-level key.
-   `near_places` today is O(N) in total POIs; with this it's one file read
-   per category. Biggest latency win for broad queries like *"top museums
-   near me"* on country-scale ZIMs.
+3. ~~**Category index**~~ — ✅ **SHIPPED.** streetzim now emits
+   `category-index/manifest.json` + per-kind `category-index/chip-<id>.json`
+   (11 Find-page chips: restaurants, cafes, …) and light
+   `category-index/<slug>.json` categories. `near_places` reads only the
+   relevant chip(s) instead of scanning every prefix — one file read for
+   broad queries like *"top museums near me"*. The earlier `poi`/`addr`/
+   `street` "LLM bundle" was retired (`--no-llm-bundle`); mcpzim reads the
+   same chips the web Find page uses. Mapping lives in
+   `ZimService.chipsForKind`, mirroring streetzim `cloud/chip_rules.py`.
 
 Lower priority:
 

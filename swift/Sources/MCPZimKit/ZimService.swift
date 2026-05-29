@@ -673,6 +673,12 @@ public actor DefaultZimService: ZimService {
         // or "street names" (which swamp the real answers in OSM data),
         // so we opt those out by default. Explicit `kinds: ["addr"]`
         // still works when the caller actually wants addresses.
+        //
+        // `isGeneric` (no kind pinned) routes straight to the search-data
+        // scan below, which is the exact data the web search box reads —
+        // there's no single kind-partitioned file that answers "what's
+        // around me", and scanning loads everything in radius regardless.
+        let isGeneric = (kinds?.isEmpty ?? true)
         let effectiveKinds: Set<String>
         if let kinds, !kinds.isEmpty {
             effectiveKinds = Set(kinds.map { $0.lowercased() })
@@ -682,42 +688,69 @@ public actor DefaultZimService: ZimService {
         let radiusM = radiusKm * 1000
         var hits: [(Place, Double)] = []
 
-        // Preferred fast path: streetzim-generator commit a485ce3+ ships
-        // `category-index/<slug>.json` which pre-groups records by OSM
-        // top-level type. Reading a handful of these files beats scanning
-        // every prefix chunk — saves ~1 GB resident and seconds of latency
-        // on country-scale ZIMs.
+        // Fast path: read only the kind-partitioned index files the web
+        // viewer (`places.html`) itself uses, instead of scanning every
+        // search-data prefix chunk (~1 GB resident on country ZIMs).
+        // Source of truth for the chip ↔ kind mapping is streetzim's
+        // `cloud/chip_rules.py`; `Self.chipsForKind` mirrors it.
         //
-        // `kinds` may arrive at *either* abstraction level:
-        //   • top-level OSM keys (`amenity`, `tourism`, …) — match one slug.
-        //   • subtypes (`cafe`, `restaurant`, …) — don't match any slug
-        //     directly, so we load a broad set of likely-POI categories and
-        //     let scanRecords filter down by subtype.
-        if let catManifest = loadCategoryManifest(pair: pair),
-           let categories = catManifest["categories"] as? [String: Any]
-        {
-            let available = Set(categories.keys.map { $0.lowercased() })
-            let directHits = effectiveKinds.intersection(available)
-            let slugs: Set<String>
-            let applyKindFilter: Bool
-            if !directHits.isEmpty {
-                slugs = directHits
-                applyKindFilter = false
-            } else {
-                // Load the POI-ish slice of the category manifest and
-                // filter by subtype in-memory. If the manifest doesn't
-                // expose any of these, we'll fall through to the prefix
-                // scan below.
-                let poiish: Set<String> = ["amenity", "tourism", "shop", "leisure", "historic", "poi", "place"]
-                slugs = poiish.intersection(available)
-                applyKindFilter = true
+        // Three index layers, newest first:
+        //   1. `category-index/chip-{id}.json` — common place kinds
+        //      (restaurants, cafés, … 11 chips). The web data new
+        //      `--no-llm-bundle` ZIMs ship; replaces the old poi blob.
+        //   2. `category-index/{place,park,water,…}.json` — light web
+        //      categories listed in the manifest's `categories` map.
+        //   3. `category-index/{poi,addr,street}.json` — the heavy "LLM
+        //      bundle" OLD ZIMs shipped (omitted by `--no-llm-bundle`).
+        //      Kept only as a fallback for already-installed old ZIMs.
+        // Generic ("what's around me") queries skip all of this and scan
+        // search-data, which sees every record regardless of kind.
+        if !isGeneric, let catManifest = loadCategoryManifest(pair: pair) {
+            let chipsMap = catManifest["chips"] as? [String: Any] ?? [:]
+            let availableChips = Set(chipsMap.keys.map { $0.lowercased() })
+            let categories = catManifest["categories"] as? [String: Any] ?? [:]
+            let availableCats = Set(categories.keys.map { $0.lowercased() })
+
+            // Plan the index files to read as (slug, applyKindFilter).
+            var plan: [(slug: String, filter: Bool)] = []
+
+            // 1. Chips. A "broad" kind (restaurant → restaurants chip)
+            //    returns the whole chip, matching the web's chip-tap
+            //    behaviour; a "niche" kind (pizza → restaurants chip)
+            //    narrows within it via scanRecords' subtype/name filter.
+            var chipFilter: [String: Bool] = [:]
+            for kind in effectiveKinds {
+                guard let chips = Self.chipsForKind[kind] else { continue }
+                let niche = Self.nicheChipKinds.contains(kind)
+                for c in chips where availableChips.contains(c) {
+                    if niche { if chipFilter[c] == nil { chipFilter[c] = true } }
+                    else { chipFilter[c] = false }
+                }
             }
-            if !slugs.isEmpty {
-                let joined = slugs.sorted().joined(separator: ",")
+            for (c, f) in chipFilter { plan.append(("chip-\(c)", f)) }
+
+            // 2. Direct category hits (place, park, water, airport, peak),
+            //    minus any a chip already covers (parks).
+            for slug in effectiveKinds.intersection(availableCats) {
+                if slug == "park" && chipFilter["parks"] != nil { continue }
+                plan.append((slug, false))
+            }
+
+            // 3. Legacy POI bundle — only for old ZIMs that ship `poi.json`
+            //    and no chips. New ZIMs intentionally lack it.
+            if availableChips.isEmpty,
+               availableCats.contains("poi"),
+               effectiveKinds.intersection(availableCats).isEmpty {
+                let poiish: Set<String> = ["amenity", "tourism", "shop", "leisure", "historic", "poi", "place"]
+                for slug in poiish.intersection(availableCats) { plan.append((slug, true)) }
+            }
+
+            if !plan.isEmpty {
+                let joined = plan.map { $0.slug }.sorted().joined(separator: ",")
                 log("nearPlaces via category-index: \(joined) in \(pair.name)")
-                for slug in slugs.sorted() {
-                    guard let recs = loadCategoryChunk(pair: pair, slug: slug) else { continue }
-                    scanRecords(recs, filter: effectiveKinds, applyKindFilter: applyKindFilter,
+                for item in plan {
+                    guard let recs = loadCategoryChunk(pair: pair, slug: item.slug) else { continue }
+                    scanRecords(recs, filter: effectiveKinds, applyKindFilter: item.filter,
                                 centerLat: lat, centerLon: lon,
                                 radiusMeters: radiusM,
                                 requireWiki: hasWiki, hits: &hits)
@@ -726,8 +759,9 @@ public actor DefaultZimService: ZimService {
             }
         }
 
-        // Fallback: scan the prefix-chunked search-data. Works with older
-        // streetzims that predate the category index.
+        // Fallback: scan the prefix-chunked search-data — the web search
+        // box's own data. Covers generic queries, kinds with no chip, and
+        // older streetzims that predate the category index entirely.
         let manifest = try loadManifest(pair: pair)
         log("nearPlaces full scan: \(manifest.count) chunk(s) in \(pair.name)")
         let prefixes = manifest.isEmpty ? [] : Array(manifest.keys)
@@ -1023,6 +1057,70 @@ public actor DefaultZimService: ZimService {
         "amenity", "restaurant", "fast_food", "food_court",
         "cafe", "shop", "tourism", "attraction", "leisure",
         "historic", "landuse", "poi",
+    ]
+
+    /// Maps a user-facing `kinds` term to the streetzim Find-page chip
+    /// file(s) that hold its records (`category-index/chip-{id}.json`).
+    /// MIRRORS streetzim's `cloud/chip_rules.py` (the build-time source of
+    /// truth for the 11 chips). New `--no-llm-bundle` ZIMs ship these chip
+    /// files — the same web data `places.html` loads — in place of the old
+    /// `category-index/poi.json` LLM bundle. A term absent here has no chip
+    /// and falls through to the search-data scan. Keep in sync with
+    /// chip_rules.py's `CHIP_RULES`.
+    static let chipsForKind: [String: [String]] = [
+        // restaurants
+        "restaurant": ["restaurants"], "fast_food": ["restaurants"],
+        "food_court": ["restaurants"], "diner": ["restaurants"],
+        "food": ["restaurants", "cafes", "bars"],
+        "pizza": ["restaurants"], "pizzeria": ["restaurants"],
+        "sushi": ["restaurants"], "burger": ["restaurants"],
+        "ramen": ["restaurants"], "taco": ["restaurants"], "tacos": ["restaurants"],
+        "bbq": ["restaurants"], "thai": ["restaurants"], "indian": ["restaurants"],
+        "mexican": ["restaurants"], "italian": ["restaurants"],
+        "chinese": ["restaurants"], "japanese": ["restaurants"],
+        "korean": ["restaurants"], "vietnamese": ["restaurants"],
+        "vegan": ["restaurants"], "vegetarian": ["restaurants"],
+        "brunch": ["restaurants"], "breakfast": ["restaurants"],
+        "ice_cream": ["restaurants", "cafes"],
+        // cafés
+        "cafe": ["cafes"], "coffee": ["cafes"], "bakery": ["cafes"],
+        // bars
+        "bar": ["bars"], "pub": ["bars"], "beer": ["bars"], "nightclub": ["bars"],
+        // hotels
+        "hotel": ["hotels"], "lodging": ["hotels"], "motel": ["hotels"],
+        "hostel": ["hotels"],
+        // museums / landmarks
+        "museum": ["museums"], "gallery": ["museums"],
+        "attraction": ["museums", "landmarks"],
+        "landmark": ["landmarks"], "monument": ["landmarks"],
+        "memorial": ["landmarks"], "historic": ["landmarks"],
+        // parks
+        "park": ["parks"],
+        // libraries
+        "library": ["libraries"],
+        // health
+        "hospital": ["health"], "pharmacy": ["health"], "clinic": ["health"],
+        "doctor": ["health"], "doctors": ["health"], "dentist": ["health"],
+        "health": ["health"], "veterinary": ["health"], "vet": ["health"],
+        // shops
+        "shop": ["shops"], "store": ["shops"], "groceries": ["shops"],
+        "grocery": ["shops"], "supermarket": ["shops"], "mall": ["shops"],
+        "convenience": ["shops"],
+        // fuel
+        "gas": ["fuel"], "fuel": ["fuel"], "charging": ["fuel"],
+        "charging_station": ["fuel"], "ev": ["fuel"],
+    ]
+
+    /// Kinds that should NARROW within their chip rather than return the
+    /// whole chip — e.g. "pizza" maps to the restaurants chip but the user
+    /// wants only pizza places, so scanRecords applies its subtype/name
+    /// filter. Broad kinds (restaurant, cafe, hotel, …) are absent here and
+    /// return the chip's full nearby slice, matching the web chip tap.
+    static let nicheChipKinds: Set<String> = [
+        "pizza", "pizzeria", "sushi", "burger", "ramen", "taco", "tacos",
+        "bbq", "thai", "indian", "mexican", "italian", "chinese", "japanese",
+        "korean", "vietnamese", "vegan", "vegetarian", "diner", "brunch",
+        "breakfast", "bakery", "ice_cream",
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for
