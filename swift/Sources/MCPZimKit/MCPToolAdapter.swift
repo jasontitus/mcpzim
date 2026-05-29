@@ -1033,8 +1033,69 @@ public actor MCPToolAdapter {
         let resolved = try await ArticleHeuristics.sectionsByTitle(
             service: service, title: title, zim: zim
         )
+        let all = resolved.sections
+
+        // Paged read ("continue" / "keep reading"): narrate from
+        // `section_index` forward, accumulating whole sections until we
+        // cross ~700 chars, then stop on the section boundary — so each
+        // turn is a substantial beat, never a one-line stub, and Kokoro
+        // gets a clean break. The host tracks `next_section_index` to
+        // resume on the next "continue". Section indices are document
+        // order and line up 1:1 with `article_overview`'s
+        // `available_sections` (both come from `sectionsByTitle`).
+        //
+        // Without `section_index` we narrate the whole article (the
+        // explicit "read me the article" path) exactly as before.
+        if let startRaw = (args["section_index"] as? Int)
+            ?? (args["section_index"] as? NSNumber)?.intValue
+        {
+            let start = max(0, startRaw)
+            guard start < all.count else {
+                return [
+                    "pass_through": true,
+                    "title": resolved.title,
+                    "zim": resolved.zim,
+                    "total_sections": all.count,
+                    "reading_done": true,
+                    "bytes": 0,
+                    "text": "",
+                ]
+            }
+            let minChars = 700
+            var chunk: [ArticleSection] = []
+            var i = start
+            var acc = 0
+            while i < all.count {
+                let s = all[i]
+                chunk.append(s)
+                i += 1
+                acc += s.text.count
+                if acc >= minChars { break }
+            }
+            // Only the lead chunk (start == 0) leads with the article
+            // title spoken as a sentence; mid-article continuations open
+            // straight on the section heading ("Etymology. …").
+            let body = ArticleHeuristics.formatForNarration(
+                title: start == 0 ? resolved.title : "",
+                sections: chunk
+            )
+            return [
+                "pass_through": true,
+                "title": resolved.title,
+                "zim": resolved.zim,
+                "path": resolved.path,
+                "section_index": start,
+                "sections_read": chunk.count,
+                "next_section_index": i,
+                "total_sections": all.count,
+                "reading_done": i >= all.count,
+                "bytes": body.utf8.count,
+                "text": body,
+            ]
+        }
+
         let body = ArticleHeuristics.formatForNarration(
-            title: resolved.title, sections: resolved.sections
+            title: resolved.title, sections: all
         )
         return [
             // Sentinel the host uses to short-circuit the normal "feed
@@ -1044,7 +1105,8 @@ public actor MCPToolAdapter {
             "title": resolved.title,
             "zim": resolved.zim,
             "path": resolved.path,
-            "section_count": resolved.sections.count,
+            "section_count": all.count,
+            "total_sections": all.count,
             "bytes": body.utf8.count,
             "text": body,
         ]
@@ -1918,6 +1980,7 @@ public actor MCPToolAdapter {
     private static let narrateArticleSchema: Data = #"""
     {"type":"object","required":["title"],"properties":{
         "title":{"type":"string","description":"Article title. Accepts bare title or the OSM language-prefixed form (\"en:HP Garage\")."},
+        "section_index":{"type":"integer","description":"Optional: narrate one chunk starting at this document-order section (~700 chars, ends on a section boundary). Omit to narrate the whole article. Used by the host for \"continue\" / \"keep reading\" paging — section indices match article_overview's available_sections."},
         "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
     }}
     """#.data(using: .utf8)!

@@ -107,6 +107,21 @@ public final class ChatSession {
         }
     }
 
+    /// Where we are in reading an article aloud, section by section.
+    /// Set when `article_overview` / `narrate_article` runs; consumed +
+    /// advanced when the user says "continue" / "keep reading" / "tell
+    /// me more". `next` is the document-order index of the next section
+    /// to narrate (0 = lead); `total` is the article's section count.
+    /// Cleared whenever the user starts a different (non-continue) turn,
+    /// so a later "continue" never resumes a stale article.
+    private struct ReadingState {
+        let title: String
+        let zim: String?
+        let total: Int
+        var next: Int
+    }
+    private var readingState: ReadingState?
+
     /// When true, double the per-turn reply token budget over the
     /// DeviceProfile default. Trades KV-cache headroom (and ~seconds
     /// of generation time) for fuller, less-clipped answers. With
@@ -1729,6 +1744,28 @@ public final class ChatSession {
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
         isGenerating = true
         Task {
+            // "Continue" / "keep reading" / "tell me more" — page the
+            // next chunk of the article we're currently reading aloud.
+            // Checked before `classify` so a bare "continue" never tries
+            // to geocode "continue". Only fires when there's an active
+            // reading position; a bare "more" with none (e.g. after a
+            // places search) falls straight through to normal routing.
+            let wantsContinue = IntentRouter.isContinueReading(text)
+            if wantsContinue, readingState != nil {
+                await continueReadingArticle()
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].finishedAt = Date()
+                }
+                return
+            }
+            // Any other turn abandons an in-progress read — the article
+            // tools below re-establish it if this turn is itself a
+            // reading request (`noteReadingState`).
+            if !wantsContinue { readingState = nil }
+
             // Fast-path intent router. Match a small set of simple
             // user patterns ("<category> in <place>", "directions to
             // <place>", "<category> near me") and dispatch the tool
@@ -2078,6 +2115,11 @@ public final class ChatSession {
                 // model re-encoding an article it already decided to read).
                 let isPassThrough = (fullResult["pass_through"] as? Bool) == true
                 let passThroughText = (fullResult["text"] as? String) ?? ""
+                // Track article reading position so a later "continue"
+                // pages forward (article_overview / narrate_article only;
+                // a no-op for every other tool).
+                noteReadingState(toolName: call.name,
+                                 args: resolvedArgs, result: fullResult)
                 // Routing results carry a polyline with thousands of points
                 // and a turn-by-turn list that together inflate to 50+ KB.
                 // Feeding that verbatim into the next prompt turns into
@@ -2667,6 +2709,98 @@ public final class ChatSession {
         }
     }
 
+    /// Capture / refresh the article reading position after an article
+    /// tool runs, so a later "continue" knows what to read next. A no-op
+    /// for any other tool. `article_overview` spoke an LLM summary, so
+    /// "continue" starts from the top (full lead → onward, `next = 0`);
+    /// a full `narrate_article` read the whole thing, so there's nothing
+    /// left (`next = total`); a paged `narrate_article` reports where it
+    /// stopped via `next_section_index`.
+    private func noteReadingState(
+        toolName: String, args: [String: Any], result: [String: Any]
+    ) {
+        func intVal(_ any: Any?) -> Int? {
+            (any as? Int) ?? (any as? NSNumber)?.intValue
+        }
+        switch toolName {
+        case "article_overview":
+            guard let title = result["title"] as? String,
+                  let outline = result["available_sections"] as? [[String: Any]],
+                  !outline.isEmpty
+            else { return }
+            readingState = ReadingState(
+                title: title, zim: result["zim"] as? String,
+                total: outline.count, next: 0)
+        case "narrate_article":
+            guard let title = result["title"] as? String else { return }
+            let total = intVal(result["total_sections"])
+                ?? intVal(result["section_count"]) ?? 0
+            // A paged read reports the next unread section; a whole-
+            // article read leaves nothing to continue.
+            let next = intVal(result["next_section_index"]) ?? total
+            readingState = ReadingState(
+                title: title, zim: result["zim"] as? String,
+                total: total, next: next)
+        default:
+            break
+        }
+    }
+
+    /// Read the next chunk of the article tracked in `readingState` —
+    /// dispatched straight to `narrate_article(section_index:)` and
+    /// emitted to the assistant bubble (and thus TTS) with no model
+    /// pass. When the article is exhausted, say so and clear the state.
+    @MainActor
+    private func continueReadingArticle() async {
+        guard let adapter, var st = readingState else { return }
+        if st.next >= st.total {
+            updateAssistant("That's the end of the article on \(st.title).")
+            readingState = nil
+            return
+        }
+        var args: [String: Any] = ["title": st.title, "section_index": st.next]
+        if let zim = st.zim { args["zim"] = zim }
+        func jsonString(_ obj: [String: Any]) -> String {
+            (try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        debug("continue-reading \(st.title): section \(st.next)/\(st.total)",
+              category: "Router")
+        do {
+            let result = try await adapter.dispatch(
+                tool: "narrate_article", args: args
+            )
+            let rawStr = jsonString(result)
+            recordToolTrace(ToolCallTrace(
+                name: "narrate_article",
+                arguments: jsonString(args),
+                result: rawStr,
+                rawResult: rawStr,
+                error: nil
+            ))
+            let text = (result["text"] as? String) ?? ""
+            guard !text.isEmpty else {
+                updateAssistant("That's the end of the article on \(st.title).")
+                readingState = nil
+                return
+            }
+            updateAssistant(text)
+            debug("continue-reading: emitted \(text.count) chars", category: "Chat")
+            if let next = (result["next_section_index"] as? Int)
+                ?? (result["next_section_index"] as? NSNumber)?.intValue
+            {
+                st.next = next
+                readingState = st
+            } else {
+                readingState = nil
+            }
+        } catch {
+            debug("continue-reading dispatch failed: \(error)", category: "Tool")
+            updateAssistant("Sorry — I couldn't read more of \(st.title).")
+            readingState = nil
+        }
+    }
+
     /// Run the dispatched tool, record the trace, and synthesize a
     /// one-line assistant caption. Returns `true` when the fast path
     /// was used successfully and the LLM should be skipped.
@@ -2760,6 +2894,12 @@ public final class ChatSession {
             } else if intent.toolName == "article_overview"
                    || intent.toolName == "compare_articles"
             {
+                if intent.toolName == "article_overview" {
+                    // Remember the article so "continue" can page on
+                    // after the spoken summary.
+                    noteReadingState(toolName: "article_overview",
+                                     args: dictArgs, result: fullResult)
+                }
                 // The fast path dispatches the tool (saving iter 0's
                 // ~13 s prefill-and-decide cost), then hands off to
                 // the LLM to generate the prose. Synthesising a

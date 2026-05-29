@@ -59,6 +59,40 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertEqual(i?.args["place"], .string("san francisco"))
     }
 
+    // MARK: - "continue" / "keep reading" paging
+
+    func testContinueReadingPositives() {
+        for q in [
+            "continue", "Continue.", "keep reading", "keep going",
+            "go on", "tell me more", "say more", "read more", "read on",
+            "more", "More please", "next", "next section", "carry on",
+            "and then?", "what else", "keep talking", "go ahead",
+            "please continue", "can you keep reading", "and continue",
+        ] {
+            XCTAssertTrue(IntentRouter.isContinueReading(q),
+                          "should be a reading-continue: \(q)")
+        }
+    }
+
+    func testContinueReadingNegatives() {
+        // Real queries that must NOT be swallowed as "continue" — they
+        // carry their own intent and have to reach classify / the LLM.
+        for q in [
+            "tell me about the grand duchy of lithuania",
+            "more coffee shops near me",
+            "what is the capital of France",
+            "directions to Philz Coffee",
+            "compare north and south korea",
+            "read me the article about Paris",
+            "bars in North Beach",
+            "where am I",
+            "",
+        ] {
+            XCTAssertFalse(IntentRouter.isContinueReading(q),
+                           "should NOT be a reading-continue: \(q)")
+        }
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes
