@@ -115,6 +115,40 @@ final class NearPlacesChipIndexTests: XCTestCase {
         XCTAssertEqual(r.results.map { $0.place.name }, ["Blue Bottle Coffee"])
     }
 
+    func testMultiWordKindResolvesToChip() async throws {
+        // The model emits kinds=["coffee shop"] (two words). It must resolve
+        // to the cafes chip via chipsFor's word-split — NOT miss every chip
+        // and fall through to the search-data scan (which jetsammed the app
+        // on a statewide ZIM). Regression for the 2026-05-29 crash.
+        let svc = service(newZimWithChips())
+        for term in ["coffee shop", "Coffee Shop", "gas station"] {
+            let r = try await svc.nearPlaces(
+                lat: lat, lon: lon, radiusKm: 5, limit: 20,
+                kinds: [term], zim: nil, hasWiki: false)
+            if term.contains("coffee") {
+                XCTAssertEqual(r.results.map { $0.place.name }, ["Blue Bottle Coffee"],
+                               "\(term) → cafes chip")
+            }
+            // (no fuel fixture here; the point is it doesn't scan/crash)
+        }
+    }
+
+    func testHugeSearchDataSkipsFullScanNoCrash() async throws {
+        // A statewide ZIM declares millions of search-data records. An
+        // unmapped kind must NOT trigger the full scan (it OOM'd at 5.4 GB).
+        // The record-count cap returns empty instead of loading every chunk.
+        var json = newZimWithChips()
+        json["search-data/manifest.json"] = #"{"chunks":{"00":600000,"01":500000}}"#
+        // (No chunk files — if the guard failed and it tried to scan, it'd
+        //  still not crash here, but on-device those chunks exist and OOM.)
+        let svc = service(json)
+        let r = try await svc.nearPlaces(
+            lat: lat, lon: lon, radiusKm: 5, limit: 20,
+            kinds: ["atm"], zim: nil, hasWiki: false)   // "atm" has no chip
+        XCTAssertEqual(r.results.count, 0,
+                       "1.1M-record search-data must be skipped, not scanned")
+    }
+
     func testNewZimPlaceUsesLightCategory() async throws {
         // kinds=["place"] → the manifest's light `place` category (cities),
         // not any chip. Confirms direct-category hits still work alongside

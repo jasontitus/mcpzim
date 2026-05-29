@@ -730,7 +730,8 @@ public actor DefaultZimService: ZimService {
             //    narrows within it via scanRecords' subtype/name filter.
             var chipFilter: [String: Bool] = [:]
             for kind in effectiveKinds {
-                guard let chips = Self.chipsForKind[kind] else { continue }
+                let chips = Self.chipsFor(kind)
+                guard !chips.isEmpty else { continue }
                 let niche = Self.nicheChipKinds.contains(kind)
                 for c in chips where availableChips.contains(c) {
                     if niche { if chipFilter[c] == nil { chipFilter[c] = true } }
@@ -772,7 +773,26 @@ public actor DefaultZimService: ZimService {
         // Fallback: scan the prefix-chunked search-data — the web search
         // box's own data. Covers generic queries, kinds with no chip, and
         // older streetzims that predate the category index entirely.
+        //
+        // SAFETY GUARD (prevents jetsam): a full scan loads EVERY chunk into
+        // memory. On a statewide ZIM that's tens of millions of records →
+        // multi-GB → the app gets jetsammed (observed: 453 chunks loaded,
+        // 5.4 GB RSS, crash on "nearest coffee shop"). So refuse the full
+        // scan when the ZIM ships chips (the chips ARE the place data — a
+        // query that matched no chip must NOT drag in the entire index) or
+        // when search-data is very large. Specific kinds hit chips above;
+        // this only changes unmapped-kind / generic queries on big ZIMs,
+        // which now return the chip/category hits gathered so far (possibly
+        // empty) instead of crashing the app.
         let manifest = try loadManifest(pair: pair)
+        let totalRecords = manifest.values.reduce(0, +)
+        if totalRecords > Self.maxFullScanRecords {
+            log("nearPlaces: search-data has \(totalRecords) records (> "
+                + "\(Self.maxFullScanRecords) cap) — skipping the full scan to "
+                + "avoid OOM; returning \(hits.count) chip/category hit(s) from "
+                + "\(pair.name). Specific kinds hit a chip and don't need this.")
+            return summarize(hits: hits, limit: limit)
+        }
         log("nearPlaces full scan: \(manifest.count) chunk(s) in \(pair.name)")
         let prefixes = manifest.isEmpty ? [] : Array(manifest.keys)
         for prefix in prefixes {
@@ -1120,6 +1140,29 @@ public actor DefaultZimService: ZimService {
         "gas": ["fuel"], "fuel": ["fuel"], "charging": ["fuel"],
         "charging_station": ["fuel"], "ev": ["fuel"],
     ]
+
+    /// Max search-data records `near_places` will full-scan before giving
+    /// up (to stay well under the iOS jetsam ceiling — a statewide ZIM has
+    /// tens of millions). Chips serve specific kinds without scanning; this
+    /// only bounds the generic / no-chip fallback.
+    static let maxFullScanRecords = 500_000
+
+    /// Resolve a (possibly multi-word) `kinds` term to chip id(s),
+    /// tolerating the phrasings models actually emit. Tries the term as-is,
+    /// the underscore form (`ice cream`→`ice_cream`), then each word
+    /// (`coffee shop`→`coffee`→cafes, `gas station`→`gas`→fuel). Without
+    /// this, a two-word kind missed every chip and fell through to the
+    /// search-data scan — which jetsams the app on a statewide ZIM.
+    static func chipsFor(_ kind: String) -> [String] {
+        let k = kind.lowercased()
+        if let c = chipsForKind[k] { return c }
+        let underscored = k.replacingOccurrences(of: " ", with: "_")
+        if let c = chipsForKind[underscored] { return c }
+        for word in k.split(separator: " ") {
+            if let c = chipsForKind[String(word)] { return c }
+        }
+        return []
+    }
 
     /// Kinds that should NARROW within their chip rather than return the
     /// whole chip — e.g. "pizza" maps to the restaurants chip but the user
