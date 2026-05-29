@@ -80,4 +80,36 @@ final class ChatToolCallParserTests: XCTestCase {
         let buffer = #"<|tool_call|{"name":"near_named_place","arguments":{"place":"Adams"#
         XCTAssertNil(ChatToolCallParser.firstCall(in: buffer))
     }
+
+    // FT'd Gemma 3 4B (gists 80daf913, 3f39d873) sometimes emits
+    // `"arguments={...}` (literal `=` token) where it should have emitted
+    // `"arguments":{...}`. The strict JSON path can't recover, but the
+    // repair fallback rewrites `{"arguments=` → `{"arguments":` and
+    // parses cleanly.
+    func testParsesGemma3KeyEqualsGarble() throws {
+        let buffer = """
+        <tool_call>
+        {"arguments={"title": "Einstein's prediction of gravity waves", "max_sections": 1}, "name": "article_overview"}
+        </tool_call>
+        """
+        let match = try XCTUnwrap(ChatToolCallParser.firstCall(in: buffer))
+        XCTAssertEqual(match.name, "article_overview")
+        XCTAssertEqual(match.arguments["title"] as? String,
+                       "Einstein's prediction of gravity waves")
+        XCTAssertEqual(match.arguments["max_sections"] as? Int, 1)
+        // Range should swallow the entire <tool_call>...</tool_call> block
+        // so the user-visible transcript doesn't show the raw garble.
+        XCTAssertEqual(String(buffer[match.range]), buffer)
+    }
+
+    // Repair must NOT corrupt `=` characters that legitimately appear
+    // inside string values (e.g. URL query strings). Anchor the regex
+    // to JSON-key positions only.
+    func testRepairLeavesValueEqualsAlone() throws {
+        let buffer = #"<tool_call>{"name":"fetch","arguments":{"url":"https://x.com/a?q=1&b=2"}}</tool_call>"#
+        let match = try XCTUnwrap(ChatToolCallParser.firstCall(in: buffer))
+        XCTAssertEqual(match.name, "fetch")
+        XCTAssertEqual(match.arguments["url"] as? String,
+                       "https://x.com/a?q=1&b=2")
+    }
 }

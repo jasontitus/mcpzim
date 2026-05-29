@@ -37,3 +37,9 @@ DerivedData/
 ios/MCPZimChat/Frameworks/CoreKiwix.xcframework/
 tools/gemma-smoke/.build/
 dropped-request.log
+
+# Fine-tune training data + run logs + fused model outputs (large, regenerable)
+tools/fine-tune/*.jsonl
+tools/fine-tune/logs/
+tools/fine-tune/ft-out-*/
+*.gguf

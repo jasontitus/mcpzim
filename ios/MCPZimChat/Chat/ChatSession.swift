@@ -1043,7 +1043,26 @@ public final class ChatSession {
             approximateMemoryMB: 3200,
             template: Gemma3Template()
         )
+        // LoRA-fine-tuned LFM2.5-8B-A1B (v7-full, run 2026-05-29). 8.3B
+        // total / 1.5B active hybrid MoE. Trained on the SAME tool-call
+        // corpus as the Gemma 3 4B FT (train_v4_combined + chain-heavy +
+        // 317 targeted hard-case rows) so it drives the JSON tool format
+        // via LFM25Template (ChatML markers, Gemma-3 body/parse logic).
+        // Q3_K_M scored 12/13 on the llama-smoke grid — beats Gemma 3 4B
+        // FT V7C's 10/13 — at 4.16 GB peak RSS (q8_0 KV), ~1.8× faster
+        // decode (1.5B active). ~1 GB heavier than the Gemma FT's 3.2 GB
+        // but well under the iPhone 17 Pro Max 6 GB jetsam cap. See
+        // tools/llama-smoke/LFM25_MEMORY_PERF_FRONTIER.md.
+        let lfm25_ft = LlamaCppProvider(
+            id: "lfm2.5-8b-a1b-q3km-gguf-ft",
+            displayName: "LFM2.5 8B-A1B FT (Q3_K_M · llama.cpp)",
+            huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
+            ggufFilename: "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+            approximateMemoryMB: 4200,
+            template: LFM25Template()
+        )
         var providers: [any ModelProvider] = [
+            lfm25_ft,
             gemma3_4b_gguf_ft,
             gemma3_4b_gguf,
             gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b,

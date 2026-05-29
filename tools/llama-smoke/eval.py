@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -32,6 +33,43 @@ from typing import Any, Optional
 
 import psutil
 from huggingface_hub import hf_hub_download
+
+
+# LFM2.5's baked Jinja chat template uses HF Transformers-only
+# `{% generation %}…{% endgeneration %}` marker tags. Plain Jinja2
+# (bundled with llama-cpp-python) rejects them with a SyntaxError at
+# Llama() construction time, even when we'll never call the chat API.
+# Register a no-op extension so the template parses; we use a hand-
+# rolled prompt builder for LFM2 anyway.
+def _install_generation_noop_extension():
+    from jinja2 import nodes
+    from jinja2.environment import Environment
+    from jinja2.ext import Extension
+
+    class _GenerationNoop(Extension):
+        tags = {"generation"}
+        def parse(self, parser):
+            next(parser.stream)  # consume the 'generation' tag token
+            # Return the inner body as-is so any rendered output is
+            # preserved. We don't use the chat path for LFM2 anyway,
+            # but a sane fallback keeps llama-cpp-python happy at
+            # construction time.
+            return parser.parse_statements(
+                ("name:endgeneration",), drop_needle=True
+            )
+
+    orig_init = Environment.__init__
+    if getattr(orig_init, "_lfm_patched", False):
+        return
+    def patched(self, *args, **kwargs):
+        extensions = list(kwargs.get("extensions", ()))
+        extensions.append(_GenerationNoop)
+        kwargs["extensions"] = extensions
+        return orig_init(self, *args, **kwargs)
+    patched._lfm_patched = True
+    Environment.__init__ = patched
+
+_install_generation_noop_extension()
 
 
 # ------------------------------------------------------------------
@@ -536,6 +574,92 @@ TOOL_FENCE_RE = re.compile(
     re.DOTALL,
 )
 
+# LFM2.5 emits Pythonic tool calls:
+#   <|tool_call_start|>[fn(arg="val", k=1), fn2(...)]<|tool_call_end|>
+# Body is a Python list of Call expressions, not JSON. Parsed with `ast`.
+LFM_TOOL_RE = re.compile(
+    r"<\|tool_call_start\|>\s*(?P<body>.*?)\s*<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
+
+def _parse_list_of_calls(body: str) -> list[dict]:
+    """Parse a `[fn(k=v), fn(k=v)]` Python expression into
+    [{name, args}, ...]. Returns [] if anything fails to parse.
+    Also accepts a single bare `fn(k=v)` expression."""
+    out: list[dict] = []
+    try:
+        tree = ast.parse(body, mode="eval")
+    except SyntaxError:
+        return out
+    nodes: list[ast.expr] = []
+    if isinstance(tree.body, ast.List):
+        nodes = list(tree.body.elts)
+    elif isinstance(tree.body, ast.Call):
+        nodes = [tree.body]
+    for call in nodes:
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            continue
+        args: dict[str, Any] = {}
+        for kw in call.keywords:
+            if kw.arg is None:
+                continue
+            try:
+                args[kw.arg] = ast.literal_eval(kw.value)
+            except Exception:
+                args[kw.arg] = ast.unparse(kw.value)
+        out.append({"name": call.func.id, "args": args})
+    return out
+
+
+def _extract_pythonic_calls(content: str) -> list[dict]:
+    """Parse LFM2.5-style tool calls. Two forms observed in the wild:
+
+    1. `<|tool_call_start|>[fn(k=v, ...)]<|tool_call_end|>` — when the
+       special tokens are surfaced.
+    2. Bare `[fn(k=v, ...)]` at end of content (after `</think>`) — when
+       llama.cpp consumes the special tokens internally."""
+    out: list[dict] = []
+    # Form 1: explicit markers.
+    for m in LFM_TOOL_RE.finditer(content):
+        body = m.group("body").strip()
+        if body:
+            out.extend(_parse_list_of_calls(body))
+    if out:
+        return out
+    # Form 2: bare `[fn(...)]` after </think>. Strip the think block
+    # first so a `[something]` inside thinking text doesn't false-fire.
+    tail = content.split("</think>")[-1] if "</think>" in content else content
+    tail = tail.strip()
+    # Scan forward from the FIRST `[` and bracket-balance (track string
+    # boundaries) to find the matching outer `]`. `rfind` would land
+    # inside e.g. `kinds=['bar']`.
+    start = tail.find("[")
+    if start >= 0:
+        depth = 0
+        in_str: Optional[str] = None
+        esc = False
+        for i in range(start, len(tail)):
+            ch = tail[i]
+            if in_str is not None:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == in_str:
+                    in_str = None
+                continue
+            if ch in ("'", '"'):
+                in_str = ch
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    out.extend(_parse_list_of_calls(tail[start:i + 1]))
+                    break
+    return out
+
 
 def _balanced_json(src: str, start: int) -> Optional[tuple[dict, int]]:
     """Parse a JSON object at src[start], tracking nested braces so a
@@ -587,6 +711,9 @@ def extract_tool_calls(content: str, openai_calls: Optional[list]) -> list[dict]
             return calls
     if not content:
         return []
+    pythonic = _extract_pythonic_calls(content)
+    if pythonic:
+        return pythonic
     # Scan for tool fences (markdown, <tool_call>) and brace-balance
     # the JSON body inside.
     for m in TOOL_FENCE_RE.finditer(content):
@@ -855,14 +982,19 @@ def dispatch_tool(name: str, args: dict) -> dict:
     return {"error": f"unknown tool {name!r}"}
 
 
-def _build_tool_block() -> str:
+def _build_tool_block(tool_format: str = "json") -> str:
     """Render TOOLS_SCHEMA into a compact text block the model can
     consume inside the first user turn. Gemma 3's chat template
     rejects `system` and `tool` roles, so we fold both into user
-    messages and instruct the model to emit tool calls as JSON
-    fenced code blocks — the same convention Gemma3Template.swift
-    uses in the app."""
-    lines = ["You have these tools (emit a JSON block to call one):"]
+    messages and instruct the model to emit tool calls in its
+    native format.
+
+    `tool_format`:
+      - "json": fenced code block `{"function": ..., "parameters": ...}` —
+        Gemma 3, Qwen, generic models.
+      - "pythonic": `<|tool_call_start|>[fn(k=v, ...)]<|tool_call_end|>` —
+        LFM2 / LFM2.5 native, trained format."""
+    lines = ["You have these tools (call one when needed):"]
     for t in TOOLS_SCHEMA:
         fn = t["function"]
         params = fn.get("parameters", {}).get("properties", {})
@@ -873,25 +1005,73 @@ def _build_tool_block() -> str:
             arg_strs.append(f"{k}{star}:{v.get('type','string')}")
         lines.append(f"- {fn['name']}({', '.join(arg_strs)}) — {fn['description']}")
     lines.append("")
-    lines.append(
-        "To call a tool, respond with ONLY a code fence like:\n"
-        "```tool_call\n"
-        "{\"function\":\"<name>\",\"parameters\":{...}}\n"
-        "```\n"
-        "After you get the tool output (as a subsequent user message "
-        "starting with `[TOOL_RESPONSE]`), answer the user in natural "
-        "prose. Keep replies concise."
-    )
+    if tool_format == "pythonic":
+        lines.append(
+            "When a tool can answer the user, your FIRST action must be a "
+            "tool call in this exact form (no surrounding prose, no fences):\n"
+            "<|tool_call_start|>[tool_name(arg=value, arg2='string value')]<|tool_call_end|>\n"
+            "Use single quotes for string arguments. After you get the tool "
+            "output (as a user message starting with `[TOOL_RESPONSE]`), "
+            "answer the user in concise natural prose."
+        )
+    else:
+        lines.append(
+            "To call a tool, respond with ONLY a code fence like:\n"
+            "```tool_call\n"
+            "{\"function\":\"<name>\",\"parameters\":{...}}\n"
+            "```\n"
+            "After you get the tool output (as a subsequent user message "
+            "starting with `[TOOL_RESPONSE]`), answer the user in natural "
+            "prose. Keep replies concise."
+        )
     return "\n".join(lines)
 
 
+def _lfm2_render(messages: list[dict[str, str]],
+                 system_text: str = "",
+                 tools_schema: Optional[list[dict]] = None,
+                 date_str: str = "2026-05-28") -> str:
+    """Hand-rolled prompt builder matching LFM2.5's native training
+    format byte-exactly. llama-cpp-python's Jinja path mis-renders
+    the GGUF-baked template because the `tojson` filter returns Markup,
+    which forces autoescape on the concatenated `<|im_start|>` markers
+    and turns them into `&lt;|im_start|&gt;`. We bypass that here.
+
+    The format Liquid trained on:
+      <|im_start|>system
+      [optional system text]
+
+      Today's date: YYYY-MM-DD
+
+      List of tools: [{...}, ...]<|im_end|>
+      <|im_start|>user
+      ...<|im_end|>
+      <|im_start|>assistant
+    """
+    sys_block = system_text.strip()
+    if tools_schema:
+        # LFM expects OpenAI-shaped tool dicts. Pass through as-is.
+        if sys_block:
+            sys_block += "\n\n"
+        sys_block += f"Today's date: {date_str}\n\n"
+        sys_block += "List of tools: " + json.dumps(tools_schema)
+    parts: list[str] = []
+    if sys_block:
+        parts.append(f"<|im_start|>system\n{sys_block}<|im_end|>\n")
+    for m in messages:
+        parts.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n")
+    parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
+
+
 def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
-                 max_turn_tokens: int = 512) -> dict[str, Any]:
+                 max_turn_tokens: int = 2048,
+                 tool_format: str = "json") -> dict[str, Any]:
     """Drive the scenario through llama.cpp's chat API, round-tripping
     tool calls via the fixture. Folds system+tool messages into user
     turns to sidestep Gemma 3's strict user/assistant alternation."""
     sc = SCENARIOS[scenario_name]
-    preamble_block = SYSTEM_PREAMBLE + "\n" + _build_tool_block()
+    preamble_block = SYSTEM_PREAMBLE + "\n" + _build_tool_block(tool_format)
     loc = sc.get("system_location")
     if loc:
         preamble_block += (
@@ -899,25 +1079,52 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
         )
     messages: list[dict[str, str]] = []
     per_turn: list[dict[str, Any]] = []
+    use_lfm_path = tool_format == "pythonic"
+    # LFM2.5 gets tools via the dedicated `tools_schema` arg of
+    # `_lfm2_render`, but it still needs the SYSTEM_PREAMBLE prose
+    # (tool-selection hints like "use near_places for places") so it
+    # doesn't reach for `search` on every geo query.
+    lfm_system = SYSTEM_PREAMBLE.rstrip()
+    if loc := sc.get("system_location"):
+        lfm_system += f"\n\ncurrentLocation: lat={loc['lat']} lon={loc['lon']}"
     for turn_idx, turn in enumerate(sc["turns"]):
-        # Fold preamble into the first user turn (Gemma has no system role).
+        # Fold preamble into the first user turn for Gemma (no system role).
+        # LFM2.5 supports a system role natively, so it goes there instead.
         user_text = turn["user"]
-        if turn_idx == 0:
+        if turn_idx == 0 and not use_lfm_path:
             user_text = preamble_block + "\n\nUser query:\n" + user_text
         messages.append({"role": "user", "content": user_text})
         final_content = ""
         tool_calls_seen: list[str] = []
         for iter_ in range(4):
             t_iter = time.perf_counter()
-            resp = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_turn_tokens,
-                temperature=0.3,
-            )
+            if use_lfm_path:
+                prompt = _lfm2_render(
+                    messages,
+                    system_text=lfm_system,
+                    tools_schema=TOOLS_SCHEMA,
+                )
+                resp = llm.create_completion(
+                    prompt=prompt,
+                    max_tokens=max_turn_tokens,
+                    temperature=0.2,
+                    top_p=0.8,
+                    repeat_penalty=1.05,
+                    stop=["<|im_end|>"],
+                )
+                content = resp["choices"][0].get("text") or ""
+                openai_calls = None
+            else:
+                resp = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_turn_tokens,
+                    temperature=0.3,
+                )
+                msg = resp["choices"][0]["message"]
+                content = msg.get("content") or ""
+                openai_calls = msg.get("tool_calls")
             dt = time.perf_counter() - t_iter
-            msg = resp["choices"][0]["message"]
-            content = msg.get("content") or ""
-            tcalls = extract_tool_calls(content, msg.get("tool_calls"))
+            tcalls = extract_tool_calls(content, openai_calls)
             per_turn_iter = {
                 "turn": turn_idx, "iter": iter_,
                 "t_s": round(dt, 2),
@@ -993,6 +1200,11 @@ def main():
                     help="iSWA cache mode. 'false' enables rotation-based "
                          "pruning (PR #13194/#21513); 'default' uses the "
                          "model's own setting (usually full).")
+    ap.add_argument("--tool-format", choices=["json", "pythonic"],
+                    default="json",
+                    help="Format the tool block + parser expects. "
+                         "'pythonic' = LFM2/LFM2.5 native "
+                         "<|tool_call_start|>[fn(...)]<|tool_call_end|>.")
     args = ap.parse_args()
 
     from llama_cpp import Llama
@@ -1018,6 +1230,13 @@ def main():
         swa_full_arg = True
     elif args.swa_full == "false":
         swa_full_arg = False
+    # LFM2.5's baked Jinja chat template uses HF-only `{% generation %}`
+    # tags that crash the bundled Jinja at Llama() construction. We
+    # build the prompt by hand for `--tool-format pythonic` anyway,
+    # so force a benign format here to dodge the parse.
+    llama_kwargs: dict[str, Any] = {}
+    if args.tool_format == "pythonic":
+        llama_kwargs["chat_format"] = "chatml"
     t_load = time.perf_counter()
     llm = Llama(
         model_path=gguf_path,
@@ -1028,12 +1247,14 @@ def main():
         flash_attn=args.flash_attn,
         swa_full=swa_full_arg,
         verbose=False,
+        **llama_kwargs,
     )
     print(f"       load: {time.perf_counter()-t_load:.2f}s · "
           f"rss: {rss_mb():.0f} MB")
 
     t = time.perf_counter()
-    result = run_scenario(llm, args.scenario, probe)
+    result = run_scenario(llm, args.scenario, probe,
+                          tool_format=args.tool_format)
     wall_s = time.perf_counter() - t
     probe.stop.set()
 

@@ -41,6 +41,7 @@ class ModelSpec:
     prefix: Optional[str] = None # GGUF filename prefix (suffix = f"{prefix}-{quant}.gguf")
     quants: list[str] = dataclasses.field(default_factory=list)
     local_paths: Optional[dict[str, str]] = None  # {quant: absolute_path}
+    tool_format: str = "json"  # "json" (Gemma/Qwen) or "pythonic" (LFM2)
 
 
 MODELS: list[ModelSpec] = [
@@ -113,6 +114,99 @@ MODELS: list[ModelSpec] = [
             "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
                       "fine-tune/ft-out-qwen3.5-1.7b/qwen3.5-1.7b-it-ft.Q4_K_M.gguf",
         },
+    ),
+    # Liquid LFM2.5 — 8.3B total / 1.5B active MoE (hybrid LIV-conv + GQA).
+    # Native ChatML-ish turn markers + Pythonic tool-call body:
+    #   <|tool_call_start|>[fn(arg='v', ...)]<|tool_call_end|>
+    # llama.cpp surfaces the body without the markers, so the parser
+    # accepts both forms.
+    ModelSpec(
+        key="lfm2.5-8b-a1b",
+        repo="LiquidAI/LFM2.5-8B-A1B-GGUF",
+        prefix="LFM2.5-8B-A1B",
+        quants=["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
+        tool_format="pythonic",
+    ),
+    ModelSpec(
+        # train_v4_combined.jsonl uses Gemma-style "emit JSON block" tool
+        # call format folded into the first user turn (Gemma 3 has no
+        # system role). LFM2.5 was trained on that distribution here, so
+        # at inference it emits JSON-fenced tool calls — match the eval
+        # format to what we trained for.
+        key="lfm2.5-8b-a1b-ft",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q4_K_M.gguf",
+        },
+        tool_format="json",
+    ),
+    ModelSpec(
+        # Same dataset re-emitted by convert_to_lfm2_native.py: real
+        # `system` role + Pythonic tool calls (`<|tool_call_start|>
+        # [fn(arg='v')]<|tool_call_end|>`). Trained on pcgaming with
+        # PEFT (3.74M adapter, attn + router + dense FFN; MoE experts
+        # not adapted because PEFT's standard target_modules can't
+        # reach into LFM2's stacked-expert representation).
+        key="lfm2.5-8b-a1b-ft-native",
+        quants=["Q4_K_M"],
+        local_paths={
+            "Q4_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-lfm2.5-native-pulled/"
+                      "lfm2.5-8b-a1b-ft-native.Q4_K_M.gguf",
+        },
+        tool_format="pythonic",
+    ),
+    # Memory-tuning sweep: the same fine-tuned LFM2.5 at smaller weight
+    # quants. LFM2.5's RSS is dominated by resident weights (8.3B total
+    # MoE params — every expert stays in memory even though only 1.5B
+    # are active per token), so the weight quant is the biggest memory
+    # lever. Q4_K_M=4.9GB, Q3_K_L=~4.0GB, Q3_K_M=~3.7GB. Combine with
+    # q4_0 KV to shave the cache too. Eval each (quant × KV) to map the
+    # memory/accuracy frontier vs the 10/13 Gemma 3 4B FT baseline.
+    # Paths produced by mem_sweep quantization of the v7 f16 GGUF.
+    ModelSpec(
+        key="lfm2.5-8b-a1b-ft-q3km",
+        quants=["Q3_K_M"],
+        local_paths={
+            "Q3_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+        },
+        tool_format="json",
+    ),
+    ModelSpec(
+        key="lfm2.5-8b-a1b-ft-q3kl",
+        quants=["Q3_K_L"],
+        local_paths={
+            "Q3_K_L": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q3_K_L.gguf",
+        },
+        tool_format="json",
+    ),
+    ModelSpec(
+        key="lfm2.5-8b-a1b-ft-q2k",
+        quants=["Q2_K"],
+        local_paths={
+            "Q2_K": "/Users/jasontitus/experiments/mcpzim/tools/"
+                    "fine-tune/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q2_K.gguf",
+        },
+        tool_format="json",
+    ),
+    # v6 memory variants (already CPU-quantized, in ft-out-lfm2.5-8b-v6/).
+    # v6 = 10/13 baseline; these map its memory/accuracy frontier.
+    ModelSpec(
+        key="lfm2.5-v6-q3km",
+        quants=["Q3_K_M"],
+        local_paths={"Q3_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                     "fine-tune/ft-out-lfm2.5-8b-v6/lfm2.5-8b-a1b-ft.Q3_K_M.gguf"},
+        tool_format="json",
+    ),
+    ModelSpec(
+        key="lfm2.5-v6-q2k",
+        quants=["Q2_K"],
+        local_paths={"Q2_K": "/Users/jasontitus/experiments/mcpzim/tools/"
+                     "fine-tune/ft-out-lfm2.5-8b-v6/lfm2.5-8b-a1b-ft.Q2_K.gguf"},
+        tool_format="json",
     ),
 ]
 
@@ -197,6 +291,7 @@ def run_one(model: ModelSpec, quant: str, kv: tuple[str, str],
                                    # Gemma 3 (homogeneous iSWA) and
                                    # Gemma 4 (heterogeneous iSWA via
                                    # PR #21513 attention rotation).
+        "--tool-format", model.tool_format,
     ]
     t0 = time.perf_counter()
     try:

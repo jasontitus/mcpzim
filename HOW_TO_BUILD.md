@@ -446,6 +446,44 @@ the safer contract.
 
 All four are covered by `QwenClippedToolCallTests` with verbatim captures from `dropped-request.log` and a guard test to prove intentional whitespace-only values aren't clobbered.
 
+## LFM2.5-8B-A1B fine-tune — beats Gemma (2026-05-29)
+
+Best on-device model to date on the 13-scenario tool-call grid:
+**v7-full Q3_K_M = 12/13 @ 4.16 GB peak RSS, q8_0 KV** — beats the
+Gemma 3 4B FT V7C ship default (10/13 @ 3.18 GB) by 2 scenarios, runs
+~1.8× faster (1.5B active MoE), 46 tok/s on iPhone (Enclave),
+multilingual. Costs ~1 GB more RAM than Gemma but ~1 GB *less* than the
+LFM2.5 Q4_K_M (5.16 GB) baseline.
+
+Artifact: `tools/fine-tune/ft-out-lfm2.5-8b-v7full/` (Q3_K_M 3.83 GB +
+Q4_K_M 4.80 GB + adapters). Frontier + methodology:
+`tools/llama-smoke/LFM25_MEMORY_PERF_FRONTIER.md`.
+
+Reproduce (full pipeline; ~50 min on M2 Max with a clean GPU — kill
+LM Studio + `omlx serve` first, concurrent Metal work triggers aborts):
+
+```sh
+cd tools/fine-tune
+# train_v7_filtered.jsonl = base + chain-heavy + 317 targeted hard-case rows
+# (explainer/narrate templates from generate_chains3.py). retry_lfm2_train.sh
+# retries the stochastic mlx-swift iter-1 Metal abort + salvages aborts >=600.
+ITERS=800 BATCH_SIZE=2 MAX_SEQ_LEN=1792 LEARN_RATE=1.5e-5 \
+  bash retry_lfm2_train.sh train_v7_filtered.jsonl   # → fuse/convert/quantize Q4_K_M
+# best quant: requantize the f16 to Q3_K_M (CPU; better acc here than Q4_K_M)
+.llama.cpp-src/build/bin/llama-quantize \
+  ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.f16.gguf \
+  ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q3_K_M.gguf Q3_K_M
+# eval: cd ../llama-smoke && grid.py --models lfm2.5-8b-a1b-ft-q3km --only Q3_K_M --kv q8_0/q8_0
+```
+
+`finetune_lfm2.sh` is the LFM2-specific pipeline (vs the Gemma one below):
+after mlx-lm fuse it unstacks the stacked MoE experts
+(`switch_mlp.{gate,up,down}_proj` → per-expert `experts.{i}.w{1,2,3}`),
+permutes `conv.conv.weight` (C,K,1)→(C,1,K), restores the upstream
+tokenizer, and patches the LFM2.5 BPE hash into the local
+`convert_hf_to_gguf.py`. Shipping LFM2.5 in-app still needs an iOS
+`ModelTemplate` (ChatML-ish turns + Pythonic `<|tool_call_start|>` body).
+
 ## Fine-tune pipeline (Gemma 3 4B LoRA)
 
 `tools/fine-tune/` turns a teacher's synthetic tool-calling trajectories into a LoRA-fine-tuned Q4_K_M GGUF for the iOS app.

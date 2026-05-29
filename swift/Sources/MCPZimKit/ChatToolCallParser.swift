@@ -66,28 +66,84 @@ public enum ChatToolCallParser {
             cur = buffer.index(after: cur)
         }
         guard cur < buffer.endIndex, buffer[cur] == "{" else { return nil }
-        guard let jsonRange = jsonObjectRange(in: buffer, from: cur) else { return nil }
-        let json = String(buffer[jsonRange])
-        guard let data = json.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let name = parsed["name"] as? String
-        else { return nil }
-        let args = (parsed["arguments"] as? [String: Any]) ?? [:]
-        // Extend the span to include the closing sentinel on the same
-        // line (if any) so callers strip the whole wrapper from the
-        // visible text. Order matters: longer sentinels first so
-        // `</tool_call>` wins over `>`.
-        var endIdx = jsonRange.upperBound
-        while endIdx < buffer.endIndex, buffer[endIdx].isWhitespace {
-            endIdx = buffer.index(after: endIdx)
-        }
-        for closer in ["</tool_call>", "<tool_call|>", ">"] {
-            if buffer[endIdx...].hasPrefix(closer) {
-                endIdx = buffer.index(endIdx, offsetBy: closer.count)
-                break
+
+        // Strict path: balanced-brace walker + strict JSON parse.
+        if let jsonRange = jsonObjectRange(in: buffer, from: cur),
+           let parsed = parseObject(String(buffer[jsonRange])),
+           let name = parsed["name"] as? String {
+            let args = (parsed["arguments"] as? [String: Any]) ?? [:]
+            var endIdx = jsonRange.upperBound
+            while endIdx < buffer.endIndex, buffer[endIdx].isWhitespace {
+                endIdx = buffer.index(after: endIdx)
             }
+            // Order matters: longer sentinels first so `</tool_call>`
+            // wins over `>`.
+            for closer in ["</tool_call>", "<tool_call|>", ">"] {
+                if buffer[endIdx...].hasPrefix(closer) {
+                    endIdx = buffer.index(endIdx, offsetBy: closer.count)
+                    break
+                }
+            }
+            return Match(range: openRange.lowerBound..<endIdx, name: name, arguments: args)
         }
-        return Match(range: openRange.lowerBound..<endIdx, name: name, arguments: args)
+
+        // Repair fallback: FT'd Gemma 3 4B (gists 80daf913, 3f39d873)
+        // emits JSON with `=` in place of `:` between key and value
+        // object, e.g. `{"arguments={...}, "name": "X"}`. The brace
+        // walker can't trust those braces (the inner `{` is inside an
+        // unterminated key string), so bracket the JSON region by the
+        // matching closer tag instead, then run a token-level repair.
+        let closers: [String]
+        switch opener {
+        case "<tool_call>":   closers = ["</tool_call>"]
+        case "<|tool_call>":  closers = ["<tool_call|>", "</tool_call>"]
+        case "<|tool_call|":  closers = [">"]
+        default:              closers = ["</tool_call>", "<tool_call|>", ">"]
+        }
+        for closer in closers {
+            guard let cRange = buffer.range(of: closer, range: cur..<buffer.endIndex)
+            else { continue }
+            // Trim whitespace before the closer to keep the JSON tight.
+            var jsonEnd = cRange.lowerBound
+            while jsonEnd > cur {
+                let prev = buffer.index(before: jsonEnd)
+                if buffer[prev].isWhitespace {
+                    jsonEnd = prev
+                } else {
+                    break
+                }
+            }
+            let raw = String(buffer[cur..<jsonEnd])
+            let repaired = repairKeyValueGarble(raw)
+            if repaired == raw { continue }
+            guard let parsed = parseObject(repaired),
+                  let name = parsed["name"] as? String
+            else { continue }
+            let args = (parsed["arguments"] as? [String: Any]) ?? [:]
+            return Match(
+                range: openRange.lowerBound..<cRange.upperBound,
+                name: name, arguments: args)
+        }
+        return nil
+    }
+
+    /// `replacingOccurrences(of:options:.regularExpression)` wrapper that
+    /// rewrites `{"<word>=` and `,"<word>=` into `{"<word>":` and
+    /// `,"<word>":`. Targets the FT'd Gemma 3 bug where the model emits
+    /// `=` instead of `":` between a JSON key and a value object.
+    /// The `[{,]` anchor keeps the regex from corrupting `=` characters
+    /// that legitimately appear inside string values.
+    private static func repairKeyValueGarble(_ source: String) -> String {
+        return source.replacingOccurrences(
+            of: #"([{,]\s*)"(\w+)="#,
+            with: #"$1"$2":"#,
+            options: .regularExpression
+        )
+    }
+
+    private static func parseObject(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     /// String-aware balanced-brace scan. `start` must point at `{`.
