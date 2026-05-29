@@ -1936,7 +1936,14 @@ public final class ChatSession {
                     turns: turns
                 )
             } else {
-                let preamble = Self.toolsPreamble(registry: registry)
+                // Non-Gemma4 (llama.cpp / MLX) models: lead with the rich
+                // systemMessage (location + behavioural rules + tool recipes),
+                // THEN the tool schemas. This path previously used only
+                // `toolsPreamble`, so gguf models — including the shipped
+                // LFM2.5 FT — never saw the user's location and refused
+                // "nearest X" queries even with a live GPS fix. The Gemma4
+                // branch already passes systemMessage; this brings parity.
+                let preamble = systemMessage + "\n\n" + Self.toolsPreamble(registry: registry)
                 prompt = selectedModel.formatTranscript(systemPreamble: preamble, turns: turns)
             }
             // Yield to SwiftUI before iter 0 so the prior assistant's
@@ -2254,7 +2261,9 @@ public final class ChatSession {
                     systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
                 )
             } else {
-                let preamble = Self.toolsPreamble(registry: registry)
+                // Keep the location/behaviour context on the tool-result
+                // continuation too, matching the iter-0 preamble above.
+                let preamble = systemMessage + "\n\n" + Self.toolsPreamble(registry: registry)
                 summaryPrompt = selectedModel.formatTranscript(
                     systemPreamble: preamble, turns: finalTurns
                 )
