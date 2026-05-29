@@ -93,6 +93,46 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    // MARK: - Corrections / restatements (ASR mishear recovery)
+
+    func testCorrectionRoutesToArticle() {
+        // The real 2026-05-29 capture: "grand Duchy of Lithuania" heard
+        // as "Dutch Lithuania"; the user restated and the model reused
+        // its wrong guess. The restatement must route the CORRECTED words
+        // straight to article_overview.
+        let i = IntentRouter.classify(
+            "I was actually talking about the grand Duchy of Lithuania")
+        XCTAssertEqual(i?.toolName, "article_overview")
+        XCTAssertEqual(i?.args["title"], .string("the grand duchy of lithuania"))
+    }
+
+    func testCorrectionVariantsRouteToArticle() {
+        for q in [
+            "I meant Napoleon Bonaparte",
+            "no, I said Napoleon Bonaparte",
+            "I was referring to Napoleon Bonaparte",
+            "actually I meant Napoleon Bonaparte",
+            "I'm talking about Napoleon Bonaparte",
+            "I meant tell me about Napoleon Bonaparte",
+        ] {
+            let i = IntentRouter.classify(q)
+            XCTAssertEqual(i?.toolName, "article_overview", "variant: \(q)")
+            XCTAssertEqual(i?.args["title"], .string("napoleon bonaparte"),
+                           "variant: \(q)")
+        }
+    }
+
+    func testCorrectionPreservesOtherIntents() {
+        // A correction that restates a DIFFERENT intent must re-route to
+        // that intent, not be forced into an article lookup.
+        XCTAssertEqual(
+            IntentRouter.classify("I meant directions to Philz Coffee")?.toolName,
+            "route_from_places")
+        XCTAssertEqual(
+            IntentRouter.classify("I was actually talking about bars in North Beach")?.toolName,
+            "near_named_place")
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes

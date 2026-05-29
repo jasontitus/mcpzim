@@ -198,7 +198,65 @@ public enum IntentRouter {
             ])
         }
 
+        // Corrections / restatements of a mis-transcribed query: "I meant
+        // X", "I was actually talking about X", "no, I said X". Voice
+        // users fix an ASR mishear this way — real capture 2026-05-29:
+        // "grand Duchy of Lithuania" came through as "grand Dutch
+        // Lithuania", and when the user restated it correctly the turn
+        // fell to the LLM, which reused its earlier wrong guess ("Dutch
+        // Lithuania") instead of the corrected words. Strip the wrapper
+        // and re-route the corrected text through the router; a bare
+        // restated noun phrase ("…the grand duchy of lithuania") defaults
+        // to an article lookup. Runs LAST so a normal "tell me about X"
+        // never reaches here.
+        if let corrected = stripCorrectionPrefix(lower) {
+            // Re-route the corrected words (handles "I meant directions
+            // to X", "I was asking about bars in SF", etc.).
+            if let inner = classify(corrected, currentLocation: currentLocation) {
+                return inner
+            }
+            // Otherwise treat the restatement as a bare article subject,
+            // dropping any leading "tell me about" / "what is" lead.
+            let subject = stripArticleLead(corrected)
+                .trimmingCharacters(in: .whitespaces)
+            let firstWord = subject
+                .split(separator: " ", maxSplits: 1)
+                .first.map(String.init) ?? ""
+            let navPronouns: Set<String> = [
+                "my", "our", "your", "here", "now", "next",
+                "this", "that", "these", "those", "it",
+            ]
+            if !subject.isEmpty, !navPronouns.contains(firstWord) {
+                return DirectIntent(toolName: "article_overview", args: [
+                    "title": .string(subject)
+                ])
+            }
+        }
+
         return nil
+    }
+
+    /// Strip a leading correction/restatement wrapper ("I meant …", "I
+    /// was actually talking about …", "no, I said …") and return the
+    /// residual, or nil when the text isn't a correction. Deliberately
+    /// conservative — only fires on explicit correction verbs, so a
+    /// plain "no" answer or "actually it's fine" doesn't get reshaped.
+    private static func stripCorrectionPrefix(_ s: String) -> String? {
+        let pattern =
+            #"^(?:no[,\s]+|actually[,\s]+)?(?:i\s+(?:actually\s+)?(?:meant|mean|said|wanted)|i\s+was\s+(?:actually\s+)?(?:talking|asking)\s+about|i\s+was\s+referring\s+to|i'?m\s+(?:talking|asking)\s+about|actually[,\s]+i\s+(?:meant|mean))\s+(.+)$"#
+        if let m = match(s, pattern: pattern), let r = m.first {
+            return r.trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// Drop a leading "tell me about" / "what is" / "who was" / "overview
+    /// of" / "about" lead so a restated subject indexes on the entity.
+    private static func stripArticleLead(_ s: String) -> String {
+        let p =
+            #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of|about)\s+"#
+        return s.replacingOccurrences(
+            of: p, with: "", options: .regularExpression)
     }
 
     /// True when the user is asking to hear MORE of the article that's
