@@ -1808,8 +1808,13 @@ public actor MCPToolAdapter {
                 ("kinds", kindsSchema(vocabulary: vocabulary)),
                 ("zim", ["type": "string",
                          "description": "Specific streetzim filename, else try them all."]),
-                ("has_wiki", ["type": "boolean", "default": false,
-                              "description": "When true, only return places that have an associated Wikipedia / Wikidata article. Use for \"what's interesting around here\" and similar queries, or to filter hundreds of results (\"bars in Seattle\") down to notable ones."]),
+                // `has_wiki` is intentionally NOT exposed to the model. It
+                // filters to places with a Wikipedia/Wikidata tag — which
+                // almost no everyday POI has (0 of the 56 cafés within 1 km of
+                // a real test point), so a model that set `has_wiki:true` on
+                // "nearest coffee shop" got zero results. The `nearby_stories`
+                // composite still sets `hasWiki=true` in code for its
+                // "interesting places" use; `near_places` defaults it false.
             ]
         )
     }
