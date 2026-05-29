@@ -618,20 +618,31 @@ public actor MCPToolAdapter {
             // code path geocodes, runs the coord scan, and returns the
             // richer `resolved` block. Otherwise fall through to the
             // coord path as before.
-            if let place = args["place"] as? String,
-               !place.trimmingCharacters(in: .whitespaces).isEmpty
-            {
-                var forwarded = args
-                forwarded["place"] = place
-                return try await dispatch(tool: "near_named_place", args: forwarded)
+            // Resolve the center. Prefer explicit numeric lat/lon; models
+            // sometimes ALSO pass `place` — even stuffing "lat,lon" into it
+            // ("37.44124,-122.15530") — so real coords always win and we
+            // NEVER geocode a coordinate string (that returned "could not
+            // resolve 37.44124,-122.15530" and zero results). A genuine
+            // place NAME is geocoded only when we have no coords.
+            var centerLat = args["lat"] as? Double
+            var centerLon = args["lon"] as? Double
+            let placeArg = (args["place"] as? String)?
+                .trimmingCharacters(in: .whitespaces) ?? ""
+            if centerLat == nil || centerLon == nil {
+                if let c = Self.parseLatLon(placeArg) {
+                    centerLat = c.lat; centerLon = c.lon          // `place` was coords
+                } else if !placeArg.isEmpty {
+                    var forwarded = args                           // genuine place name
+                    forwarded["place"] = placeArg
+                    return try await dispatch(tool: "near_named_place", args: forwarded)
+                }
             }
             // Validate coords up front. Without this, a model that passes
             // a place name (forgetting this tool needs lat/lon) sends us
             // `(0, 0)` by default — which silently scans a streetzim for
             // "nothing near the Gulf of Guinea". Returning a tool error
             // tells the model what to call instead.
-            guard let lat = args["lat"] as? Double,
-                  let lon = args["lon"] as? Double,
+            guard let lat = centerLat, let lon = centerLon,
                   !(lat == 0 && lon == 0)
             else {
                 return [
@@ -1786,6 +1797,21 @@ public actor MCPToolAdapter {
                          "description": "Specific streetzim filename, else try them all."]),
             ]
         )
+    }
+
+    /// Parse a `"lat,lon"` string (e.g. "37.44124,-122.15530") into coords,
+    /// rejecting anything that isn't two in-range numbers. Lets `near_places`
+    /// treat a coordinate string the model dropped into `place` as a center
+    /// rather than geocoding it as a (non-existent) place name.
+    static func parseLatLon(_ s: String) -> (lat: Double, lon: Double)? {
+        let parts = s.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard parts.count == 2,
+              let la = Double(parts[0]), let lo = Double(parts[1]),
+              abs(la) <= 90, abs(lo) <= 180
+        else { return nil }
+        return (la, lo)
     }
 
     private static func nearPlacesSchema(vocabulary: [String]) -> Data {
