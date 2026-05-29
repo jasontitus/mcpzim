@@ -445,14 +445,23 @@ public actor DefaultZimService: ZimService {
         // suggest accepts either, but let's also prepare a spaced form.
         let withSpaces = cleanedTitle.replacingOccurrences(of: "_", with: " ")
 
-        // Candidate readers — wikipedia-family only, optionally pinned.
+        // Candidate readers — Wikipedia-family for the full article set,
+        // plus any streetzim that bundled the article inline. A streetzim
+        // copy matters OFFLINE: kiwix can't deep-link across ZIMs, so a
+        // streetzim that wants narratable articles carries its own at
+        // `wiki-article/<Title>` (streetzim --bundle-wiki-articles, option B).
         let candidates: [(name: String, reader: ZimReader)] = readers.filter { pair in
             guard pair.reader.kind == .wikipedia || pair.reader.kind == .mdwiki else { return false }
             if let zim, pair.name != zim { return false }
             return true
         }
-        guard !candidates.isEmpty else {
-            throw ZimServiceError.notFound("no wikipedia ZIM loaded")
+        let bundled: [(name: String, reader: ZimReader)] = readers.filter { pair in
+            guard pair.reader.kind == .streetzim else { return false }
+            if let zim, pair.name != zim { return false }
+            return true
+        }
+        guard !candidates.isEmpty || !bundled.isEmpty else {
+            throw ZimServiceError.notFound("no Wikipedia or streetzim article ZIM loaded")
         }
 
         // Wikipedia ZIMs store articles at predictable paths derived
@@ -474,18 +483,19 @@ public actor DefaultZimService: ZimService {
         // suggester round-trip.
         let titleCased = Self.wordCapitalize(withSpaces)
         let titleCasedUnderscored = titleCased.replacingOccurrences(of: " ", with: "_")
-        let directPaths: [String] = [
-            "A/\(underscored)",
-            underscored,
-            "A/\(withSpaces)",
-            withSpaces,
-            "A/\(titleCasedUnderscored)",
-            titleCasedUnderscored,
-            "A/\(titleCased)",
-            titleCased,
-        ]
-        for pair in candidates {
-            for candidate in directPaths {
+        let titleForms = [underscored, withSpaces, titleCasedUnderscored, titleCased]
+        // Wikipedia/mdwiki store at `A/<Title>` (classic Kiwix) or bare
+        // `<Title>`; a streetzim option-B bundle stores at
+        // `wiki-article/<Title>`.
+        var wikiPaths: [String] = []
+        for t in titleForms { wikiPaths.append("A/\(t)"); wikiPaths.append(t) }
+        let bundlePaths = titleForms.map { "wiki-article/\($0)" }
+
+        // Probe Wikipedia/mdwiki first (complete + current), then any
+        // streetzim-bundled copy. Identical parse/return path for both.
+        let probes = candidates.map { ($0, wikiPaths) } + bundled.map { ($0, bundlePaths) }
+        for (pair, pathSet) in probes {
+            for candidate in pathSet {
                 if let entry = try? pair.reader.read(path: candidate) {
                     let html = String(data: entry.content, encoding: .utf8) ?? ""
                     let sections = ArticleSections.parse(html: html)

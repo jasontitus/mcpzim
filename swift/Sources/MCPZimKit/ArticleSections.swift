@@ -149,6 +149,12 @@ public enum ArticleSections {
     /// >99% of articles and is ~30× faster than pulling in SwiftSoup.
     public static func stripHTML(_ html: String) -> String {
         var out = html
+        // Remove pronunciation + coordinate spans first, honouring nested
+        // <span>s — Wikipedia wraps IPA in per-character spans, so the
+        // crude non-greedy `removeBlock` can't be used. Kills the IPA glyph
+        // cluster, the ⓘ "listen" button, and inline coordinate spans
+        // before they reach TTS as symbol-by-symbol gibberish.
+        out = removeSpansByClass(out, ["ipa", "rt-commentedtext", "ext-phonos", "geo", "coordinates"])
         // Drop known-noisy blocks whole, before tag-stripping, so
         // their inner text doesn't pollute prose.
         out = removeBlock(out, tag: "script")
@@ -178,6 +184,10 @@ public enum ArticleSections {
             ("&mdash;", "—"), ("&hellip;", "…"),
         ]
         for (k, v) in entities { out = out.replacingOccurrences(of: k, with: v) }
+        // Strip pronunciation/coordinate artifacts that survive tag-
+        // stripping (anything the span removal above didn't catch) and
+        // tidy the parentheticals they empty out — see stripSpeechArtifacts.
+        out = stripSpeechArtifacts(out)
         // Collapse whitespace.
         out = out.replacingOccurrences(
             of: "[ \\t]+", with: " ", options: .regularExpression
@@ -200,5 +210,75 @@ public enum ArticleSections {
             with: " ",
             options: [.regularExpression, .caseInsensitive]
         )
+    }
+
+    /// Remove `<span class="…">…</span>` blocks whose class has any token
+    /// in `classTokens`, honouring nested `<span>`s. Wikipedia renders an
+    /// IPA pronunciation as a per-character span tree wrapped in
+    /// `rt-commentedText`, alongside an `ext-phonos` ⓘ button and inline
+    /// `geo` coordinate spans — none removable by the non-greedy
+    /// `removeBlock`. Token (not substring) match so "geo" doesn't also
+    /// eat "geography".
+    private static func removeSpansByClass(_ html: String, _ classTokens: Set<String>) -> String {
+        let ns = html as NSString
+        guard let re = try? NSRegularExpression(
+            pattern: "<(/?)span\\b([^>]*)>", options: [.caseInsensitive])
+        else { return html }
+        let tags = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        var removals: [NSRange] = []
+        var i = 0
+        while i < tags.count {
+            let open = tags[i]
+            if open.range(at: 1).length > 0 { i += 1; continue }  // a </span>
+            let attrs = ns.substring(with: open.range(at: 2)).lowercased()
+            var hit = false
+            if let r = attrs.range(of: "class=\""),
+               let q = attrs[r.upperBound...].firstIndex(of: "\"") {
+                for tok in attrs[r.upperBound..<q].split(whereSeparator: { $0 == " " || $0 == "\t" }) {
+                    if classTokens.contains(String(tok)) { hit = true; break }
+                }
+            }
+            if !hit { i += 1; continue }
+            // Walk to the matching close, tracking nested span depth.
+            var depth = 1, j = i + 1
+            while j < tags.count {
+                depth += (tags[j].range(at: 1).length > 0) ? -1 : 1
+                if depth == 0 { break }
+                j += 1
+            }
+            let endLoc = (j < tags.count) ? (tags[j].range.location + tags[j].range.length) : ns.length
+            removals.append(NSRange(location: open.range.location, length: endLoc - open.range.location))
+            i = j + 1
+        }
+        if removals.isEmpty { return html }
+        let m = NSMutableString(string: html)
+        for r in removals.reversed() { m.replaceCharacters(in: r, with: " ") }
+        return m as String
+    }
+
+    /// Strip pronunciation/coordinate noise left in prose after tag-
+    /// stripping — it reads as gibberish through TTS. Safe to run on any
+    /// article text: slash/bracket IPA runs are unambiguous, and the
+    /// parenthetical tidy only fires on the residue these removals leave.
+    private static func stripSpeechArtifacts(_ text: String) -> String {
+        // IPA / phonetic code points: IPA Extensions + spacing modifiers
+        // (ˈ ˌ ː) + combining diacritics + phonetic extensions, plus the
+        // Latin-1 vowels IPA reuses (æ ø œ).
+        let ipa = "[\\x{0250}-\\x{02FF}\\x{0300}-\\x{036F}\\x{1D00}-\\x{1D7F}\\x{00E6}\\x{00F8}\\x{0153}]"
+        var out = text.replacingOccurrences(of: "\u{24D8}", with: " ")  // ⓘ
+        func rx(_ pattern: String, _ replacement: String, ci: Bool = false) {
+            out = out.replacingOccurrences(
+                of: pattern, with: replacement,
+                options: ci ? [.regularExpression, .caseInsensitive] : [.regularExpression])
+        }
+        rx("\\(\\s*listen\\s*\\)", "", ci: true)            // "(listen)"
+        rx("english pronunciation:?", "", ci: true)         // label
+        rx("/[^/\\n]*\(ipa)[^/\\n]*/", "")                  // /ˈkæl…/ slash IPA
+        rx("\\[[^\\]\\n]*\(ipa)[^\\]\\n]*\\]", "")           // [neˈβaða] foreign IPA
+        rx("\\b\\p{L}+:\\s*(?=[);])", "")                   // dangling "Spanish:" before ) or ;
+        rx("\\(\\s*[;,]\\s*", "(")                           // "( ; X" → "(X"
+        rx("\\s*[;,]\\s*\\)", ")")                           // "X ; )" → "X)"
+        rx("\\(\\s*\\)", "")                                 // "( )" → ∅
+        return out
     }
 }
