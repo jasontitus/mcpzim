@@ -24,13 +24,20 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
         self.url = url
         self.archive = try ZimArchive(fileURL: url)
         self.metadata = Self.readMetadata(archive)
-        // A chunked v5 streetzim has no single graph.bin entry — its
-        // routing graph lives behind graph-chunk-manifest.json. Treat the
-        // manifest's presence as a classification signal too, otherwise
-        // continent-scale ZIMs wouldn't be tagged ``streetzim`` on load.
+        // Routing graphs ship in several layouts and we must recognise ALL
+        // of them, else the ZIM is tagged `.generic`, dropped from
+        // `streetzimReaders` (which filters on `hasRoutingData`), and the
+        // place/route tools — `near_places`, `route_from_places`, … — are
+        // never offered to the model. Layouts:
+        //   • graph.bin                     — monolithic (classic)
+        //   • graph-chunk-manifest.json     — byte-range split (continent v5)
+        //   • graph-cells-index.bin         — spatial SZCI (--spatial-chunk-scale)
+        // The spatial layout is what recent `osm-*` builds emit; missing it
+        // here is why a freshly-built California ZIM lost `near_places`.
         let hasRouting = archive.hasEntry("routing-data/graph.bin")
             || archive.hasEntry("routing-data/graph.json")
             || archive.hasEntry("routing-data/graph-chunk-manifest.json")
+            || archive.hasEntry("routing-data/graph-cells-index.bin")
         self.kind = classifyZim(
             filename: url.lastPathComponent,
             metadata: metadata,
