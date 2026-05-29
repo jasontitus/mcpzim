@@ -541,6 +541,29 @@ public enum IntentRouter {
         return "Here's what I have on \(title)."
     }
 
+    /// Caption for an `article_overview` MISS — the title didn't resolve
+    /// in any loaded ZIM. We deliberately do NOT hand these to the LLM
+    /// (it confabulates a wrong entity from the bad title); instead we
+    /// say so plainly and offer the closest real titles the index found,
+    /// so the user can re-ask. Often there are no suggestions (a mis-hear
+    /// shares no tokens with any real title) — that's fine, the plain
+    /// "couldn't find it" still beats an invented answer.
+    public static func synthesizeArticleMissReply(
+        args: [String: Any], fullResult: [String: Any]
+    ) -> String {
+        let title = (fullResult["requested_title"] as? String)
+            ?? (args["title"] as? String) ?? "that"
+        let suggestions = (fullResult["suggestions"] as? [String]) ?? []
+        let base = "I couldn't find an article for “\(title)” in the offline Wikipedia."
+        if suggestions.isEmpty {
+            return base + " Try saying the name a different way."
+        }
+        if suggestions.count == 1 {
+            return base + " Did you mean \(suggestions[0])?"
+        }
+        return base + " Did you mean: " + suggestions.prefix(3).joined(separator: ", ") + "?"
+    }
+
     /// Caption for `compare_articles` fast-path. Leads with the first
     /// sentence of each article so the two subjects are actually
     /// introduced; the full side-by-side payload lands in the trace /

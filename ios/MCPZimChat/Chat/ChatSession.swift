@@ -2868,6 +2868,21 @@ public final class ChatSession {
                 }
             }()
             if !usable {
+                // article_overview misses are deterministic — the LLM
+                // has no hidden knowledge of what's in the offline ZIM,
+                // and when handed a missed title it confabulates a wrong
+                // entity (real capture 2026-05-29: a mis-transcribed
+                // "Dutch Lithuania" → "…the Dutch Republic"). Say we
+                // couldn't find it, offer the closest real titles, and
+                // STOP — don't fall through to the LLM.
+                if intent.toolName == "article_overview" {
+                    let synth = IntentRouter.synthesizeArticleMissReply(
+                        args: dictArgs, fullResult: fullResult)
+                    updateAssistant(synth)
+                    debug("article miss — did-you-mean, skipping LLM",
+                          category: "Router")
+                    return true
+                }
                 debug("fast-path result not usable — handing off to LLM",
                       category: "Router")
                 // Drop the trace row we just recorded so the LLM's

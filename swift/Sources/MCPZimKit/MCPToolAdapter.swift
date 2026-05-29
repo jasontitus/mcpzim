@@ -776,6 +776,39 @@ public actor MCPToolAdapter {
 
     // MARK: - Dispatch helpers for composite tools
 
+    /// Filter search candidates down to plausible "did you mean …?"
+    /// article titles for a missed lookup: keep only titles that share a
+    /// meaningful word (≥4 chars, minus stopwords) with the requested
+    /// title, dedup, and cap. The overlap gate is what keeps a keyword
+    /// search's full-text noise ("Black Friday (song)" for "Dutch
+    /// Lithuania") from being offered as a suggestion.
+    static func didYouMeanTitles(
+        requested: String, candidates: [SearchHitResult], limit: Int
+    ) -> [String] {
+        let stop: Set<String> = [
+            "the", "and", "for", "with", "from", "that", "this",
+            "tell", "about", "what", "who", "was", "were", "are",
+        ]
+        func words(_ s: String) -> Set<String> {
+            Set(s.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count >= 4 && !stop.contains($0) })
+        }
+        let reqWords = words(requested)
+        guard !reqWords.isEmpty else { return [] }
+        var out: [String] = []
+        var seen = Set<String>()
+        for c in candidates {
+            guard !reqWords.isDisjoint(with: words(c.title)) else { continue }
+            let key = c.title.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            out.append(c.title)
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
     private func dispatchArticleOverview(args: [String: Any]) async throws -> [String: Any] {
         let title = (args["title"] as? String) ?? ""
         guard !title.isEmpty else {
@@ -783,9 +816,32 @@ public actor MCPToolAdapter {
         }
         let zim = args["zim"] as? String
         let maxSections = max(1, min(10, (args["max_sections"] as? Int) ?? 5))
-        let resolved = try await ArticleHeuristics.sectionsByTitle(
-            service: service, title: title, zim: zim
-        )
+        let resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
+        do {
+            resolved = try await ArticleHeuristics.sectionsByTitle(
+                service: service, title: title, zim: zim
+            )
+        } catch {
+            // Miss. Do NOT throw — a thrown miss hands control to the
+            // host's LLM loop, which has no knowledge of what's in the
+            // offline ZIM and tends to invent a plausible-wrong entity
+            // (real capture 2026-05-29: a mis-transcribed "Dutch
+            // Lithuania" became "…related to the Dutch Republic"). Return
+            // the closest real article titles instead, so the host can
+            // say "did you mean …?" and stop. The token-overlap filter
+            // drops full-text noise (a bare keyword search can surface
+            // unrelated songs / admin pages).
+            let candidates = (try? await service.search(
+                query: title, limit: 6, kind: .wikipedia)) ?? []
+            let suggestions = Self.didYouMeanTitles(
+                requested: title, candidates: candidates, limit: 3
+            )
+            return [
+                "error": "no article titled \"\(title)\" in the offline Wikipedia",
+                "requested_title": title,
+                "suggestions": suggestions,
+            ]
+        }
         let picked = ArticleHeuristics.pickOverview(
             sections: resolved.sections, maxSections: maxSections
         )

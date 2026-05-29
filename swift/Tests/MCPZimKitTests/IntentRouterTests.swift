@@ -133,6 +133,45 @@ final class IntentRouterTests: XCTestCase {
             "near_named_place")
     }
 
+    // MARK: - Article miss → did-you-mean (no confabulation)
+
+    func testArticleMissReplyWithSuggestions() {
+        let reply = IntentRouter.synthesizeArticleMissReply(
+            args: ["title": "Dutch Lithuania"],
+            fullResult: [
+                "requested_title": "Dutch Lithuania",
+                "suggestions": ["Grand Duchy of Lithuania", "Lithuania"],
+            ])
+        XCTAssertTrue(reply.contains("couldn't find"))
+        XCTAssertTrue(reply.contains("Dutch Lithuania"))
+        XCTAssertTrue(reply.contains("Grand Duchy of Lithuania"))
+        // Must NOT invent / describe the missed entity.
+        XCTAssertFalse(reply.lowercased().contains("republic"))
+    }
+
+    func testArticleMissReplyNoSuggestions() {
+        let reply = IntentRouter.synthesizeArticleMissReply(
+            args: ["title": "Zxqw Nonsense"],
+            fullResult: ["requested_title": "Zxqw Nonsense", "suggestions": [String]()])
+        XCTAssertTrue(reply.contains("couldn't find"))
+        XCTAssertTrue(reply.contains("different way"))
+    }
+
+    func testDidYouMeanFiltersFullTextNoise() {
+        // The real failure: a keyword search for the mis-heard "Dutch
+        // Lithuania" surfaced an unrelated song. The overlap filter must
+        // keep the real shared-token title and drop the noise.
+        let candidates = [
+            SearchHitResult(zim: "w", kind: .wikipedia, path: "a",
+                            title: "Black Friday (Tom Odell song)", snippet: ""),
+            SearchHitResult(zim: "w", kind: .wikipedia, path: "b",
+                            title: "Grand Duchy of Lithuania", snippet: ""),
+        ]
+        let out = MCPToolAdapter.didYouMeanTitles(
+            requested: "the grand dutch lithuania", candidates: candidates, limit: 3)
+        XCTAssertEqual(out, ["Grand Duchy of Lithuania"])
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes
