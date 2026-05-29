@@ -1427,9 +1427,15 @@ public actor DefaultZimService: ZimService {
         else {
             return nil
         }
-        let idx = try SZCIIndex.parse(indexEntry.content)
-        log(String(format: "spatial index loaded from %@: %d nodes · %d edges · %d cells",
-                   pair.name, idx.numNodes, idx.numEdges, idx.numCells))
+        var idx = try SZCIIndex.parse(indexEntry.content)
+        // SZCI v2 shards the node table out of the index — assemble it from
+        // routing-data/nodes-scaled-NNN.bin before routing (nearestNode and
+        // the A* heuristic both read node coords). v1 already inlined it.
+        if idx.version == 2 {
+            idx.nodesScaled = try Self.loadNodeShards(idx, reader: pair.reader)
+        }
+        log(String(format: "spatial index loaded from %@: v%d · %d nodes · %d edges · %d cells",
+                   pair.name, idx.version, idx.numNodes, idx.numEdges, idx.numCells))
         let reader = pair.reader
         return SpatialGraph(index: idx, cacheLimit: cacheLimit) { cellId in
             // Cell file names: 5-digit zero-pad. Match the writer in
@@ -1440,6 +1446,32 @@ public actor DefaultZimService: ZimService {
             }
             return entry.content
         }
+    }
+
+    /// Assemble the SZCI v2 node table from its
+    /// `routing-data/nodes-scaled-NNN.bin` shards (3-digit zero-pad). Each
+    /// shard holds up to `nodesPerShard` nodes × 8 bytes (lat_e7, lon_e7 as
+    /// little-endian Int32); shard `i` lands at element offset
+    /// `i * nodesPerShard * 2`. Mirrors the JS viewer's `loadNodeShards`.
+    private static func loadNodeShards(_ idx: SZCIIndex, reader: ZimReader) throws -> [Int32] {
+        var combined = [Int32](repeating: 0, count: idx.numNodes * 2)
+        try combined.withUnsafeMutableBytes { rawDst in
+            for shard in 0..<idx.numNodeShards {
+                let name = String(format: "routing-data/nodes-scaled-%03d.bin", shard)
+                guard let entry = try reader.read(path: name) else {
+                    throw SZCIError.truncated("SZCI v2: missing node shard \(name)")
+                }
+                let byteOffset = shard * idx.nodesPerShard * 2 * 4
+                guard byteOffset >= 0, byteOffset + entry.content.count <= rawDst.count else {
+                    throw SZCIError.truncated("SZCI v2: node shard \(shard) overruns node table")
+                }
+                // File bytes are little-endian Int32; on (LE) ARM a raw copy
+                // into the Int32-backed buffer is the correct value.
+                entry.content.copyBytes(to: UnsafeMutableRawBufferPointer(
+                    rebasing: rawDst[byteOffset ..< byteOffset + entry.content.count]))
+            }
+        }
+        return combined
     }
 
     /// Read a routing-graph-sized blob from a ZIM. If ``primary`` isn't an

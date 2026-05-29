@@ -314,6 +314,85 @@ final class SZRGSpatialTests: XCTestCase {
         XCTAssertEqual(nearestNodeSpatial(index: idx, lat: 0, lon: 0.0001), 0)
     }
 
+    /// Minimal streetzim reader serving raw routing-data blobs.
+    private final class SpatialMapReader: ZimReader, @unchecked Sendable {
+        let store: [String: Data]
+        init(_ s: [String: Data]) { store = s }
+        var metadata: ZimMetadata { ZimMetadata(name: "osm-v2") }
+        var kind: ZimKind { .streetzim }
+        var hasFullTextIndex: Bool { false }
+        var hasTitleIndex: Bool { false }
+        var hasRoutingData: Bool { true }
+        func read(path: String) throws -> ZimEntry? {
+            store[path].map { ZimEntry(path: path, title: path,
+                                       mimetype: "application/octet-stream", content: $0) }
+        }
+        func readMainPage() throws -> ZimEntry? { nil }
+    }
+
+    /// SZCI v2 header (40 B, sharded nodes — no inline node table).
+    private func packIndexV2(
+        numNodes: Int, numNodeShards: UInt32, nodesPerShard: UInt32,
+        cellEntries: [(lat: Int32, lon: Int32, nodes: UInt32, edges: UInt32, geoms: UInt32)],
+        names: [String]
+    ) -> Data {
+        var out = Data()
+        out.append(contentsOf: [0x53, 0x5A, 0x43, 0x49])  // SZCI
+        appendU32(&out, 2)                                 // version 2
+        appendU32(&out, UInt32(numNodes))
+        appendU32(&out, cellEntries.reduce(0) { $0 + $1.edges })  // numEdges
+        appendU32(&out, UInt32(names.count))
+        var nameOffsets: [UInt32] = [0]; var namesBlob = Data()
+        for n in names { namesBlob.append(n.data(using: .utf8) ?? Data()); nameOffsets.append(UInt32(namesBlob.count)) }
+        appendU32(&out, UInt32(namesBlob.count))           // namesBytes
+        appendU32(&out, UInt32(cellEntries.count))         // numCells
+        appendI32(&out, 1)                                  // cellScale
+        appendU32(&out, numNodeShards)                      // @32
+        appendU32(&out, nodesPerShard)                      // @36  → offset 40, no inline nodes
+        for e in cellEntries {
+            appendI32(&out, e.lat); appendI32(&out, e.lon)
+            appendU32(&out, e.nodes); appendU32(&out, e.edges); appendU32(&out, e.geoms)
+        }
+        for off in nameOffsets { appendU32(&out, off) }
+        out.append(namesBlob)
+        return out
+    }
+
+    func testV2ShardedIndexRoutesEndToEnd() async throws {
+        // 3 nodes A(0,0)-B(0,0.001)-C(0,0.002) on "Main St", one cell, but the
+        // node table is V2-SHARDED: shard0 = nodes 0,1; shard1 = node 2
+        // (nodesPerShard=2). planDrivingRoute must parse v2, assemble the
+        // shards, and route A→C. Catches header-offset + shard-assembly bugs.
+        func i32le(_ vals: [Int32]) -> Data {
+            var d = Data(); for v in vals { var le = v.littleEndian; withUnsafeBytes(of: &le) { d.append(contentsOf: $0) } }; return d
+        }
+        let index = packIndexV2(
+            numNodes: 3, numNodeShards: 2, nodesPerShard: 2,
+            cellEntries: [(lat: 0, lon: 0, nodes: 3, edges: 4, geoms: 0)],
+            names: ["", "Main St"])
+        let shard0 = i32le([0, 0, 0, 10_000])    // node 0 (A), node 1 (B)
+        let shard1 = i32le([0, 20_000])           // node 2 (C)
+        let sd = (UInt32(50) << 24) | 1110
+        func edge(_ t: UInt32) -> SpatialEdge {
+            SpatialEdge(target: t, speedDist: sd, geomLocal: 0xFFFF_FFFF, nameIdx: 1, classAccess: 1)
+        }
+        let cell = packCell(cellId: 0, nodesGlobal: [0, 1, 2], adjOffsets: [0, 1, 3, 4],
+                            edges: [edge(1), edge(0), edge(2), edge(1)])
+        let reader = SpatialMapReader([
+            "routing-data/graph-cells-index.bin": index,
+            "routing-data/nodes-scaled-000.bin": shard0,
+            "routing-data/nodes-scaled-001.bin": shard1,
+            "routing-data/graph-cell-00000.bin": cell,
+        ])
+        let svc = DefaultZimService(readers: [(name: "osm-v2", reader: reader)])
+        let route = try await svc.planDrivingRoute(RouteRequest(
+            originLat: 0, originLon: 0.00001, destLat: 0, destLon: 0.00199, zim: nil))
+        XCTAssertEqual(route.originNode, 0)
+        XCTAssertEqual(route.destinationNode, 2)
+        XCTAssertEqual(route.distanceMeters, 222.0, accuracy: 1.0)
+        XCTAssertEqual(route.roads.map { $0.name }, ["Main St"])
+    }
+
     func testSpatialGraphCacheLimitEvicts() async throws {
         // Build 3 cells, cache limit 1 → each query evicts the prior.
         let idx = try SZCIIndex.parse(packIndex(

@@ -89,8 +89,13 @@ public struct SZCIIndex: Sendable {
     public let numCells: Int
     /// Degrees-per-cell scaling factor. 1 ⇒ 1° cells; 10 ⇒ 0.1° cells.
     public let cellScale: Int32
+    /// v2 sharded-node metadata (both 0 for v1, which inlines the nodes).
+    public let numNodeShards: Int
+    public let nodesPerShard: Int
     /// Global nodes in source order: index 2*n is lat_e7, 2*n+1 is lon_e7.
-    public let nodesScaled: [Int32]
+    /// v1 fills this at parse; v2 leaves it EMPTY until `loadNodeShards`
+    /// assembles it from the routing-data/nodes-scaled-NNN.bin shards.
+    public var nodesScaled: [Int32]
     /// Parallel arrays of cell metadata.
     public let cellLatIdx: [Int32]
     public let cellLonIdx: [Int32]
@@ -330,7 +335,11 @@ public extension SZCIIndex {
                 throw SZCIError.badMagic("expected SZCI")
             }
             let version = SZRGInt.readUInt32LE(raw, at: 4)
-            if version != 1 {
+            // v1 inlines the node table; v2 shards it into
+            // nodes-scaled-NNN.bin (the continent-scale layout — a country's
+            // node table is too big to inline). Both are current; reject
+            // anything else.
+            if version != 1 && version != 2 {
                 throw SZCIError.unsupportedVersion(version, "SZCI")
             }
             let numNodes = Int(SZRGInt.readUInt32LE(raw, at: 8))
@@ -340,20 +349,32 @@ public extension SZCIIndex {
             let numCells = Int(SZRGInt.readUInt32LE(raw, at: 24))
             let cellScale = SZRGInt.readInt32LE(raw, at: 28)
 
-            var off = 32
             // Each declared-size field below drives a loop over an
             // attacker-controllable count. Validate the total bytes
             // needed stays inside the buffer BEFORE looping, using
             // overflow-safe multiplication — a crafted `numNodes =
             // 0xFFFFFFFF` otherwise either traps on Int overflow or
             // walks off the end of `raw`.
-            try requireBytes(numNodes, perEntry: 8, remaining: raw.count - off,
-                             label: "nodes")
+            var off = 32
+            var numNodeShards = 0
+            var nodesPerShard = 0
             var nodes: [Int32] = []
-            nodes.reserveCapacity(numNodes * 2)
-            for _ in 0..<(numNodes * 2) {
-                nodes.append(SZRGInt.readInt32LE(raw, at: off))
-                off += 4
+            if version == 1 {
+                try requireBytes(numNodes, perEntry: 8, remaining: raw.count - off,
+                                 label: "nodes")
+                nodes.reserveCapacity(numNodes * 2)
+                for _ in 0..<(numNodes * 2) {
+                    nodes.append(SZRGInt.readInt32LE(raw, at: off))
+                    off += 4
+                }
+            } else {
+                // v2: two extra header u32s (num_node_shards, nodes_per_shard),
+                // then NO inline nodes — `loadNodeShards` fills `nodesScaled`
+                // from routing-data/nodes-scaled-NNN.bin before routing.
+                guard raw.count >= 40 else { throw SZCIError.truncated("SZCI v2 header") }
+                numNodeShards = Int(SZRGInt.readUInt32LE(raw, at: 32))
+                nodesPerShard = Int(SZRGInt.readUInt32LE(raw, at: 36))
+                off = 40
             }
 
             try requireBytes(numCells, perEntry: 20, remaining: raw.count - off,
@@ -398,6 +419,8 @@ public extension SZCIIndex {
                 numNames: numNames,
                 numCells: numCells,
                 cellScale: cellScale,
+                numNodeShards: numNodeShards,
+                nodesPerShard: nodesPerShard,
                 nodesScaled: nodes,
                 cellLatIdx: cellLat,
                 cellLonIdx: cellLon,
