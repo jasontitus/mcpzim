@@ -2233,6 +2233,7 @@ public final class ChatSession {
                 // a no-op for every other tool).
                 noteReadingState(toolName: call.name,
                                  args: resolvedArgs, result: fullResult)
+                noteDiscussionAnchor(toolName: call.name, result: fullResult)
                 // Routing results carry a polyline with thousands of points
                 // and a turn-by-turn list that together inflate to 50+ KB.
                 // Feeding that verbatim into the next prompt turns into
@@ -2917,6 +2918,25 @@ public final class ChatSession {
 
     // MARK: - Discussion mode ("let's discuss X")
 
+    /// Implicit discussion entry: after an `article_overview` ("tell me
+    /// about X" / "what is X"), pin X as a discussion topic — lazily, so the
+    /// sections load on the first follow-up — so subsequent questions are
+    /// answered from the article + corpus drift instead of routing afresh
+    /// each turn. Skipped on a miss or when already discussing this topic.
+    /// To switch topics, the user says "let's discuss Y" (a discuss_article
+    /// intent, which exits + re-anchors).
+    private func noteDiscussionAnchor(toolName: String, result: [String: Any]) {
+        guard toolName == "article_overview" else { return }
+        if let e = result["error"] as? String, !e.isEmpty { return }
+        guard let title = result["title"] as? String, !title.isEmpty else { return }
+        let topic = ArticleHeuristics.topicCore(title)
+        if let ds = discussionState,
+           ds.topic.caseInsensitiveCompare(topic) == .orderedSame { return }
+        discussionState = DiscussionState(
+            anchorTitle: title, topic: topic,
+            zim: result["zim"] as? String, sources: [])
+    }
+
     /// Enter discussion mode from a `discuss_article` dispatch: pin the
     /// article's sections, give a short lead-derived opener, and invite
     /// questions. A miss falls back to the same did-you-mean reply as
@@ -2948,9 +2968,21 @@ public final class ChatSession {
             topic: ArticleHeuristics.topicCore(title),
             zim: fullResult["zim"] as? String,
             sources: [(title: title, sections: sections)])
-        let lead = sections.first(where: { $0.title.isEmpty })?.text
+        let rawLead = sections.first(where: { $0.title.isEmpty })?.text
             ?? sections.first?.text ?? ""
-        let intro = IntentRouter.firstSentences(lead, maxChars: 300)
+        // Pick the first SUBSTANTIVE lead paragraph: skips title-repeat lines
+        // ("Solar panel / Solar panel" — robust to singular/plural title
+        // mismatch) and disambiguation hatnotes ("For solar thermal panels,
+        // see …"), then strip citation markers ([1]/[b]) for clean TTS.
+        let leadPara = rawLead.components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { p in
+                p.count >= 40
+                    && !p.lowercased().hasPrefix("for ")
+                    && !p.lowercased().contains(", see ")
+            } ?? rawLead
+        let intro = IntentRouter.firstSentences(
+            ArticleHeuristics.stripCitations(leadPara), maxChars: 300)
         let opener = intro.isEmpty
             ? "Sure — let's discuss \(title). Ask me anything about it."
             : "Sure — let's discuss \(title). \(intro)\n\nAsk me anything about it — "
@@ -2968,6 +3000,25 @@ public final class ChatSession {
     @MainActor
     private func answerWithinDiscussion(_ ds: DiscussionState, question: String) async {
         var state = ds
+        // Implicit-entry anchors store only the title; pull the anchor's
+        // sections on the first follow-up.
+        if state.sources.isEmpty, let adapter {
+            var a: [String: Any] = ["title": state.anchorTitle]
+            if let zim = state.zim { a["zim"] = zim }
+            if let res = try? await adapter.dispatch(tool: "discuss_article", args: a),
+               let raw = res["sections"] as? [[String: Any]], !raw.isEmpty {
+                state.sources = [(state.anchorTitle, raw.map {
+                    ArticleSection(title: ($0["title"] as? String) ?? "",
+                                   level: ($0["level"] as? Int) ?? 0,
+                                   text: ($0["text"] as? String) ?? "")
+                })]
+                discussionState = state
+            }
+        }
+        guard !state.sources.isEmpty else {
+            updateAssistant("What would you like to know about \(state.topic)?")
+            return
+        }
         // Corpus fallback: if none of the articles in hand cover the
         // follow-up, search the corpus around the topic and pull in the
         // best match — so "population" (not in History-of-Lithuania) or
@@ -3022,7 +3073,8 @@ public final class ChatSession {
 
         Answer using ONLY the passages above — be concise and natural, and \
         don't say "according to the passage". If the answer isn't there, say \
-        you don't see it in what you have on \(state.topic).
+        you don't see it in what you have on \(state.topic). Give just the \
+        answer directly — no reasoning steps, no preamble, no <think> block.
         """
         let preamble = "You are discussing a topic with the user using the "
             + "offline Wikipedia, grounded strictly in the passages provided."
@@ -3047,11 +3099,30 @@ public final class ChatSession {
                     updateAssistant(buffer); lastUIPush = now
                 }
             }
-            updateAssistant(buffer)
+            updateAssistant(stripLeakedReasoning(buffer))
         } catch {
             debug("discuss generate failed: \(error)", category: "Chat")
             updateAssistant("Sorry — I hit an error answering that about \(state.topic).")
         }
+    }
+
+    /// The FT model occasionally opens a `<think>` reasoning block on the
+    /// off-distribution grounded-discuss prompt and forgets to close it, so
+    /// the template's closed-span scrubber can't strip it. When that happens
+    /// the real answer is the prose AFTER the reasoning — take the last
+    /// paragraph. (Closed spans are left to `stripReasoning`.)
+    private func stripLeakedReasoning(_ s: String) -> String {
+        guard let open = s.range(of: "<think>") else { return s }
+        if s.range(of: "</think>", range: open.upperBound..<s.endIndex) != nil {
+            return s
+        }
+        let after = String(s[open.upperBound...])
+        if let lastBreak = after.range(of: "\n\n", options: .backwards) {
+            let tail = String(after[lastBreak.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty { return tail }
+        }
+        return after.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Find an article that covers a follow-up the pinned article(s) don't,
@@ -3209,6 +3280,8 @@ public final class ChatSession {
                     // after the spoken summary.
                     noteReadingState(toolName: "article_overview",
                                      args: dictArgs, result: fullResult)
+                    noteDiscussionAnchor(toolName: "article_overview",
+                                         result: fullResult)
                 }
                 // The fast path dispatches the tool (saving iter 0's
                 // ~13 s prefill-and-decide cost), then hands off to
