@@ -79,6 +79,29 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertFalse(labels.contains(""))
     }
 
+    /// article_overview now attaches a pre-parsed `related:[{title,path}]`
+    /// array (from WikiLinks.parse over the raw HTML); the extractor should
+    /// prefer it over re-parsing `html`, and carry `path` into `zimPath` so a
+    /// follow-up can re-fetch the exact article.
+    func testArticleRelatedArrayBecomesWikilinkThreads() {
+        let result: [String: Any] = [
+            "related": [
+                ["title": "Stanford White", "path": "A/Stanford_White"],
+                ["title": "1906 San Francisco earthquake", "path": "A/1906_quake"],
+            ],
+            "sections": [["title": "History", "text": "..."]],
+        ]
+        let threads = ConversationThreads.extract(
+            toolName: "article_overview", result: result)
+        let white = threads.first { $0.label == "Stanford White" }
+        XCTAssertNotNil(white)
+        XCTAssertEqual(white?.source, .wikilink)
+        XCTAssertEqual(white?.zimPath, "A/Stanford_White")
+        XCTAssertTrue(threads.contains { $0.label == "1906 San Francisco earthquake" })
+        // The section is still offered as a deeper thread.
+        XCTAssertTrue(threads.contains { $0.label == "History" && $0.source == .section })
+    }
+
     // MARK: - rank
 
     func testRankDropsDiscussedAndOrdersLateralFirst() {
