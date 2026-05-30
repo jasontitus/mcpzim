@@ -187,6 +187,73 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertEqual(out, ["Grand Duchy of Lithuania"])
     }
 
+    func testDidYouMeanMatchesMorphologicalVariants() {
+        // Debug report 563C79D3: "Einstein's gravity waves" missed
+        // "Gravitational wave" because the filter required an exact shared
+        // word ("gravity" ≠ "gravitational", "waves" ≠ "wave"). Stem/prefix
+        // matching should bridge it while still dropping unrelated noise.
+        let candidates = [
+            SearchHitResult(zim: "w", kind: .wikipedia, path: "a",
+                            title: "Gravitational wave", snippet: ""),
+            SearchHitResult(zim: "w", kind: .wikipedia, path: "b",
+                            title: "Black Friday (song)", snippet: ""),
+        ]
+        let out = MCPToolAdapter.didYouMeanTitles(
+            requested: "einstein’s gravity waves", candidates: candidates, limit: 3)
+        XCTAssertEqual(out, ["Gravitational wave"])
+    }
+
+    // MARK: - "nearest / closest / nearby <category>" (GPS-anchored)
+
+    func testNearestCategoryRoutesToNearPlaces() {
+        // Regression for debug report 563C79D3: "Where is the nearest coffee
+        // shop?" matched no pattern, fell to the LLM, and the model asked for
+        // location despite the GPS preamble. Must resolve deterministically.
+        let here = (lat: 37.44, lon: -122.15)
+        for q in [
+            "where is the nearest coffee shop",
+            "where's the nearest coffee shop",
+            "nearest coffee shop",
+            "the closest coffee shop",
+            "where is the nearest coffee shop to me",
+            "coffee shop nearby",
+            "is there a coffee shop nearby",
+            "find me the nearest coffee shop",
+        ] {
+            let i = IntentRouter.classify(q, currentLocation: here)
+            XCTAssertEqual(i?.toolName, "near_places", "variant: \(q)")
+            XCTAssertEqual(i?.args["kinds"], .array([.string("coffee shop")]),
+                           "variant: \(q)")
+            XCTAssertEqual(i?.args["lat"], .double(37.44), "variant: \(q)")
+        }
+    }
+
+    func testNearestPluralSingularised() {
+        let here = (lat: 1.0, lon: 2.0)
+        XCTAssertEqual(
+            IntentRouter.classify("nearest pharmacies", currentLocation: here)?.args["kinds"],
+            .array([.string("pharmacy")]))
+        XCTAssertEqual(
+            IntentRouter.classify("any restaurants nearby", currentLocation: here)?.args["kinds"],
+            .array([.string("restaurant")]))
+    }
+
+    func testNearestWithoutLocationBailsToLLM() {
+        // No GPS fix → must not guess "me"/"here" as a place; fall through
+        // (nil) so the LLM, which carries the coords in its preamble, handles it.
+        XCTAssertNil(IntentRouter.classify("nearest coffee shop", currentLocation: nil))
+    }
+
+    func testNearbyQuestionWordNotBoundAsCategory() {
+        // "what's nearby" must never become near_places(kinds=["what's"]).
+        let here = (lat: 1.0, lon: 2.0)
+        for q in ["what's nearby", "what is nearby", "anything nearby"] {
+            let i = IntentRouter.classify(q, currentLocation: here)
+            XCTAssertNotEqual(i?.args["kinds"], .array([.string("what's")]),
+                              "variant: \(q)")
+        }
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes

@@ -841,12 +841,28 @@ public actor MCPToolAdapter {
                 .components(separatedBy: CharacterSet.alphanumerics.inverted)
                 .filter { $0.count >= 4 && !stop.contains($0) })
         }
+        // Morphology-tolerant word match, so a mis-heard / colloquial query
+        // still bridges to the canonical title: exact, OR the shorter word
+        // is a ≥4-char prefix of the longer (wave↔waves, park↔parking), OR a
+        // ≥6-char shared prefix (gravity↔gravitational). The ≥6 floor keeps
+        // unrelated short stems apart (stanford↔standard share only 4).
+        func stemMatch(_ a: String, _ b: String) -> Bool {
+            if a == b { return true }
+            let (s, l) = a.count <= b.count ? (a, b) : (b, a)
+            if s.count >= 4 && l.hasPrefix(s) { return true }
+            let shared = zip(a, b).prefix(while: { $0.0 == $0.1 }).count
+            return shared >= 6
+        }
+        func overlaps(_ req: Set<String>, _ cand: Set<String>) -> Bool {
+            for r in req where cand.contains(where: { stemMatch(r, $0) }) { return true }
+            return false
+        }
         let reqWords = words(requested)
         guard !reqWords.isEmpty else { return [] }
         var out: [String] = []
         var seen = Set<String>()
         for c in candidates {
-            guard !reqWords.isDisjoint(with: words(c.title)) else { continue }
+            guard overlaps(reqWords, words(c.title)) else { continue }
             let key = c.title.lowercased()
             if seen.contains(key) { continue }
             seen.insert(key)
@@ -879,7 +895,7 @@ public actor MCPToolAdapter {
             // drops full-text noise (a bare keyword search can surface
             // unrelated songs / admin pages).
             let candidates = (try? await service.search(
-                query: title, limit: 6, kind: .wikipedia)) ?? []
+                query: title, limit: 8, kind: .wikipedia)) ?? []
             let suggestions = Self.didYouMeanTitles(
                 requested: title, candidates: candidates, limit: 3
             )

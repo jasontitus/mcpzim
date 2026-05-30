@@ -119,6 +119,47 @@ public enum IntentRouter {
             ])
         }
 
+        // "where is the nearest <category>" / "nearest <category>" /
+        // "closest <category>" / "<category> nearby" — the single-closest
+        // phrasings the "<cat> near me" pattern above misses. Resolves to
+        // the same GPS-anchored near_places (results come back distance-
+        // sorted, so the nearest is first). Real capture 2026-05-30: "Where
+        // is the nearest coffee shop?" matched no pattern, fell to the LLM,
+        // and the model asked the user for their location despite the GPS
+        // preamble. Needs a fix; without one we bail to the LLM (which has
+        // the coords in its preamble). The question-word guard stops
+        // "what's nearby" / "how far is it" from binding as a category.
+        let nearestKind: String? = {
+            if let m = match(lower, pattern:
+                #"^(?:(?:find|show|get|give)\s+me\s+|i\s+(?:need|want)\s+|i'?d\s+like\s+)?(?:(?:where|what|which)(?:'s|\s+is|\s+are)\s+)?(?:the\s+|my\s+|a\s+)?(?:nearest|closest|nearby)\s+(.+?)(?:\s+(?:to|near|around|from)\s+(?:me|here|us|my\s+location))?$"#)
+            { return m[0] }
+            if let m = match(lower, pattern:
+                #"^(?:is\s+there\s+(?:a|an|any)\s+|are\s+there\s+(?:any\s+)?|any\s+|find\s+(?:me\s+)?(?:a|an|the)?\s*)?(.+?)\s+(?:nearby|near\s?by|close\s+by|around\s+here|near\s+here)$"#)
+            { return m[0] }
+            return nil
+        }()
+        if let rawKind = nearestKind {
+            let firstWord = rawKind.split(separator: " ", maxSplits: 1)
+                .first.map(String.init) ?? ""
+            let skip: Set<String> = [
+                "what", "what's", "where", "when", "why", "how", "who",
+                "anything", "something", "everything", "it", "that", "this",
+                "my", "your", "the",
+            ]
+            if !skip.contains(firstWord) {
+                // A real category — anchor on GPS, or bail to the LLM if we
+                // have no fix (never guess "me"/"here" as a place).
+                guard let here = currentLocation else { return nil }
+                let kind = singularize(rawKind)
+                return DirectIntent(toolName: "near_places", args: [
+                    "lat":       .double(here.lat),
+                    "lon":       .double(here.lon),
+                    "kinds":     .array([.string(kind)]),
+                    "radius_km": .double(defaultRadiusKm)
+                ])
+            }
+        }
+
         // "directions to <place>" / "route to <place>" / "navigate to <place>".
         // Checked BEFORE the `<X> in <Y>` pattern so destinations
         // containing " in " ("Library in Mountain View") still route
