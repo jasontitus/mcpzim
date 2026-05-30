@@ -62,15 +62,30 @@ final class IntentRouterTests: XCTestCase {
     // MARK: - "continue" / "keep reading" paging
 
     func testContinueReadingPositives() {
+        // LITERAL "keep reading the article" verbs → article paging.
         for q in [
-            "continue", "Continue.", "keep reading", "keep going",
-            "go on", "tell me more", "say more", "read more", "read on",
-            "more", "More please", "next", "next section", "carry on",
-            "and then?", "what else", "keep talking", "go ahead",
+            "continue", "Continue.", "continue reading", "keep reading",
+            "read on", "read more", "read me more", "next section",
+            "next page", "resume reading",
             "please continue", "can you keep reading", "and continue",
         ] {
             XCTAssertTrue(IntentRouter.isContinueReading(q),
                           "should be a reading-continue: \(q)")
+        }
+    }
+
+    func testOpenEndedFollowupsDeferToContinuation() {
+        // Open-ended follow-ups belong to the focus-aware continuationIntent
+        // (re-open the subject + offer drift threads), NOT article paging —
+        // so isContinueReading says false and lets them fall through to
+        // classify. Split per CONVERSATIONAL_REDESIGN.md so the two features
+        // stop fighting over "tell me more" / "more" / "go on".
+        for q in [
+            "tell me more", "more", "more please", "go on", "what else",
+            "and then", "say more", "keep going", "go ahead", "keep talking",
+        ] {
+            XCTAssertFalse(IntentRouter.isContinueReading(q),
+                           "open-ended follow-up should defer to continuationIntent: \(q)")
         }
     }
 

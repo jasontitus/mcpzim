@@ -272,13 +272,19 @@ public enum IntentRouter {
             of: p, with: "", options: .regularExpression)
     }
 
-    /// True when the user is asking to hear MORE of the article that's
-    /// currently being read aloud — "continue", "keep reading", "tell me
-    /// more", "go on", "next", a bare "more", … This is intentionally
-    /// separate from `classify`: the host (ChatSession) only acts on it
-    /// when it has an active reading position, so a bare "more" after a
-    /// places search (no article in flight) harmlessly falls through to
-    /// normal routing instead of being mistaken for a reading continue.
+    /// True when the user is asking to keep reading the article currently
+    /// being narrated aloud — the LITERAL "continue reading" verbs only
+    /// ("continue", "keep reading", "read on", "next section", …). The
+    /// host (ChatSession) acts on this only when a reading position is
+    /// active, and pages the next section.
+    ///
+    /// Open-ended follow-ups ("tell me more", "more", "go on", "what
+    /// else", "keep going") are deliberately NOT matched here — they carry
+    /// conversational intent, so they fall through to `classify`'s
+    /// focus-aware `continuationIntent`, which re-opens the subject and
+    /// lets the drift engine offer related threads. Splitting the phrases
+    /// this way keeps article paging and conversational continuation from
+    /// fighting over the same words (see CONVERSATIONAL_REDESIGN.md).
     public static func isContinueReading(_ raw: String) -> Bool {
         let t = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -286,15 +292,13 @@ public enum IntentRouter {
             .lowercased()
         if t.isEmpty { return false }
         let exact: Set<String> = [
-            "continue", "continue reading", "keep reading", "keep going",
-            "go on", "carry on", "proceed", "resume", "more", "read more",
-            "tell me more", "say more", "next", "next section", "go ahead",
-            "and then", "what else", "keep talking", "more please",
-            "read on", "and?",
+            "continue", "continue reading", "keep reading", "read on",
+            "read more", "read it", "next section", "next page",
+            "resume reading",
         ]
         if exact.contains(t) { return true }
         return matches(t, pattern:
-            #"^(?:please\s+|and\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?(?:please\s+)?(?:keep\s+(?:reading|going|talking)|read\s+(?:me\s+)?(?:on|more)|tell\s+me\s+more|say\s+more|go\s+on|carry\s+on|continue(?:\s+reading)?)\b"#)
+            #"^(?:please\s+|and\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?(?:please\s+)?(?:keep\s+reading|read\s+(?:me\s+)?(?:on|more)|continue(?:\s+reading)?)\b"#)
     }
 
     /// Resolve a conversational follow-up against the focus and turn it into
