@@ -69,7 +69,8 @@ public enum IntentRouter {
     /// within 1 km).
     public static func classify(
         _ raw: String,
-        currentLocation: (lat: Double, lon: Double)? = nil
+        currentLocation: (lat: Double, lon: Double)? = nil,
+        focus: ConversationFocus? = nil
     ) -> DirectIntent? {
         let text = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -77,6 +78,18 @@ public enum IntentRouter {
         if text.isEmpty { return nil }
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
+
+        // Context-aware fast path. When the host supplies a conversation
+        // focus and this turn reads as a follow-up that BINDS to a known
+        // entity ("who built it", "the second one", "tell me more"), resolve
+        // the referent in Swift and fetch the RIGHT thing — instead of
+        // falling through to the stateless patterns below (which are
+        // context-blind and would mis-handle a pronoun) or to a confused LLM.
+        if let focus, !focus.isEmpty {
+            if let intent = continuationIntent(raw, focus: focus) {
+                return intent
+            }
+        }
 
         // "what is here" / "where am I" → what_is_here.
         // No args — the MCP adapter fills lat/lon from the host's GPS
@@ -199,6 +212,58 @@ public enum IntentRouter {
         }
 
         return nil
+    }
+
+    /// Resolve a conversational follow-up against the focus and turn it into
+    /// a concrete tool call. Returns `nil` when the turn is NOT a binding
+    /// continuation (the caller then proceeds to the stateless patterns).
+    ///
+    /// Bindings map to tools by the resolved entity's kind:
+    ///   * a place the user references locationally ("how far is it", "near
+    ///     it") → `near_places` around its coords;
+    ///   * any other bound entity → `article_overview` on its name, which
+    ///     returns the lead + section list so the model can answer the
+    ///     specific facet ("who built it", "how old") from one fetch.
+    ///
+    /// Ambiguous descriptive selectors ("the old one" matching several) and
+    /// pure cache-answerable follow-ups are deliberately left to the LLM loop
+    /// (return `nil`) — the router only short-circuits the unambiguous picks.
+    static func continuationIntent(
+        _ raw: String, focus: ConversationFocus
+    ) -> DirectIntent? {
+        let resolved = ReferenceResolver.resolve(raw, focus: focus)
+        guard resolved.isContinuation, let entity = resolved.boundEntity else {
+            return nil
+        }
+        let lower = raw.lowercased()
+
+        // Locational follow-up about a place we have coordinates for.
+        let locational = ["near", "around", "close", "nearby",
+                          "how far", "distance", "walk", "drive",
+                          "directions", "route"]
+        if entity.kind == .place, let lat = entity.lat, let lon = entity.lon,
+           locational.contains(where: { lower.contains($0) }) {
+            if lower.contains("directions") || lower.contains("route")
+                || lower.contains("how do i get") {
+                return DirectIntent(toolName: "route_from_places", args: [
+                    "origin":      .string("my location"),
+                    "destination": .string(entity.name),
+                ])
+            }
+            return DirectIntent(toolName: "near_places", args: [
+                "lat":       .double(lat),
+                "lon":       .double(lon),
+                "radius_km": .double(1),
+            ])
+        }
+
+        // Default: re-open the subject encyclopedically. `article_overview`
+        // returns the lead plus the section list, which covers the common
+        // elliptical follow-ups ("who built it", "when", "how big") without a
+        // second round-trip.
+        return DirectIntent(toolName: "article_overview", args: [
+            "title": .string(entity.name),
+        ])
     }
 
     /// Natural-English shared-suffix inference for `compare X and Y Z`.
