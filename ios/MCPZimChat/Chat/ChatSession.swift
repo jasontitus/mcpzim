@@ -196,6 +196,15 @@ public final class ChatSession {
     public var currentLocation: (lat: Double, lon: Double)? = nil
     @ObservationIgnored private var lastLocationFetch: Date = .distantPast
 
+    /// Conversational discourse state — what the conversation is *about*,
+    /// the last enumerated list shown (for "the second one"), the vetted
+    /// topic-drift threads, and a GPS movement trail. Lets follow-ups
+    /// ("who built it", "the other one", "tell me more") resolve
+    /// deterministically in `IntentRouter` / `ReferenceResolver` instead of
+    /// relying on the small model's coreference. Mutated only on the main
+    /// actor; `@ObservationIgnored` so updating it doesn't churn the view.
+    @ObservationIgnored var focus = ConversationFocus()
+
     /// One-time setup state — drives the "Setting things up…" overlay
     /// at launch. `send()` refuses to run until this is `.ready` so a
     /// user-triggered generate never races with the prompt-cache
@@ -1138,6 +1147,7 @@ public final class ChatSession {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.currentLocation = (coord.latitude, coord.longitude)
+                self.focus.updateLocation(lat: coord.latitude, lon: coord.longitude)
             }
             // Mirror into ZimfoContext so the route_status / what_is_here
             // tools (dispatched off-main through the adapter's actor) have
@@ -1684,6 +1694,9 @@ public final class ChatSession {
         let user = ChatMessage(role: .user, text: text)
         messages.append(user)
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
+        // Advance the discourse-state turn counter so entities/threads
+        // recorded this turn stamp the right recency.
+        focus.beginUserTurn()
         isGenerating = true
         Task {
             // Fast-path intent router. Match a small set of simple
@@ -1694,7 +1707,7 @@ public final class ChatSession {
             // Logic lives in `MCPZimKit.IntentRouter` so it's covered
             // by `swift test` (see `IntentRouterTests`).
             if let intent = IntentRouter.classify(
-                text, currentLocation: currentLocation
+                text, currentLocation: currentLocation, focus: focus
             ) {
                 debug("fast-path intent: \(intent.toolName) — skipping LLM",
                       category: "Router")
@@ -1728,6 +1741,10 @@ public final class ChatSession {
                 await maybeMapReduceExplanatory(userQuery: text)
                 isGenerating = false
             }
+            // Drift: end the reply by offering 1–3 vetted threads
+            // (related wikilinks / nearby places) surfaced from this
+            // turn's tool results, so the conversation can keep moving.
+            appendThreadOfferIfUseful()
         }
     }
 
@@ -2033,6 +2050,11 @@ public final class ChatSession {
             debug("dispatching \(call.name)(\(argsStr)) — first call against a ZIM may block on graph/index load", category: "Tool")
             do {
                 let fullResult = try await adapter.dispatch(tool: call.name, args: resolvedArgs)
+                // Record what this fetch was about + the vetted drift
+                // threads it surfaced, so the next turn's follow-up
+                // resolves and the reply can offer where to go next.
+                self.updateFocusAfterTool(
+                    toolName: call.name, args: resolvedArgs, result: fullResult)
                 // Pass-through sentinel: the tool wants its `text` emitted
                 // verbatim to the user without another model pass. Used by
                 // `narrate_article` so Wikipedia prose reaches TTS unaltered
@@ -2662,6 +2684,9 @@ public final class ChatSession {
             let fullResult = try await adapter.dispatch(
                 tool: intent.toolName, args: dictArgs
             )
+            // Record subject + drift threads for the next follow-up.
+            updateFocusAfterTool(
+                toolName: intent.toolName, args: dictArgs, result: fullResult)
             let resultData = (try? JSONSerialization.data(
                 withJSONObject: fullResult, options: [.sortedKeys]
             )) ?? Data()
@@ -2775,6 +2800,11 @@ public final class ChatSession {
             } else {
                 updateAssistant("Results below.")
             }
+            // Terminal fast-path replies (places / routing / what_is_here)
+            // get the same "where next" offer the LLM path appends. The
+            // article_overview / compare_articles branches returned `false`
+            // above and hand off to the LLM, which offers there instead.
+            appendThreadOfferIfUseful()
             return true
         } catch {
             debug("fast-path dispatch failed: \(error)", category: "Tool")
@@ -2828,6 +2858,97 @@ public final class ChatSession {
             if let v = args[key] as? String, !v.isEmpty { return v }
         }
         return nil
+    }
+
+    // MARK: - Discourse state updates
+
+    /// Fold a completed tool call into the conversation focus: record the
+    /// subject entity, capture any enumerated list (so "the second one"
+    /// resolves next turn), and extract + rank the vetted drift threads.
+    /// Pure bookkeeping — never throws, never blocks.
+    private func updateFocusAfterTool(
+        toolName: String, args: [String: Any], result: [String: Any]
+    ) {
+        func dbl(_ v: Any?) -> Double? {
+            if let d = v as? Double { return d }
+            if let i = v as? Int { return Double(i) }
+            if let n = v as? NSNumber { return n.doubleValue }
+            return nil
+        }
+
+        let topicTools: Set<String> = [
+            "article_overview", "compare_articles",
+            "get_article_section", "narrate_article",
+        ]
+        if topicTools.contains(toolName),
+           let title = (result["title"] as? String) ?? (args["title"] as? String),
+           !title.isEmpty {
+            focus.remember(FocusEntity(
+                name: title, kind: .topic, zimPath: result["path"] as? String))
+        }
+
+        let placesTools: Set<String> = [
+            "near_named_place", "near_places",
+            "nearby_stories", "nearby_stories_at_place",
+        ]
+        if placesTools.contains(toolName) {
+            // The named place the user searched in is the discussion anchor;
+            // record it first so the enumerated list head ends up primary.
+            if let place = args["place"] as? String, !place.isEmpty {
+                focus.remember(FocusEntity(name: place, kind: .place))
+            }
+            let rows = (result["results"] as? [[String: Any]])
+                ?? (result["stories"] as? [[String: Any]]) ?? []
+            let list: [FocusEntity] = rows.compactMap { row in
+                let name = (row["wiki_title"] as? String) ?? (row["label"] as? String)
+                    ?? (row["name"] as? String) ?? (row["title"] as? String)
+                guard let name, !name.isEmpty else { return nil }
+                return FocusEntity(
+                    name: name, kind: .place,
+                    zimPath: row["wiki_path"] as? String,
+                    lat: dbl(row["lat"]), lon: dbl(row["lon"]))
+            }
+            if !list.isEmpty { focus.setLastList(list) }
+        }
+
+        if toolName == "compare_articles", let titles = args["titles"] as? [String] {
+            let list = titles.filter { !$0.isEmpty }
+                .map { FocusEntity(name: $0, kind: .topic) }
+            if !list.isEmpty { focus.setLastList(list) }
+        }
+
+        if toolName == "route_from_places",
+           let dest = args["destination"] as? String, !dest.isEmpty {
+            focus.remember(FocusEntity(name: dest, kind: .place))
+        }
+
+        let threads = ConversationThreads.rank(
+            ConversationThreads.extract(toolName: toolName, result: result),
+            focus: focus, max: 4)
+        focus.setThreads(threads)
+    }
+
+    /// Append a short, deterministic "where to go next" line to the current
+    /// assistant reply, drawn from the vetted drift threads. Place threads
+    /// are only offered when they have a Wikipedia article to narrate (a bare
+    /// POI like a bar isn't something to "hear about"). Skipped when the
+    /// model already ended with its own offer, or the reply is empty.
+    private func appendThreadOfferIfUseful() {
+        let offerable = focus.openThreads.filter {
+            $0.kind != .place || $0.zimPath != nil
+        }
+        guard let line = ConversationThreads.offer(offerable) else { return }
+        guard let idx = messages.indices.last,
+              messages[idx].role == .assistant else { return }
+        let text = messages[idx].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let tail = text.suffix(90).lowercased()
+        if tail.contains("want to") || tail.contains("would you like")
+            || tail.contains("shall i") || tail.contains("tell you about")
+            || tail.contains("i can tell you") {
+            return
+        }
+        messages[idx].text = text + "\n\n" + line
     }
 
     // `synthesizePlacesReply` + its helpers moved to
