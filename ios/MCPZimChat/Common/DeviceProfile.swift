@@ -38,9 +38,18 @@ public struct DeviceProfile: Sendable {
 }
 
 public extension DeviceProfile {
-    /// Resolved for the current process. Macs get the most generous
+    /// CLI/test override — when set, `current` returns this instead of the
+    /// auto-detected profile, so the Mac harness can run "as a phone"
+    /// (phone reply/article budgets + a jetsam memory-budget check).
+    nonisolated(unsafe) static var override: DeviceProfile?
+
+    /// The profile in effect — the override if one was set, else the
+    /// auto-detected tier for this process.
+    static var current: DeviceProfile { override ?? resolved }
+
+    /// Auto-detected for the current process. Macs get the most generous
     /// defaults; iPhones scale down by physical-memory tier.
-    static let current: DeviceProfile = {
+    private static let resolved: DeviceProfile = {
         #if os(macOS)
         return .mac
         #else

@@ -346,6 +346,8 @@ enum ProbeDiscussCLI {
         var gguf = "/Users/jasontitus/experiments/mcpzim/tools/fine-tune/"
             + "ft-out-lfm2.5-8b-v7full/lfm2.5-8b-a1b-ft.Q3_K_M.gguf"
         var turns: [String] = []
+        var phoneMode = false
+        var ramBudgetMB = 0.0
         var args = inputArgs[...]
         while let a = args.first {
             args = args.dropFirst()
@@ -357,6 +359,12 @@ enum ProbeDiscussCLI {
                 if let g = args.first { gguf = String(g); args = args.dropFirst() }
             case "--turn":
                 if let t = args.first { turns.append(String(t)); args = args.dropFirst() }
+            case "--phone-mode":
+                phoneMode = true
+            case "--ram-mb":
+                if let n = args.first.flatMap({ Double($0) }) {
+                    ramBudgetMB = n; args = args.dropFirst()
+                }
             default:
                 FileHandle.standardError.write(Data("probe-discuss: unknown arg \(a)\n".utf8))
                 exit(2)
@@ -366,8 +374,18 @@ enum ProbeDiscussCLI {
             FileHandle.standardError.write(Data("probe-discuss: --zim <path> required\n".utf8))
             exit(2)
         }
+        // Phone mode: use an iPhone's device profile (article/reply budgets)
+        // and track phys_footprint against a RAM ceiling, so the Mac harness
+        // reflects what the phone would do before jetsam. Default ceiling =
+        // 6144 MB (the iPhone 17 Pro Max process cap with increased-memory).
+        if phoneMode {
+            DeviceProfile.override = .balanced
+            if ramBudgetMB == 0 { ramBudgetMB = 6144 }
+        }
         let scenario = turns.isEmpty ? defaultTurns : turns
-        print("== probe-discuss ==\nzim:   \(zim)\ngguf:  \(gguf)\nturns: \(scenario.count)\n")
+        print("== probe-discuss ==\nzim:   \(zim)\ngguf:  \(gguf)\nturns: \(scenario.count)")
+        print("profile: \(DeviceProfile.current.label)"
+            + (ramBudgetMB > 0 ? " · RAM budget \(Int(ramBudgetMB)) MB" : "") + "\n")
 
         let url = URL(fileURLWithPath: zim)
         let reader: ZimReader
@@ -375,6 +393,15 @@ enum ProbeDiscussCLI {
         catch { print("ZIM open failed: \(error)"); exit(3) }
         let service = DefaultZimService(readers: [(url.lastPathComponent, reader)])
         let adapter = await MCPToolAdapter(service: service, hasStreetzim: false)
+        // Wire the SAME semantic reranker the iOS app installs, so the
+        // CLI's `search` (used by discuss drift) reorders BM25 hits by
+        // NLContextualEmbedding — otherwise the harness is a pessimistic
+        // lower bound vs the phone (e.g. it pulled "Oxford Photovoltaics"
+        // instead of "Perovskite solar cell" for "how about perovskites?").
+        SemanticReranker.log = { print("    [Rerank] \($0)") }
+        await adapter.installHitReranker { query, hits in
+            await SemanticReranker.shared.rerank(query: query, hits: hits)
+        }
 
         let provider = LlamaCppProvider(
             id: "lfm25-ft",
@@ -382,6 +409,7 @@ enum ProbeDiscussCLI {
             huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
             ggufFilename: "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
             localGGUFPath: gguf,
+            replyTokensFloor: 1024,
             approximateMemoryMB: 4200,
             template: LFM25Template())
         print("loading model from local path…")
@@ -393,6 +421,15 @@ enum ProbeDiscussCLI {
         let session = ChatSession.forTesting(
             providers: [provider], adapter: adapter, initialModelId: "lfm25-ft")
         session.currentLocation = (lat: 37.441, lon: -122.155)
+
+        // Sample phys_footprint (the jetsam metric) across the run.
+        let peak = PeakMem()
+        let sampler = Task.detached {
+            while !Task.isCancelled {
+                await peak.sample()
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
 
         for (i, turn) in scenario.enumerated() {
             print("─── [\(i + 1)/\(scenario.count)] YOU: \(turn)")
@@ -407,6 +444,29 @@ enum ProbeDiscussCLI {
             print("    " + text.replacingOccurrences(of: "\n", with: "\n    "))
             print()
         }
+
+        sampler.cancel()
+        let peakMB = await peak.peakMB
+        // On macOS the GGUF is mmap'd + Metal-unified, so phys_footprint
+        // under-counts the model's resident cost; iOS jetsam would see the
+        // weights too. Add the model size for a phone-faithful estimate.
+        let modelMB = Double(provider.approximateMemoryMB)
+        let phoneEst = peakMB + modelMB
+        print(String(format: "── peak footprint: %.0f MB (mmap under-counts the model on macOS)", peakMB))
+        if ramBudgetMB > 0 {
+            print(String(format: "   phone-equivalent ≈ %.0f MB (footprint + ~%.0f MB model weights)",
+                         phoneEst, modelMB))
+            let over = phoneEst - ramBudgetMB
+            print(over > 0
+                ? String(format: "   ⚠️ OVER %.0f MB budget by %.0f MB — phone would jetsam", ramBudgetMB, over)
+                : String(format: "   ✓ within %.0f MB budget (%.0f MB headroom)", ramBudgetMB, -over))
+        }
         exit(0)
     }
+}
+
+/// Tracks the peak `phys_footprint` seen during a CLI run.
+actor PeakMem {
+    private(set) var peakMB = 0.0
+    func sample() { peakMB = max(peakMB, MemoryStats.physFootprintMB()) }
 }

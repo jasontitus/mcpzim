@@ -51,6 +51,14 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// downloading from HuggingFace — lets the local Mac eval harness run
     /// the on-disk shipping model without a multi-GB fetch.
     public let localGGUFPath: String?
+    /// Minimum per-turn reply-token budget, regardless of the device
+    /// profile's conservative default. llama.cpp's KV cache is fixed at
+    /// n_ctx (≈6 KB/token for LFM2.5's 6 attention layers), so long replies
+    /// cost almost no extra memory here — the small default exists for the
+    /// MLX path + TTS latency, not this one. Set high so grounded/discuss
+    /// answers (which can run long, especially if the FT opens a <think>)
+    /// don't truncate mid-sentence. `nil` = use the device default.
+    public let replyTokensFloor: Int?
 
     // MARK: - State + llama.cpp handles
 
@@ -80,6 +88,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         huggingFaceRepo: String = "bartowski/google_gemma-3-4b-it-GGUF",
         ggufFilename: String = "google_gemma-3-4b-it-Q4_K_M.gguf",
         localGGUFPath: String? = nil,
+        replyTokensFloor: Int? = nil,
         approximateMemoryMB: Int = 3200,
         template: any ModelTemplate = Gemma3Template()
     ) {
@@ -88,6 +97,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         self.huggingFaceRepo = huggingFaceRepo
         self.ggufFilename = ggufFilename
         self.localGGUFPath = localGGUFPath
+        self.replyTokensFloor = replyTokensFloor
         self.approximateMemoryMB = approximateMemoryMB
         self.template = template
         // One-time global init. Safe to call repeatedly per

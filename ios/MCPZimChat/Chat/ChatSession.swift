@@ -178,8 +178,11 @@ public final class ChatSession {
         // Per-provider floor — small models with reasoning modes
         // (Qwen 3 1.7B's `<think>` burns the default budget) get a
         // bigger budget because their weight footprint leaves plenty
-        // of headroom. Only raises the budget, never lowers it.
-        if let floor = (selectedModel as? Gemma4Provider)?.replyTokensFloor {
+        // of headroom. Only raises the budget, never lowers it. Applies
+        // to both the MLX (Gemma) and llama.cpp (LFM2.5) providers — the
+        // latter's KV is fixed at n_ctx, so long replies are nearly free.
+        if let floor = (selectedModel as? Gemma4Provider)?.replyTokensFloor
+            ?? (selectedModel as? LlamaCppProvider)?.replyTokensFloor {
             return max(withToggle, floor)
         }
         return withToggle
@@ -1139,6 +1142,10 @@ public final class ChatSession {
             displayName: "LFM2.5 8B-A1B FT (Q3_K_M · llama.cpp)",
             huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
             ggufFilename: "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+            // llama.cpp KV is fixed at n_ctx, so long replies are nearly free
+            // here — give the FT room for thorough/discuss answers (and a
+            // <think> preamble) instead of the device's TTS-tuned default.
+            replyTokensFloor: 1024,
             approximateMemoryMB: 4200,
             template: LFM25Template()
         )
@@ -3096,8 +3103,13 @@ public final class ChatSession {
             prompt = selectedModel.formatTranscript(
                 systemPreamble: preamble, turns: turns)
         }
+        // Floor the budget at 512: the FT sometimes opens a <think> on this
+        // off-distribution grounded prompt, and on a low-budget device
+        // profile (e.g. the Mac CLI) that burns the allowance and truncates
+        // the answer mid-sentence ("Perovskite solar cells can be built…").
+        // 512 leaves room for the answer even after a short reasoning preamble.
         let params = GenerationParameters(
-            maxTokens: effectiveMaxReplyTokens, temperature: 0.3, topP: 0.9)
+            maxTokens: max(effectiveMaxReplyTokens, 512), temperature: 0.3, topP: 0.9)
         var buffer = ""
         var lastUIPush = Date.distantPast
         do {
