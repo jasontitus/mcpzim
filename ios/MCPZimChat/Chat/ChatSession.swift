@@ -205,6 +205,13 @@ public final class ChatSession {
     /// actor; `@ObservationIgnored` so updating it doesn't churn the view.
     @ObservationIgnored var focus = ConversationFocus()
 
+    /// Incremental on-device semantic recall — embeds the lead of every
+    /// article we open (via `SemanticReranker`'s `NLContextualEmbedding`) so
+    /// drift offers can be re-ranked by similarity to the whole conversation.
+    /// Empty at launch, grows with the walk, never bundled. Degrades cleanly
+    /// to the deterministic thread order when the embedding model is cold.
+    @ObservationIgnored private let embeddingIndex = EmbeddingIndex()
+
     /// One-time setup state — drives the "Setting things up…" overlay
     /// at launch. `send()` refuses to run until this is `.ready` so a
     /// user-triggered generate never races with the prompt-cache
@@ -1744,7 +1751,7 @@ public final class ChatSession {
             // Drift: end the reply by offering 1–3 vetted threads
             // (related wikilinks / nearby places) surfaced from this
             // turn's tool results, so the conversation can keep moving.
-            appendThreadOfferIfUseful()
+            await appendThreadOfferIfUseful()
         }
     }
 
@@ -2804,7 +2811,7 @@ public final class ChatSession {
             // get the same "where next" offer the LLM path appends. The
             // article_overview / compare_articles branches returned `false`
             // above and hand off to the LLM, which offers there instead.
-            appendThreadOfferIfUseful()
+            await appendThreadOfferIfUseful()
             return true
         } catch {
             debug("fast-path dispatch failed: \(error)", category: "Tool")
@@ -2883,8 +2890,15 @@ public final class ChatSession {
         if topicTools.contains(toolName),
            let title = (result["title"] as? String) ?? (args["title"] as? String),
            !title.isEmpty {
-            focus.remember(FocusEntity(
-                name: title, kind: .topic, zimPath: result["path"] as? String))
+            // Use one identity key for both the focus entity and the touch-
+            // index so `centroid(of: focus keys)` lines up with indexed
+            // vectors. Prefer the ZIM path; fall back to the title.
+            let rawPath = (result["path"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let key = rawPath ?? title
+            focus.remember(FocusEntity(name: title, kind: .topic, zimPath: key))
+            if let lead = Self.leadText(from: result) {
+                indexText(key: key, title: title, text: lead)
+            }
         }
 
         let placesTools: Set<String> = [
@@ -2928,15 +2942,48 @@ public final class ChatSession {
         focus.setThreads(threads)
     }
 
-    /// Append a short, deterministic "where to go next" line to the current
-    /// assistant reply, drawn from the vetted drift threads. Place threads
-    /// are only offered when they have a Wikipedia article to narrate (a bare
-    /// POI like a bar isn't something to "hear about"). Skipped when the
-    /// model already ended with its own offer, or the reply is empty.
-    private func appendThreadOfferIfUseful() {
-        let offerable = focus.openThreads.filter {
+    /// Pull the lead prose out of an article-shaped tool result for embedding.
+    private static func leadText(from result: [String: Any]) -> String? {
+        if let sections = result["sections"] as? [[String: Any]] {
+            for s in sections {
+                if let t = s["text"] as? String, !t.isEmpty { return t }
+            }
+        }
+        for key in ["lead", "text", "summary", "preview"] {
+            if let t = result[key] as? String, !t.isEmpty { return t }
+        }
+        return nil
+    }
+
+    /// Fire-and-forget: embed `text` and add it to the touch-index under
+    /// `key`. Best-effort and off the turn's critical path — the vector is for
+    /// FUTURE turns' recall, so a slow embed never blocks the reply. No-op when
+    /// the embedding model is unavailable.
+    private func indexText(key: String, title: String, text: String) {
+        guard !key.isEmpty, !text.isEmpty else { return }
+        let index = embeddingIndex
+        Task {
+            if await index.contains(key) { return }
+            if let vec = await SemanticReranker.shared.embedText(text) {
+                await index.add(key: key, title: title, vector: vec)
+            }
+        }
+    }
+
+    /// Append a short "where to go next" line to the current assistant reply,
+    /// drawn from the vetted drift threads. When the touch-index has the
+    /// conversation's gist, the threads are first re-ranked by semantic
+    /// similarity to that centroid so the offer follows the whole stroll, not
+    /// just the last sentence; otherwise the deterministic source order stands.
+    /// Place threads are only offered when wiki-backed (a bare POI like a bar
+    /// isn't something to "hear about"). Skipped when the model already ended
+    /// with its own offer, or the reply is empty.
+    private func appendThreadOfferIfUseful() async {
+        var offerable = focus.openThreads.filter {
             $0.kind != .place || $0.zimPath != nil
         }
+        guard !offerable.isEmpty else { return }
+        offerable = await rerankBySimilarity(offerable)
         guard let line = ConversationThreads.offer(offerable) else { return }
         guard let idx = messages.indices.last,
               messages[idx].role == .assistant else { return }
@@ -2949,6 +2996,28 @@ public final class ChatSession {
             return
         }
         messages[idx].text = text + "\n\n" + line
+    }
+
+    /// Order candidate threads by cosine similarity of each thread's label to
+    /// the centroid of the articles touched this conversation. Returns the
+    /// input unchanged when the index is cold or the model is unavailable.
+    private func rerankBySimilarity(
+        _ threads: [DiscoveryThread]
+    ) async -> [DiscoveryThread] {
+        let focusKeys = focus.entities.compactMap { $0.zimPath }
+            .filter { !$0.isEmpty }
+        guard !focusKeys.isEmpty,
+              let centroid = await embeddingIndex.centroid(of: focusKeys)
+        else { return threads }
+        var scores: [String: Float] = [:]
+        for t in threads {
+            let key = (t.zimPath?.isEmpty == false) ? t.zimPath! : t.matchKey
+            if let v = await SemanticReranker.shared.embedText(t.label) {
+                scores[key] = VectorMath.cosine(v, centroid)
+            }
+        }
+        guard !scores.isEmpty else { return threads }
+        return ConversationThreads.orderBySimilarity(threads, scores: scores)
     }
 
     // `synthesizePlacesReply` + its helpers moved to
