@@ -1096,7 +1096,12 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
         messages.append({"role": "user", "content": user_text})
         final_content = ""
         tool_calls_seen: list[str] = []
-        for iter_ in range(4):
+        # 4 was the historical default; bump to 8 for exploration-heavy
+        # models like Qwen 3.6 27B that often spend several tool calls
+        # diagnosing fixture errors before settling on a final response.
+        # Override via TOOL_ITER_BUDGET=N for one-off tests.
+        max_iters = int(os.environ.get("TOOL_ITER_BUDGET", "8"))
+        for iter_ in range(max_iters):
             t_iter = time.perf_counter()
             if use_lfm_path:
                 prompt = _lfm2_render(
@@ -1238,6 +1243,12 @@ def main():
     if args.tool_format == "pythonic":
         llama_kwargs["chat_format"] = "chatml"
     t_load = time.perf_counter()
+    chat_template_kwargs = {}
+    chat_template_path = os.environ.get("CHAT_TEMPLATE")
+    if chat_template_path:
+        with open(chat_template_path) as fh:
+            chat_template_kwargs["chat_template"] = fh.read()
+        print(f"       overriding chat template from {chat_template_path}")
     llm = Llama(
         model_path=gguf_path,
         n_ctx=args.n_ctx,
@@ -1248,6 +1259,7 @@ def main():
         swa_full=swa_full_arg,
         verbose=False,
         **llama_kwargs,
+        **chat_template_kwargs,
     )
     print(f"       load: {time.perf_counter()-t_load:.2f}s · "
           f"rss: {rss_mb():.0f} MB")

@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# CUDA-side full pipeline: LoRA train (PEFT) → fuse → HF→GGUF → Q4_K_M.
-# Mirrors finetune.sh's stage layout but swaps the mlx-lm steps for a
-# torch+peft training loop in finetune_cuda.py. Steps 1, 4, 5 are
-# unchanged from the Mac version (they're platform-agnostic).
+# CUDA pipeline using Unsloth's FastLanguageModel for the train+fuse
+# step (instead of vanilla PEFT in finetune_cuda.sh). Same split →
+# train+fuse → tokenizer-fix → HF→GGUF → Q4_K_M quantize chain;
+# only Step 2's python differs.
+#
+# Use this for Qwen 3.5 / 3.6 27B QLoRA where Unsloth's optimizations
+# fit on a 24 GB card AND its built-in thinking-mode toggle avoids the
+# eval-loop issue we hit on Qwen3.5-9B with vanilla PEFT.
 #
 # Usage:
-#   bash finetune_cuda.sh train.jsonl                   # gemma-3-4b-it
-#   BASE_MODEL=google/gemma-3-1b-it MODEL_TAG=gemma3-1b-it-ft \
-#     OUT_DIR=./ft-out-gemma3-1b bash finetune_cuda.sh train.jsonl
-#
-# Env knobs (all optional):
-#   BASE_MODEL=google/gemma-3-4b-it          # any HF causal-LM
-#   MODEL_TAG=gemma3-4b-it-ft                # GGUF filename root
-#   OUT_DIR=./ft-out                         # holds adapters/, fused-hf/, gguf
-#   ITERS=500
-#   LORA_LAYERS=16   LORA_RANK=16
-#   BATCH_SIZE=4     LEARN_RATE=1e-5
-#   MAX_SEQ_LEN=2048 VAL_BATCHES=5
+#   BASE_MODEL=Qwen/Qwen3.6-27B MODEL_TAG=qwen3.6-27b-it-ft \
+#     OUT_DIR=./ft-out-qwen3.6-27b BATCH_SIZE=1 GRAD_ACCUM=4 \
+#     bash finetune_unsloth.sh data/train_v4_combined.jsonl
 set -euo pipefail
 
 TRAIN_DATA="${1:-train.jsonl}"
@@ -25,12 +20,13 @@ if [[ ! -f "$TRAIN_DATA" ]]; then
     exit 1
 fi
 
-BASE_MODEL="${BASE_MODEL:-google/gemma-3-4b-it}"
+BASE_MODEL="${BASE_MODEL:-Qwen/Qwen3.6-27B}"
 MODEL_TAG="${MODEL_TAG:-$(basename "$BASE_MODEL" | sed -E 's/-bf16$//')-ft}"
 ITERS="${ITERS:-500}"
 LORA_LAYERS="${LORA_LAYERS:-16}"
 LORA_RANK="${LORA_RANK:-16}"
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-4}"
 LEARN_RATE="${LEARN_RATE:-1e-5}"
 OUT_DIR="${OUT_DIR:-./ft-out}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -51,16 +47,14 @@ if [[ ! -x "$VENV_PY" ]]; then
     exit 1
 fi
 
-# bitsandbytes (used by the QLoRA path) needs libnvJitLink.so.13, but
-# the system CUDA is 12.x. The venv ships the cu13 jitlink shared
-# object — point ld at it. Harmless when QLoRA isn't used.
+# bnb / cu13 jitlink fix (same as finetune_cuda.sh; harmless if unused).
 VENV_DIR="$(dirname "$(dirname "$VENV_PY")")"
 CU13_LIB="$VENV_DIR/lib/python3.12/site-packages/nvidia/cu13/lib"
 if [[ -d "$CU13_LIB" ]]; then
     export LD_LIBRARY_PATH="$CU13_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# --- Step 1: 95/5 split (same logic as finetune.sh) ---
+# --- Step 1: 95/5 split (same logic as finetune_cuda.sh) ---
 if [[ ! -f "$TRAIN_SPLIT" || ! -f "$VAL_SPLIT" ]]; then
     echo ">> splitting $TRAIN_DATA into train/valid (95/5)"
     "$VENV_PY" - <<PY
@@ -75,16 +69,16 @@ print(f"  train={len(rows)-cut} valid={cut}")
 PY
 fi
 
-# --- Step 2: PEFT LoRA train + fuse-hf in one Python pass ---
+# --- Step 2: Unsloth LoRA train + fuse ---
 DATA_DIR="$OUT_DIR/data"
 mkdir -p "$DATA_DIR"
 cp "$TRAIN_SPLIT" "$DATA_DIR/train.jsonl"
 cp "$VAL_SPLIT"   "$DATA_DIR/valid.jsonl"
 
 if [[ ! -f "$FUSED_DIR/config.json" ]]; then
-    echo ">> LoRA fine-tuning + fusing $BASE_MODEL "
-    echo "   (iters=$ITERS rank=$LORA_RANK layers=$LORA_LAYERS bsz=$BATCH_SIZE)"
-    "$VENV_PY" "$HERE/finetune_cuda.py" \
+    echo ">> Unsloth LoRA fine-tune + fuse $BASE_MODEL"
+    echo "   (iters=$ITERS rank=$LORA_RANK bsz=$BATCH_SIZE x grad-accum=$GRAD_ACCUM = effective $((BATCH_SIZE * GRAD_ACCUM)))"
+    "$VENV_PY" "$HERE/finetune_unsloth.py" \
         --model "$BASE_MODEL" \
         --data-dir "$DATA_DIR" \
         --adapter-path "$ADAPTERS_DIR" \
@@ -93,25 +87,13 @@ if [[ ! -f "$FUSED_DIR/config.json" ]]; then
         --num-layers "$LORA_LAYERS" \
         --lora-rank "$LORA_RANK" \
         --batch-size "$BATCH_SIZE" \
+        --grad-accum "$GRAD_ACCUM" \
         --learning-rate "$LEARN_RATE" \
         --max-seq-length "${MAX_SEQ_LEN:-2048}" \
-        --val-batches "${VAL_BATCHES:-5}" \
-        ${QLORA:+--qlora}
+        --save-every "${SAVE_EVERY:-200}"
 fi
 
-# --- Step 3 (optional): restore upstream tokenizer into fused dir ---
-# PEFT's save_pretrained already preserves the tokenizer files we need,
-# but llama.cpp's convert_hf_to_gguf.py is finicky about tokenizer.model
-# vs tokenizer.json. If conversion errors with "BPE pre-tokenizer was not
-# recognized", uncomment and adapt the cp from finetune.sh's Mac block.
-
-# --- Step 3.5: ensure tokenizer.model lands in fused dir for sentencepiece-style models.
-# llama.cpp's Gemma3Model.set_vocab() takes the sentencepiece path iff
-# tokenizer.model exists in dir_model — otherwise it falls back to
-# _set_vocab_gpt2() which fails on Gemma 3's BPE-hash whitelist. PEFT's
-# tokenizer.save_pretrained() drops only tokenizer.json + config, not
-# the .model file. So fetch from the HF hub cache and copy it in.
-# Idempotent: skips if tokenizer.model already exists in fused dir.
+# --- Step 3.5: copy tokenizer.model into fused dir for sentencepiece-style models ---
 "$VENV_PY" - "$BASE_MODEL" "$FUSED_DIR" <<'PY'
 import os, shutil, sys
 base_model, fused = sys.argv[1], sys.argv[2]
@@ -125,8 +107,6 @@ try:
     shutil.copyfile(src, target)
     print(f">> copied tokenizer.model ({os.path.getsize(src)} bytes) into fused dir")
 except Exception as e:
-    # Many HF models genuinely don't have a tokenizer.model (Qwen, etc.)
-    # — that's fine, those use the BPE path which works without it.
     print(f"  no tokenizer.model on hub for {base_model}: {type(e).__name__}")
 PY
 
@@ -134,7 +114,6 @@ PY
 if [[ ! -d "$LLAMA_CPP_SRC" ]]; then
     echo ">> cloning llama.cpp source"
     git clone --depth=1 https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_SRC"
-    # uv-managed venvs don't include pip by default; use uv pip instead.
     "$HOME/.local/bin/uv" pip install --python "$VENV_PY" --index-strategy unsafe-best-match -q \
         -r "$LLAMA_CPP_SRC/requirements/requirements-convert_hf_to_gguf.txt"
 fi
@@ -148,8 +127,6 @@ fi
 QUANTIZE_BIN="${QUANTIZE_BIN:-$LLAMA_CPP_SRC/build/bin/llama-quantize}"
 if [[ ! -x "$QUANTIZE_BIN" ]]; then
     echo ">> building llama-quantize (CPU build)"
-    # System cmake isn't installed on this WSL box; venv's cmake works.
-    # Add it to PATH so cmake's child cmake calls find each other.
     export PATH="$(dirname "$VENV_PY"):$PATH"
     (cd "$LLAMA_CPP_SRC" && cmake -B build -S . -DGGML_CUDA=OFF \
         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
@@ -157,12 +134,12 @@ if [[ ! -x "$QUANTIZE_BIN" ]]; then
         && cmake --build build --target llama-quantize -j 8)
 fi
 if [[ ! -f "$GGUF_Q4" ]]; then
-    echo ">> quantizing F16 → Q4_K_M"
+    echo ">> quantizing $GGUF_F16 → $GGUF_Q4 (Q4_K_M)"
     "$QUANTIZE_BIN" "$GGUF_F16" "$GGUF_Q4" Q4_K_M
 fi
 
 echo
 echo "=== done ==="
-echo "Fused HF:    $FUSED_DIR"
-echo "F16 GGUF:    $GGUF_F16"
-echo "Q4_K_M GGUF: $GGUF_Q4"
+echo "Fused HF model:    $FUSED_DIR"
+echo "F16 GGUF:          $GGUF_F16"
+echo "Q4_K_M GGUF:       $GGUF_Q4"

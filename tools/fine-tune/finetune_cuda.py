@@ -44,14 +44,17 @@ from transformers import (
 )
 
 
-def _is_multimodal(model_name: str) -> bool:
-    """True if the HF config has a `text_config` sub-config (composite
-    image-text-to-text model). Triggers the language_model-extraction path."""
+def _is_gemma3_multimodal(model_name: str) -> bool:
+    """True only for Gemma 3 multimodal bases (e.g. gemma-3-4b-it).
+    Distinguished from text-only Gemma 3 (1B) and from non-Gemma models
+    that happen to have a `text_config` field (Qwen 3.5+ does too).
+    Uses the architectures list — that's the unambiguous signal."""
     cfg = AutoConfig.from_pretrained(model_name)
-    return getattr(cfg, "text_config", None) is not None
+    archs = getattr(cfg, "architectures", []) or []
+    return any("Gemma3ForConditionalGeneration" in a for a in archs)
 
 
-def load_base(model_name: str, dtype=torch.bfloat16):
+def load_base(model_name: str, dtype=torch.bfloat16, qlora: bool = False):
     """Returns (causal_lm_module, full_model_or_None, tokenizer).
 
     For multimodal bases (e.g. gemma-3-4b-it), `causal_lm_module` is
@@ -59,10 +62,37 @@ def load_base(model_name: str, dtype=torch.bfloat16):
     we can save the full multimodal checkpoint after merging if we want;
     for our pipeline we only need the text core (convert_hf_to_gguf.py
     converts `gemma3_text`).
+
+    `qlora=True` loads via bitsandbytes 4-bit (nf4 + double-quant + bf16
+    compute), unlocking ~4× larger bases on the same VRAM. The merge step
+    is incompatible with 4-bit weights, so callers should reload the
+    base in bf16 separately for fusing.
     """
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    if qlora:
+        # 4-bit base + LoRA on top. Auto-places on the visible GPUs via
+        # bitsandbytes — no .to(device) needed (and not supported once
+        # weights are quantized). Multimodal Gemma 3 isn't on this path
+        # because we don't currently QLoRA-train it.
+        from transformers import BitsAndBytesConfig
+        from peft import prepare_model_for_kbit_training
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+        full = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_cfg,
+            attn_implementation="sdpa",
+            device_map={"": 0},
+        )
+        full = prepare_model_for_kbit_training(full)
+        return full, None, tokenizer
 
     # device_map=auto/cuda has been unreliable here: Gemma 3 1B silently
     # stayed on CPU even with explicit `device_map={"": "cuda"}`. Skip
@@ -70,13 +100,22 @@ def load_base(model_name: str, dtype=torch.bfloat16):
     # the move is fast (1B–4B fits in seconds) and unambiguous.
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if _is_multimodal(model_name):
-        print(f"  multimodal base: loading via AutoModelForImageTextToText "
-              f"and extracting .language_model")
-        full = AutoModelForImageTextToText.from_pretrained(
-            model_name, torch_dtype=dtype,
+    if _is_gemma3_multimodal(model_name):
+        # transformers 4.55+ dropped the convenient `.language_model`
+        # attribute on Gemma3ForConditionalGeneration (it now lives at
+        # `.model.language_model`, a bare decoder, not a CausalLM).
+        # Use Gemma3ForCausalLM directly — same weights, no vision
+        # tower, valid CausalLM forward pass for PEFT/training.
+        # NOTE: Q4_K_M output from this path produced newline-only
+        # generations on the smoke grid (0/13 vs Mac mlx-lm at 10/13)
+        # — pipeline issue not fully diagnosed. Prefer the Mac
+        # finetune.sh route for gemma-3-4b until this is fixed.
+        print(f"  multimodal base: loading as Gemma3ForCausalLM (text-only)")
+        from transformers import Gemma3ForCausalLM
+        full = Gemma3ForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype, attn_implementation="sdpa",
         ).to(device)
-        return full.language_model, full, tokenizer
+        return full, full, tokenizer
 
     full = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=dtype,
@@ -161,9 +200,18 @@ def main() -> int:
     ap.add_argument("--max-seq-length", type=int, default=2048)
     ap.add_argument("--val-batches", type=int, default=5)
     ap.add_argument("--val-every", type=int, default=100)
+    ap.add_argument("--save-every", type=int, default=200,
+                    help="Save an intermediate adapter checkpoint every N "
+                         "iters (in addition to the final). Lets us "
+                         "smoke-eval mid-run on long trainings.")
     ap.add_argument("--warmup-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--grad-accum", type=int, default=1)
+    ap.add_argument("--qlora", action="store_true",
+                    help="Load base in 4-bit (bitsandbytes nf4) and "
+                         "train LoRA on top. Cuts base-weight VRAM ~4×; "
+                         "needed for ≥27B on a 24 GB card. The merge "
+                         "step reloads the base in bf16 to fuse cleanly.")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -174,8 +222,9 @@ def main() -> int:
     valid_rows = load_jsonl(data_dir / "valid.jsonl")
     print(f"loaded train={len(train_rows)} valid={len(valid_rows)}")
 
-    print(f"loading tokenizer + model: {args.model}")
-    model, _full, tokenizer = load_base(args.model)
+    print(f"loading tokenizer + model: {args.model}"
+          f"{' (QLoRA / 4-bit)' if args.qlora else ''}")
+    model, _full, tokenizer = load_base(args.model, qlora=args.qlora)
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
@@ -300,6 +349,15 @@ def main() -> int:
             v = run_val(args.val_batches)
             print(f"Iter {step}: Val loss {v:.3f}", flush=True)
 
+        # Periodic adapter checkpoint so we can mid-stream-eval long
+        # runs (and recover from crashes without restarting from 0).
+        if step % args.save_every == 0 and step != args.iters:
+            ckpt_dir = f"{args.adapter_path}-iter{step}"
+            model.save_pretrained(ckpt_dir)
+            tokenizer.save_pretrained(ckpt_dir)
+            print(f"Iter {step}: Saved adapter checkpoint to {ckpt_dir}",
+                  flush=True)
+
     print("saving adapter")
     model.save_pretrained(args.adapter_path)
     tokenizer.save_pretrained(args.adapter_path)
@@ -307,7 +365,11 @@ def main() -> int:
     print("merging adapter into base + saving fused HF checkpoint")
     del model
     torch.cuda.empty_cache()
-    base, _, _ = load_base(args.model)
+    # IMPORTANT: even when training was QLoRA, fuse against the bf16
+    # base. merge_and_unload() does not work on 4-bit weights (the
+    # bnb-quantized linears can't be folded into a single matmul), so
+    # we always pass qlora=False here regardless of how training ran.
+    base, _, _ = load_base(args.model, qlora=False)
     fused = PeftModel.from_pretrained(base, args.adapter_path)
     fused = fused.merge_and_unload()
     Path(args.fused_path).mkdir(parents=True, exist_ok=True)
