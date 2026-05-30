@@ -94,20 +94,39 @@ public protocol TextEmbedder: Sendable {
 public struct HashingEmbedder: TextEmbedder {
     public let dimension: Int
 
-    public init(dimension: Int = 256) {
+    public init(dimension: Int = 512) {
         self.dimension = max(16, dimension)
     }
 
     public func embed(_ text: String) -> [Float] {
         var v = [Float](repeating: 0, count: dimension)
         for token in Self.tokenize(text) {
-            let h = Int(Self.fnv1a(token) % UInt64(dimension))
-            // Signed contribution (second hash bit) reduces collisions
-            // cancelling vs. always-adding, the standard hashing-trick sign.
-            let sign: Float = (Self.fnv1a("#" + token) & 1) == 0 ? 1 : -1
-            v[h] += sign
+            bump(&v, token)
+            // Subword char 3-grams (boundary-padded) so morphological
+            // variants share features: "efficient"~"efficiency",
+            // "perovskite"~"perovskites". Exact-token hashing alone misses
+            // these, leaving the answer-bearing section unranked ("I don't
+            // see it" even though the article was pulled — real capture
+            // 2026-05-30: "how efficient are they?").
+            if token.count >= 4 {
+                let padded = Array("<" + token + ">")
+                var j = 0
+                while j + 3 <= padded.count {
+                    bump(&v, "n:" + String(padded[j ..< j + 3]))
+                    j += 1
+                }
+            }
         }
         return VectorMath.normalized(v)
+    }
+
+    /// Hash `feature` into a dimension with a signed contribution (second
+    /// hash bit) — the standard hashing-trick sign that reduces collision
+    /// bias vs. always-adding.
+    private func bump(_ v: inout [Float], _ feature: String) {
+        let h = Int(Self.fnv1a(feature) % UInt64(dimension))
+        let sign: Float = (Self.fnv1a("#" + feature) & 1) == 0 ? 1 : -1
+        v[h] += sign
     }
 
     static func tokenize(_ text: String) -> [String] {

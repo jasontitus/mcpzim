@@ -52,6 +52,20 @@ final class EmbeddingsTests: XCTestCase {
             "shared Rome/Roman vocab should score nearer than an unrelated topic")
     }
 
+    func testHashingEmbedderBridgesMorphology() {
+        // Subword n-grams let a question keyword match a morphological
+        // variant in the section text (the discuss retrieval miss): a
+        // "how efficient" question must score the "efficiency" section
+        // above an unrelated one, even with no exact shared token.
+        let e = HashingEmbedder()
+        let q = e.embed("how efficient are they")
+        let efficiency = e.embed("the energy efficiency of the engine improves with load")
+        let unrelated = e.embed("the etymology and naming history of the region")
+        XCTAssertGreaterThan(
+            VectorMath.cosine(q, efficiency), VectorMath.cosine(q, unrelated),
+            "efficient↔efficiency should rank above an unrelated section")
+    }
+
     // MARK: - EmbeddingIndex
 
     func testIndexAddDedupeAndCap() async {
