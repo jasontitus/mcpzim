@@ -167,6 +167,28 @@ public enum ConversationThreads {
         return out
     }
 
+    /// Re-order an already-ranked thread list by semantic similarity to the
+    /// conversation, given a precomputed `key -> score` map (cosine to the
+    /// focus centroid, produced by `EmbeddingIndex`). Threads keyed by their
+    /// `zimPath` when present, else their label. Unscored threads keep their
+    /// original relative order, after the scored ones. Kept sync + pure so the
+    /// async embedding work stays in the host; this is just the stable sort.
+    public static func orderBySimilarity(
+        _ threads: [DiscoveryThread], scores: [String: Float]
+    ) -> [DiscoveryThread] {
+        func key(_ t: DiscoveryThread) -> String {
+            if let p = t.zimPath, !p.isEmpty { return p }
+            return t.matchKey
+        }
+        let floor = -Float.greatestFiniteMagnitude
+        return threads.enumerated().sorted { a, b in
+            let sa = scores[key(a.element)] ?? floor
+            let sb = scores[key(b.element)] ?? floor
+            if sa == sb { return a.offset < b.offset }
+            return sa > sb
+        }.map(\.element)
+    }
+
     // MARK: - Deterministic offer caption (no-LLM fast path)
 
     /// A short, natural "where next" line for the fast path that runs no

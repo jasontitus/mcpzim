@@ -301,12 +301,29 @@ recall cases links miss.
 - *Quantization:* int8 (4–8× smaller) keeps the touch-index trivially small;
   not even needed until the index is large.
 
-**Where it slots into this PR's types.** `DiscoveryThread` already carries
-`zimPath`; add an optional `embedding: [Float]?` and a `EmbeddingIndex` actor
-(`add(path:vector:)` / `nearest(to:k:)`). `ConversationThreads.rank` gains an
-overload that orders by similarity-to-focus-centroid when an index is present,
-falling back to the current source-priority order when it isn't. Nothing in the
-shipped core has to change to adopt it later — it's strictly additive.
+**Status — the index is built (`swift/Sources/MCPZimKit/Embeddings.swift`).**
+Shipped and unit-tested:
+- `VectorMath` (cosine / normalise / centroid), `TextEmbedder` protocol,
+  `HashingEmbedder` (dependency-free FNV-1a feature-hashing baseline so the
+  pipeline works with **zero model assets**), and the `EmbeddingIndex` actor
+  (`add` / `nearest` / `centroid` / `scores`, LRU-capped, vectors stored
+  normalised).
+- `ConversationThreads.orderBySimilarity(_:scores:)` re-ranks the existing
+  vetted threads by a precomputed key→score map — a stable sort kept sync/pure
+  so the async embedding work stays in the host.
+
+**Remaining host wiring (macOS/iOS, next):**
+1. Conform a Core ML / `NLEmbedding` model to `TextEmbedder` for real semantics
+   (the `HashingEmbedder` is the fallback until then).
+2. In `updateFocusAfterTool`, after recording an article/place, `await
+   index.add(key: zimPath, title:, vector: embedder.embed(leadParagraph))`.
+3. Before offering threads, compute `centroid(of: focus.entities' keys)` →
+   `scores(for: threadKeys, against: centroid)` → `orderBySimilarity` so the
+   offer follows the whole conversation, not just the last sentence. Falls back
+   cleanly to the current source-priority order when the index is cold.
+
+Nothing in the shipped discourse core had to change to adopt this — it's
+strictly additive, exactly as intended.
 
 ## Why this is the right increment
 
