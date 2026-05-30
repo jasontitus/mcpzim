@@ -3058,9 +3058,11 @@ public final class ChatSession {
         discussionState = state   // persist any pulled-in article
 
         // Anchor lead for topic context + the top-ranked sections across all
-        // articles in hand (deduped, capped so we stay within budget).
+        // articles in hand. Wider budget (6) than before — llama.cpp KV is
+        // cheap, and specific-fact follow-ups need the deeper section, not
+        // just the lead. Each passage is capped so several fit in n_ctx.
         let ranked = ArticleHeuristics.rankSectionsMultiSource(
-            question, sources: state.sources, k: 3)
+            question, sources: state.sources, k: 6)
         var picked: [(article: String, section: ArticleSection)] = []
         if let anchor = state.sources.first,
            let lead = anchor.sections.first(where: { $0.title.isEmpty }) {
@@ -3070,15 +3072,16 @@ public final class ChatSession {
             $0.article == r.article && $0.section.title == r.section.title
         }) {
             picked.append(r)
-            if picked.count >= 4 { break }
+            if picked.count >= 6 { break }
         }
         let passages = picked.map { p -> String in
             let head = p.section.title.isEmpty
                 ? p.article : "\(p.article) — \(p.section.title)"
-            return "## \(head)\n\(p.section.text)"
+            return "## \(head)\n\(String(p.section.text.prefix(1500)))"
         }.joined(separator: "\n\n")
-        debug("discuss \(state.topic): \(picked.count) passages / \(state.sources.count) article(s) for “\(question)”",
-              category: "Chat")
+        debug("discuss \(state.topic): passages = " + picked.map {
+            "\($0.article)§\($0.section.title.isEmpty ? "lead" : $0.section.title)"
+        }.joined(separator: " | "), category: "Chat")
 
         let userTurn = """
         We're discussing "\(state.topic)". Relevant passages from the offline Wikipedia:
@@ -3166,28 +3169,42 @@ public final class ChatSession {
             return nil
         }
         let titles = hits.compactMap(hitTitle)
-        // Prefer a hit whose TITLE carries a question keyword — "Perovskite
-        // solar cell" for "how about perovskites" — over the top blended hit
-        // ("Thin-film solar cell"). The query mixes topic + keyword, so #1
-        // isn't always the on-topic article for THIS follow-up. Stem-match
-        // (first 6 chars) so "perovskites" finds "Perovskite…".
+        // Order candidates: hits whose TITLE carries a question keyword first
+        // ("Perovskite solar cell" for "how about perovskites", stem-matched
+        // so "perovskites" finds "Perovskite…"), then the rest. The query
+        // mixes topic + keyword so the #1 blended hit isn't always on-topic.
         let stems = keywords.filter { $0.count >= 4 }.map { String($0.prefix(6)).lowercased() }
-        let title = titles.first { t in
+        func matchesKeyword(_ t: String) -> Bool {
             let lt = t.lowercased(); return stems.contains { lt.contains($0) }
-        } ?? titles.first
-        guard let title else { return nil }
-        var args: [String: Any] = ["title": title]
-        if let zim { args["zim"] = zim }
-        guard let res = try? await adapter.dispatch(tool: "discuss_article", args: args),
-              let raw = res["sections"] as? [[String: Any]], !raw.isEmpty
-        else { return nil }
-        let resolvedTitle = (res["title"] as? String) ?? title
-        let secs = raw.map { d in
-            ArticleSection(title: (d["title"] as? String) ?? "",
-                           level: (d["level"] as? Int) ?? 0,
-                           text: (d["text"] as? String) ?? "")
         }
-        return (resolvedTitle, secs)
+        let ordered = titles.filter(matchesKeyword) + titles.filter { !matchesKeyword($0) }
+
+        // Try candidates in order, returning the first with REAL content —
+        // skip redirect/stub pages (real capture 2026-05-30: the search's top
+        // hit "Energy efficiency of internal combustion engines" was a
+        // 334-byte redirect stub, so the answer was "I don't see it"; the
+        // content lives in "Internal combustion engine"). dedup by title.
+        var tried = Set<String>()
+        for title in ordered.prefix(5) {
+            let key = title.lowercased()
+            if tried.contains(key) { continue }
+            tried.insert(key)
+            var args: [String: Any] = ["title": title]
+            if let zim { args["zim"] = zim }
+            guard let res = try? await adapter.dispatch(tool: "discuss_article", args: args),
+                  let raw = res["sections"] as? [[String: Any]], !raw.isEmpty
+            else { continue }
+            let secs = raw.map { d in
+                ArticleSection(title: (d["title"] as? String) ?? "",
+                               level: (d["level"] as? Int) ?? 0,
+                               text: (d["text"] as? String) ?? "")
+            }
+            // Stub/redirect pages render as just the repeated title — require
+            // real body text before accepting the article.
+            if secs.reduce(0, { $0 + $1.text.count }) < 500 { continue }
+            return ((res["title"] as? String) ?? title, secs)
+        }
+        return nil
     }
 
     /// Run the dispatched tool, record the trace, and synthesize a
