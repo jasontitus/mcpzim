@@ -9,7 +9,7 @@ checked in. Restore it once:
 
 ```sh
 cd ios/LocalPackages/llama.cpp-swift
-TAG=b8911   # stay in sync with the comment in Package.swift
+TAG=b9434   # stay in sync with the comment in Package.swift
 curl -L -o /tmp/llama.zip \
   "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-xcframework.zip"
 rm -rf llama.xcframework

@@ -3,7 +3,7 @@
 // Wrapper SPM package over the upstream llama.cpp XCFramework.
 //
 // Vendored from:
-//   https://github.com/ggml-org/llama.cpp/releases/download/b8911/llama-b8911-xcframework.zip
+//   https://github.com/ggml-org/llama.cpp/releases/download/b9434/llama-b9434-xcframework.zip
 //
 // The XCFramework ships iOS device + iOS sim + macOS + visionOS (device+sim)
 // + tvOS (device+sim) slices with Metal embedded via
