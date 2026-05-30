@@ -29,6 +29,26 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(links[1].path, "A/Cantor_Arts_Center")
     }
 
+    func testWikiLinksSkipsInfoboxAndBoilerplate() {
+        // Infobox / reference links (in <table>, plus identifier fields) must
+        // NOT be offered as drift topics — only prose <p> links should.
+        // Mirrors the medicine-article failure (2026-05-30): offers were
+        // "MedlinePlus, Drugs.com, Trade names" instead of real topics.
+        let html = """
+        <table class="infobox"><tr><td><a href="Trade_names">Trade names</a></td></tr>
+        <tr><td><a href="MedlinePlus">MedlinePlus</a> <a href="Drugs.com">Drugs.com</a></td></tr>
+        <tr><td><a href="British_Approved_Name">BAN</a></td></tr></table>
+        <p>Aspirin is used to reduce <a href="Fever">fever</a> and treat
+        <a href="Kawasaki_disease">Kawasaki disease</a> and cut the risk of
+        <a href="Heart_attack">heart attack</a>.</p>
+        """
+        let titles = WikiLinks.parse(html: html).map(\.title)
+        XCTAssertEqual(titles, ["fever", "Kawasaki disease", "heart attack"])
+        XCTAssertFalse(titles.contains("Trade names"))
+        XCTAssertFalse(titles.contains("MedlinePlus"))
+        XCTAssertFalse(titles.contains("Drugs.com"))
+    }
+
     func testWikiLinksDecodesEntitiesAndStripsInnerTags() {
         let html = #"<a href="AT&amp;T_Building"><i>AT&amp;T</i> Building</a>"#
         let links = WikiLinks.parse(html: html)

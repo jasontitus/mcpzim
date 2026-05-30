@@ -268,6 +268,20 @@ public enum WikiLinks {
         "media:", "mediawiki:", "module:", "talk:",
     ]
 
+    /// Boilerplate link targets that ARE real ZIM articles but make terrible
+    /// "want to hear about…?" offers — drug-reference sites and infobox
+    /// identifier fields. Belt-and-suspenders on top of the prose-only
+    /// extraction below (real capture 2026-05-30: a medicine offered
+    /// "MedlinePlus, Drugs.com, Trade names").
+    private static let boilerplateTitles: Set<String> = [
+        "medlineplus", "drugs.com", "trade names", "trade name",
+        "pregnancy category", "route of administration",
+        "routes of administration", "defined daily dose", "atc code",
+        "cas number", "pubchem", "drugbank", "chemspider", "kegg", "chembl",
+        "british approved name", "united states adopted name", "license data",
+        "international nonproprietary name", "iso 4217", "doi", "isbn", "issn",
+    ]
+
     public static func parse(html: String, max: Int = 8) -> [Link] {
         let pattern = #"<a\b[^>]*?href="([^"]*)"[^>]*>(.*?)</a>"#
         guard let re = try? NSRegularExpression(
@@ -275,18 +289,28 @@ public enum WikiLinks {
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return [] }
 
-        let range = NSRange(html.startIndex..., in: html)
+        // Pull links from PROSE paragraphs only. Infobox, navbox, and
+        // reference links live in <table>/<ol>, not <p>, so restricting to
+        // <p> drops the boilerplate that was dominating offers (it renders
+        // first in the HTML) and keeps the genuine lateral topics in the
+        // article body — for Aspirin this turns "BAN, USAN, Pregnancy
+        // category, …" into "heart attack, blood clots, colorectal
+        // cancer, …". Falls back to the whole document for stub articles
+        // with no <p> prose.
+        let prose = proseParagraphs(html)
+        let source = prose.isEmpty ? html : prose
+        let range = NSRange(source.startIndex..., in: source)
         var out: [Link] = []
         var seen = Set<String>()
 
-        for m in re.matches(in: html, range: range) {
+        for m in re.matches(in: source, range: range) {
             guard m.numberOfRanges >= 3,
-                  let hrefR = Range(m.range(at: 1), in: html),
-                  let textR = Range(m.range(at: 2), in: html)
+                  let hrefR = Range(m.range(at: 1), in: source),
+                  let textR = Range(m.range(at: 2), in: source)
             else { continue }
 
-            let href = String(html[hrefR])
-            let rawText = String(html[textR])
+            let href = String(source[hrefR])
+            let rawText = String(source[textR])
             let title = decodeAndStrip(rawText)
 
             guard isArticleLink(href), !title.isEmpty, title.count >= 2 else {
@@ -296,6 +320,7 @@ public enum WikiLinks {
             if title.allSatisfy({ $0.isNumber || $0 == "[" || $0 == "]" }) {
                 continue
             }
+            if boilerplateTitles.contains(title.lowercased()) { continue }
             // Dedupe by DESTINATION (two anchors with different text — e.g. a
             // second "again" link — pointing at the same article are one
             // thread), falling back to the title when there's no path.
@@ -305,6 +330,27 @@ public enum WikiLinks {
             seen.insert(key)
             out.append(Link(title: title, path: path))
             if out.count >= max { break }
+        }
+        return out
+    }
+
+    /// Concatenate the article's prose `<p>…</p>` blocks. These hold the
+    /// body text whose links are genuine lateral topics; the infobox
+    /// (`<table>`), navboxes, and references (`<ol>`) — where the
+    /// boilerplate links live — are not `<p>` and so never reach the
+    /// extractor.
+    private static func proseParagraphs(_ html: String) -> String {
+        guard let re = try? NSRegularExpression(
+            pattern: #"<p\b[^>]*>(.*?)</p>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return "" }
+        let range = NSRange(html.startIndex..., in: html)
+        var out = ""
+        for m in re.matches(in: html, range: range) {
+            if let r = Range(m.range(at: 1), in: html) {
+                out += html[r]
+                out += " "
+            }
         }
         return out
     }
