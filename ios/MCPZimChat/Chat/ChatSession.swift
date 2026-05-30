@@ -212,6 +212,18 @@ public final class ChatSession {
     /// to the deterministic thread order when the embedding model is cold.
     @ObservationIgnored private let embeddingIndex = EmbeddingIndex()
 
+    /// Last location the local-area seed-index ran for, so we only re-seed
+    /// after the user has walked into a genuinely new area (jitter/repeat-fix
+    /// filter). nil until the first seed.
+    @ObservationIgnored private var lastSeedLocation: (lat: Double, lon: Double)?
+
+    /// Local-area seed-index tuning. Re-seed only after moving this far; pull
+    /// wiki-backed places within this radius; cap how many we embed per area so
+    /// a fresh fix never turns into a long burst of article reads.
+    private static let seedReseedMeters: Double = 600
+    private static let seedRadiusKm: Double = 2
+    private static let seedMaxPlaces: Int = 30
+
     /// One-time setup state — drives the "Setting things up…" overlay
     /// at launch. `send()` refuses to run until this is `.ready` so a
     /// user-triggered generate never races with the prompt-cache
@@ -1155,6 +1167,11 @@ public final class ChatSession {
                 guard let self else { return }
                 self.currentLocation = (coord.latitude, coord.longitude)
                 self.focus.updateLocation(lat: coord.latitude, lon: coord.longitude)
+                // Proactively embed wiki-backed places around the new fix so
+                // semantic recall works for where the user physically is, not
+                // just articles they've opened. Throttled + fire-and-forget.
+                self.seedNearbyPlacesIfMoved(
+                    lat: coord.latitude, lon: coord.longitude)
             }
             // Mirror into ZimfoContext so the route_status / what_is_here
             // tools (dispatched off-main through the adapter's actor) have
@@ -2967,6 +2984,61 @@ public final class ChatSession {
             if let vec = await SemanticReranker.shared.embedText(text) {
                 await index.add(key: key, title: title, vector: vec)
             }
+        }
+    }
+
+    /// Local-area seed-index entry point, called from the location stream.
+    /// Throttles on distance (only a new area re-seeds) then kicks off a
+    /// fire-and-forget seed. No-op on jitter, while generating, or off-area.
+    private func seedNearbyPlacesIfMoved(lat: Double, lon: Double) {
+        let here = CLLocation(latitude: lat, longitude: lon)
+        if let last = lastSeedLocation {
+            let prev = CLLocation(latitude: last.lat, longitude: last.lon)
+            if here.distance(from: prev) < Self.seedReseedMeters { return }
+        }
+        lastSeedLocation = (lat, lon)
+        Task { [weak self] in
+            guard let self else { return }
+            // Don't compete with an active turn for ZIM/IO; the next fix or the
+            // user's own near-me query will seed instead.
+            if self.isGenerating { return }
+            await self.seedNearbyPlaces(lat: lat, lon: lon)
+        }
+    }
+
+    /// Pull wiki-backed places around `(lat,lon)` and embed each one's lead
+    /// excerpt into the touch-index, keyed by ZIM path (so it lines up with
+    /// the `focus` entity keys the centroid is built from). Reuses the same
+    /// `near_places` dispatch the model uses, so enrichment/vetting is shared.
+    /// Best-effort: a failed dispatch just leaves the index as-is.
+    private func seedNearbyPlaces(lat: Double, lon: Double) async {
+        let args: [String: Any] = [
+            "lat": lat,
+            "lon": lon,
+            "radius_km": Self.seedRadiusKm,
+            "limit": Self.seedMaxPlaces,
+            // Filter to wiki-backed places so the whole `limit` budget goes to
+            // rows we can actually embed (a bare bar/shop has no lead to index).
+            "has_wiki": true,
+        ]
+        guard let result = try? await adapter.dispatch(
+            tool: "near_places", args: args
+        ) else { return }
+        // near_places encodes its rows under "results"; each wiki-backed row
+        // carries `wiki_path` plus an excerpt under `excerpt` (and a mirrored
+        // `wiki_excerpt`). Read either so a field rename can't silently zero
+        // the seed.
+        let rows = (result["results"] as? [[String: Any]]) ?? []
+        for row in rows {
+            guard let path = row["wiki_path"] as? String, !path.isEmpty
+            else { continue }
+            let excerpt = (row["excerpt"] as? String)
+                ?? (row["wiki_excerpt"] as? String) ?? ""
+            guard !excerpt.isEmpty else { continue }
+            let title = (row["wiki_title"] as? String) ?? path
+            // indexText dedupes via the index's `contains` and embeds off the
+            // critical path, so re-seeding overlapping areas is cheap.
+            indexText(key: path, title: title, text: excerpt)
         }
     }
 
