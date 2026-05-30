@@ -243,6 +243,35 @@ public enum IntentRouter {
             }
         }
 
+        // "how do/does X work" → article_overview(X). An explanatory
+        // question about a topic — route it to a grounded overview (which
+        // also opens an implicit discussion) instead of the LLM loop, which
+        // over-tools into a wrong/failed get_article_section and then
+        // narrates the failure (real capture 2026-05-30: "how do combustion
+        // engines work?" → "…I attempted to retrieve the History section…
+        // wasn't found… Let me try a broader search"). The last subject word
+        // is singularised so "combustion engines" resolves to the
+        // (singular-titled) article.
+        if let m = match(lower, pattern:
+            #"^how\s+(?:do|does|did)\s+(.+?)\s+works?$"#)
+        {
+            var subject = m[0]
+                .replacingOccurrences(
+                    of: #"^(?:a|an|the)\s+"#, with: "",
+                    options: [.regularExpression, .caseInsensitive])
+                .trimmingCharacters(in: .whitespaces)
+            var words = subject.split(separator: " ").map(String.init)
+            if let last = words.last, words.count >= 1 {
+                words[words.count - 1] = singularize(last)
+                subject = words.joined(separator: " ")
+            }
+            if !subject.isEmpty {
+                return DirectIntent(toolName: "article_overview", args: [
+                    "title": .string(subject)
+                ])
+            }
+        }
+
         // "tell me about X" / "what is X" / "who is/was X" /
         // "give me an overview of X" → article_overview. Runs LAST
         // so that `what_is_here`, directions, `compare`, and places

@@ -282,6 +282,23 @@ final class IntentRouterTests: XCTestCase {
             IntentRouter.classify("discuss this")?.toolName, "discuss_article")
     }
 
+    func testHowDoesItWorkRoutesToArticle() {
+        for (q, title) in [
+            ("how do combustion engines work", "combustion engine"),
+            ("how does a solar panel work", "solar panel"),
+            ("how do vaccines work?", "vaccine"),
+            ("how does the internal combustion engine work", "internal combustion engine"),
+        ] {
+            let i = IntentRouter.classify(q)
+            XCTAssertEqual(i?.toolName, "article_overview", "variant: \(q)")
+            XCTAssertEqual(i?.args["title"], .string(title), "variant: \(q)")
+        }
+        // "how do I get to X" stays directions (ends in a place, not "work").
+        XCTAssertNotEqual(
+            IntentRouter.classify("how do I get to the airport")?.toolName,
+            "article_overview")
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes
