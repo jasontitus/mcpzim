@@ -192,6 +192,62 @@ final class NearPlacesChipIndexTests: XCTestCase {
                        "park resolves once via the chip, not duplicated from the category")
     }
 
+    // MARK: - Layer 1b: multi-subtype chip (health) — gist #211 regression
+
+    /// The `health` chip bundles distinct subtypes (hospital, dentist,
+    /// pharmacy) under one chip with no single headline kind — unlike
+    /// `restaurants`, whose broad "restaurant" term ≈ the whole chip.
+    /// Mirrors the on-disk shape behind debug report AFA0ECA1.
+    private func healthChipZim() -> [String: String] {
+        [
+            "category-index/manifest.json": """
+            {"total":5,
+             "categories":{"place":{}},
+             "chips":{"health":{"label":"Health","count":5}}}
+            """,
+            // 3 hospitals (1 far), 1 dentist, 1 pharmacy — all but the
+            // distant hospital sit within 5 km of the test center.
+            "category-index/chip-health.json": """
+            [{"n":"Stanford Hospital","t":"poi","s":"hospital","a":37.4350,"o":-122.1750,"l":"Stanford"},
+             {"n":"PA Medical Center","t":"poi","s":"hospital","a":37.4423,"o":-122.1553,"l":"Palo Alto"},
+             {"n":"Distant General","t":"poi","s":"hospital","a":38.58,"o":-121.49,"l":"Sacramento"},
+             {"n":"Bright Smiles Dental","t":"poi","s":"dentist","a":37.4419,"o":-122.1550,"l":"Palo Alto"},
+             {"n":"CVS Pharmacy","t":"poi","s":"pharmacy","a":37.4410,"o":-122.1540,"l":"Palo Alto"}]
+            """,
+        ]
+    }
+
+    func testHospitalNarrowsWithinHealthChip() async throws {
+        // Regression for debug report AFA0ECA1: "Where is the nearest
+        // hospital?" → near_places(kinds=["hospital"]) returned the WHOLE
+        // health chip (hospital 104 + dentist 87 + pharmacy 20 = "211
+        // hospitals") because "hospital" was treated as a broad whole-chip
+        // kind. It must narrow to hospitals only via the subtype filter.
+        let svc = service(healthChipZim())
+        let r = try await svc.nearPlaces(
+            lat: lat, lon: lon, radiusKm: 5, limit: 20,
+            kinds: ["hospital"], zim: nil, hasWiki: false)
+        XCTAssertEqual(Set(r.results.map { $0.place.name }),
+                       ["Stanford Hospital", "PA Medical Center"],
+                       "only in-radius hospitals — no dentist/pharmacy")
+        XCTAssertEqual(r.totalInRadius, 2, "count is hospitals (2), not the whole chip")
+        XCTAssertEqual(r.breakdown, ["hospital": 2],
+                       "breakdown must not leak dentist/pharmacy buckets")
+    }
+
+    func testHealthKindReturnsWholeChip() async throws {
+        // The generic "health" term legitimately means the whole chip, so
+        // it stays broad (absent from nicheChipKinds) and returns every
+        // in-radius health place across subtypes.
+        let svc = service(healthChipZim())
+        let r = try await svc.nearPlaces(
+            lat: lat, lon: lon, radiusKm: 5, limit: 20,
+            kinds: ["health"], zim: nil, hasWiki: false)
+        XCTAssertEqual(r.totalInRadius, 4,
+                       "whole health chip in radius (distant hospital excluded)")
+        XCTAssertEqual(r.breakdown, ["hospital": 2, "dentist": 1, "pharmacy": 1])
+    }
+
     // MARK: - Layer 2: legacy ZIM (poi bundle, no chips)
 
     private func legacyZimWithPoiBundle() -> [String: String] {

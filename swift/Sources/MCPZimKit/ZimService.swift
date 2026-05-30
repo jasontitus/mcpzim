@@ -1214,6 +1214,17 @@ public actor DefaultZimService: ZimService {
         "bbq", "thai", "indian", "mexican", "italian", "chinese", "japanese",
         "korean", "vietnamese", "vegan", "vegetarian", "diner", "brunch",
         "breakfast", "bakery", "ice_cream",
+        // Health-chip members. Unlike the restaurants chip — whose broad
+        // term "restaurant" legitimately means the whole chip — the health
+        // chip bundles distinct things (hospital, pharmacy, dentist, …)
+        // with no single headline kind. Asking for "hospital" must return
+        // hospitals only, NOT the whole chip, so each specific member
+        // narrows via scanRecords' subtype filter. ("health" itself stays
+        // broad = the whole chip.) Without this, near_places(kinds=
+        // ["hospital"]) returned hospital(104)+dentist(87)+pharmacy(20)
+        // and the caption read "Found 211 hospitals".
+        "hospital", "pharmacy", "clinic", "doctor", "doctors", "dentist",
+        "veterinary", "vet",
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for
