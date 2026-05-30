@@ -324,10 +324,26 @@ public enum ArticleHeuristics {
     ) -> Bool {
         let kws = questionKeywords(question)
         if kws.isEmpty { return true }
-        let hay = sections
-            .map { ($0.title + " " + $0.text).lowercased() }
-            .joined(separator: " ")
-        return kws.contains { hay.contains($0) }
+        for s in sections {
+            let title = s.title.lowercased()
+            // A keyword in a HEADING is a strong "this section is about it"
+            // signal.
+            if kws.contains(where: { title.contains($0) }) { return true }
+            // Otherwise require a keyword to recur (≥2×) in one section's
+            // body — a single passing mention isn't real coverage, and was
+            // letting "population" skip a useful corpus pull (2026-05-30).
+            let body = s.text.lowercased()
+            for k in kws {
+                var count = 0
+                var idx = body.startIndex
+                while let r = body.range(of: k, range: idx..<body.endIndex) {
+                    count += 1
+                    if count >= 2 { return true }
+                    idx = r.upperBound
+                }
+            }
+        }
+        return false
     }
 
     /// Core topic of an article title for building a corpus-fallback query:
@@ -340,7 +356,7 @@ public enum ArticleHeuristics {
             t.removeSubrange(r)
         }
         t = t.replacingOccurrences(
-            of: #"^(?:history|economy|geography|politics|culture|demographics|religion|military|list|timeline|outline|index|government)\s+of\s+(?:the\s+)?"#,
+            of: #"^(?:the\s+)?(?:history|economy|geography|politics|culture|demographics|religion|military|list|timeline|outline|index|government)\s+of\s+(?:the\s+)?"#,
             with: "", options: [.regularExpression, .caseInsensitive])
         let cleaned = t.trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? title : cleaned

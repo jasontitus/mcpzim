@@ -975,11 +975,25 @@ public actor MCPToolAdapter {
             return ["error": "discuss_article requires a non-empty `title`."]
         }
         let zim = args["zim"] as? String
+        // Anchor on the BROAD entity, not a sub-article: "the history of
+        // Lithuania" → discuss "Lithuania" (which has History / Demographics
+        // / Foreign relations), so follow-ups about independence, population,
+        // and Poland all land — instead of being trapped in a medieval
+        // "History of the Grand Duchy of Lithuania" stub (real local run
+        // 2026-05-30). Fall back to the literal request if the broad entity
+        // doesn't resolve, and keep the request for the did-you-mean on miss.
+        let broad = ArticleHeuristics.topicCore(title)
         let resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
         do {
-            resolved = try await ArticleHeuristics.sectionsByTitle(
-                service: service, title: title, zim: zim
-            )
+            if broad.lowercased() != title.lowercased(),
+               let b = try? await ArticleHeuristics.sectionsByTitle(
+                   service: service, title: broad, zim: zim) {
+                resolved = b
+            } else {
+                resolved = try await ArticleHeuristics.sectionsByTitle(
+                    service: service, title: title, zim: zim
+                )
+            }
         } catch {
             let candidates = (try? await service.search(
                 query: title, limit: 8, kind: .wikipedia)) ?? []

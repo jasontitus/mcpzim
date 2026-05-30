@@ -53,6 +53,9 @@ final class DiscussionRetrievalTests: XCTestCase {
         XCTAssertEqual(ArticleHeuristics.topicCore("Economy of Japan"), "Japan")
         XCTAssertEqual(ArticleHeuristics.topicCore("List of the United States"), "United States")
         XCTAssertEqual(ArticleHeuristics.topicCore("Solar panel"), "Solar panel")
+        // Leading "the" before the sub-article wrapper — the user's spoken
+        // subject form ("let's discuss the history of Lithuania").
+        XCTAssertEqual(ArticleHeuristics.topicCore("the history of Lithuania"), "Lithuania")
     }
 
     func testQuestionKeywordsDropInterrogatives() {
