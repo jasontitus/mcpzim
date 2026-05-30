@@ -1763,6 +1763,14 @@ public final class ChatSession {
     /// the transcript internally and needs to be told).
     public func resetConversation() {
         messages.removeAll()
+        // Discourse state is conversation-scoped — a "new chat" must forget
+        // it, or the next turn stays pinned to the old topic (real bug
+        // 2026-05-30: a fresh "how do solar panels work?" was answered "I
+        // don't see it in Lithuanian history" because discussionState
+        // survived the clear).
+        readingState = nil
+        discussionState = nil
+        focus.reset()
         if #available(macOS 26.0, iOS 19.0, *),
            let fm = selectedModel as? FoundationModelsProvider {
             fm.resetNativeConversation()
@@ -3027,10 +3035,11 @@ public final class ChatSession {
             ArticleHeuristics.sectionsCoverQuestion($0.sections, question)
         }
         if !coveredByHand, let adapter {
-            let kws = ArticleHeuristics.questionKeywords(question).joined(separator: " ")
-            let query = (state.topic + " " + kws).trimmingCharacters(in: .whitespaces)
+            let kwList = ArticleHeuristics.questionKeywords(question)
+            let query = (state.topic + " " + kwList.joined(separator: " "))
+                .trimmingCharacters(in: .whitespaces)
             if let pulled = await pullArticleForDiscussion(
-                query: query, zim: state.zim, adapter: adapter),
+                query: query, keywords: kwList, zim: state.zim, adapter: adapter),
                !state.sources.contains(where: {
                    $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
                }) {
@@ -3130,21 +3139,30 @@ public final class ChatSession {
     /// `discuss_article` (all sections) dispatches — all real ZIM data.
     @MainActor
     private func pullArticleForDiscussion(
-        query: String, zim: String?, adapter: MCPToolAdapter
+        query: String, keywords: [String], zim: String?, adapter: MCPToolAdapter
     ) async -> (title: String, sections: [ArticleSection])? {
         guard let search = try? await adapter.dispatch(
-            tool: "search", args: ["query": query, "limit": 3]) else { return nil }
+            tool: "search", args: ["query": query, "limit": 5]) else { return nil }
         let hits = (search["hits"] as? [[String: Any]])
             ?? (search["results"] as? [[String: Any]]) ?? []
-        var title: String?
-        for h in hits {
-            if let t = h["title"] as? String, !t.isEmpty { title = t; break }
+        func hitTitle(_ h: [String: Any]) -> String? {
+            if let t = h["title"] as? String, !t.isEmpty { return t }
             if let p = h["path"] as? String, !p.isEmpty {
-                title = p.split(separator: "/").last
+                return p.split(separator: "/").last
                     .map { $0.replacingOccurrences(of: "_", with: " ") }
-                break
             }
+            return nil
         }
+        let titles = hits.compactMap(hitTitle)
+        // Prefer a hit whose TITLE carries a question keyword — "Perovskite
+        // solar cell" for "how about perovskites" — over the top blended hit
+        // ("Thin-film solar cell"). The query mixes topic + keyword, so #1
+        // isn't always the on-topic article for THIS follow-up. Stem-match
+        // (first 6 chars) so "perovskites" finds "Perovskite…".
+        let stems = keywords.filter { $0.count >= 4 }.map { String($0.prefix(6)).lowercased() }
+        let title = titles.first { t in
+            let lt = t.lowercased(); return stems.contains { lt.contains($0) }
+        } ?? titles.first
         guard let title else { return nil }
         var args: [String: Any] = ["title": title]
         if let zim { args["zim"] = zim }

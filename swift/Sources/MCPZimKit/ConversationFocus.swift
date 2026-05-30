@@ -186,6 +186,17 @@ public struct ConversationFocus: Equatable, Sendable {
 
     // MARK: - Mutation
 
+    /// Forget the conversation: clear the entity stack, the last shown list,
+    /// and open drift threads, so a new chat starts on a clean topic slate.
+    /// Keeps `here`/`trail` — the physical location is owned by the location
+    /// feed, not the chat, and the user is still standing where they are.
+    public mutating func reset() {
+        entities = []
+        lastList = []
+        openThreads = []
+        turn = 0
+    }
+
     public mutating func beginUserTurn() { turn += 1 }
 
     /// Bring `entity` to the front (most-recent), folding any prior mention of

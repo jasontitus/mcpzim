@@ -24,6 +24,21 @@ final class ConversationFocusTests: XCTestCase {
         XCTAssertEqual(f.entities.count, 2)
     }
 
+    func testResetClearsDiscourseKeepsLocation() {
+        // A "new chat" must forget the topic stack (real bug 2026-05-30: a
+        // fresh question stayed pinned to the prior discussion), but keep the
+        // physical location, which the location feed owns.
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Lithuania", kind: .topic))
+        f.updateLocation(lat: 37.44, lon: -122.15)
+        f.reset()
+        XCTAssertTrue(f.isEmpty)
+        XCTAssertNil(f.primaryEntity)
+        XCTAssertTrue(f.entities.isEmpty)
+        XCTAssertNotNil(f.here, "location is kept across a chat reset")
+    }
+
     func testMostRecentByKind() {
         var f = ConversationFocus()
         f.remember(FocusEntity(name: "Fenway Park", kind: .place, lat: 42.3, lon: -71.0))
