@@ -183,6 +183,31 @@ public enum IntentRouter {
             ])
         }
 
+        // "how far is it to X" / "how far to X" / "how far away is X" /
+        // "distance to X" / "how long to (get to/drive to) X" → route from
+        // the user's location; the routing reply states the distance +
+        // duration. Bare "how far is it" (no X) has no match here and falls
+        // to the focus-aware continuationIntent (route to the focused place).
+        if let m = match(lower, pattern:
+            #"^how\s+far\s+(?:is\s+it\s+)?(?:away\s+)?(?:to|is|from\s+here\s+to)\s+(.+)$"#)
+            ?? match(lower, pattern:
+                #"^(?:what'?s\s+the\s+)?distance\s+(?:to|from\s+here\s+to)\s+(.+)$"#)
+            ?? match(lower, pattern:
+                #"^how\s+long\s+(?:does\s+it\s+take\s+)?to\s+(?:get\s+to\s+|drive\s+to\s+|walk\s+to\s+|reach\s+)?(.+)$"#)
+        {
+            let dest = m[0].trimmingCharacters(in: .whitespaces)
+            // Reject a pronoun destination ("how far is it" → dest "it"):
+            // that's a follow-up about the focused place, handled by
+            // continuationIntent, not a standalone route.
+            let pronoun: Set<String> = ["it", "that", "this", "there", "them", "here"]
+            if !dest.isEmpty, !pronoun.contains(dest) {
+                return DirectIntent(toolName: "route_from_places", args: [
+                    "origin":      .string("my location"),
+                    "destination": .string(dest)
+                ])
+            }
+        }
+
         // "<category> in <place>" / "<category> near <place>". Named-place
         // geocoding happens inside the tool — we don't pre-resolve here.
         if let m = match(lower,
@@ -417,23 +442,27 @@ public enum IntentRouter {
         let lower = raw.lowercased()
 
         // Locational follow-up about a place we have coordinates for.
-        let locational = ["near", "around", "close", "nearby",
-                          "how far", "distance", "walk", "drive",
-                          "directions", "route"]
-        if entity.kind == .place, let lat = entity.lat, let lon = entity.lon,
-           locational.contains(where: { lower.contains($0) }) {
-            if lower.contains("directions") || lower.contains("route")
-                || lower.contains("how do i get") {
+        // Travel/distance phrasings ("how far is it", "how long to drive",
+        // "directions") → a route from the user's location (the routing
+        // reply carries the distance + duration). Proximity phrasings
+        // ("what's near it", "anything around") → near_places at its coords.
+        if entity.kind == .place, let lat = entity.lat, let lon = entity.lon {
+            let travel = ["how far", "distance", "how long", "walk", "drive",
+                          "directions", "route", "how do i get", "get to"]
+            let nearby = ["near", "around", "nearby", "close by", "close to"]
+            if travel.contains(where: { lower.contains($0) }) {
                 return DirectIntent(toolName: "route_from_places", args: [
                     "origin":      .string("my location"),
                     "destination": .string(entity.name),
                 ])
             }
-            return DirectIntent(toolName: "near_places", args: [
-                "lat":       .double(lat),
-                "lon":       .double(lon),
-                "radius_km": .double(1),
-            ])
+            if nearby.contains(where: { lower.contains($0) }) {
+                return DirectIntent(toolName: "near_places", args: [
+                    "lat":       .double(lat),
+                    "lon":       .double(lon),
+                    "radius_km": .double(1),
+                ])
+            }
         }
 
         // Default: re-open the subject encyclopedically. `article_overview`

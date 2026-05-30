@@ -299,6 +299,28 @@ final class IntentRouterTests: XCTestCase {
             "article_overview")
     }
 
+    func testHowFarRoutesToRoute() {
+        for q in [
+            "how far is it to the airport",
+            "how far to San Jose",
+            "how far away is Stanford",
+            "distance to the ferry building",
+            "how long to drive to Oakland",
+            "how long does it take to get to the airport",
+        ] {
+            let i = IntentRouter.classify(q)
+            XCTAssertEqual(i?.toolName, "route_from_places", "variant: \(q)")
+            XCTAssertEqual(i?.args["origin"], .string("my location"), "variant: \(q)")
+            XCTAssertFalse((i?.args["destination"].map {
+                if case .string(let s) = $0 { return s.isEmpty } else { return true }
+            }) ?? true, "destination should be non-empty: \(q)")
+        }
+        // Bare "how far is it" (no destination) is a focus continuation,
+        // not a standalone route.
+        XCTAssertNotEqual(
+            IntentRouter.classify("how far is it")?.toolName, "route_from_places")
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes
