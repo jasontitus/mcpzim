@@ -221,6 +221,28 @@ public enum IntentRouter {
             ])
         }
 
+        // "let's discuss X" / "let's talk about X" / "discuss X" / "dig
+        // into X" → discuss_article: pin the article as a discussion focus
+        // so follow-up questions are answered from its sections (grounded
+        // single-article RAG) instead of a fresh tool route each turn.
+        // Runs before article_overview so the discuss verbs win. A bare
+        // pronoun subject ("discuss it") is left to the LLM for now.
+        if let m = match(lower, pattern:
+            #"^(?:(?:let'?s|let\s+us|can\s+we|could\s+we|i\s+(?:want|wanna|would\s+like)\s+to|i'?d\s+like\s+to)\s+)?(?:discuss|talk\s+about|chat\s+about|dig\s+into|go\s+deep\s+on)\s+(.+)$"#)
+        {
+            let subject = m[0].trimmingCharacters(in: .whitespaces)
+            let firstWord = subject
+                .split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+            let navPronouns: Set<String> = [
+                "it", "this", "that", "them", "these", "those", "him", "her",
+            ]
+            if !subject.isEmpty, !navPronouns.contains(firstWord) {
+                return DirectIntent(toolName: "discuss_article", args: [
+                    "title": .string(subject)
+                ])
+            }
+        }
+
         // "tell me about X" / "what is X" / "who is/was X" /
         // "give me an overview of X" → article_overview. Runs LAST
         // so that `what_is_here`, directions, `compare`, and places
@@ -392,6 +414,26 @@ public enum IntentRouter {
         return DirectIntent(toolName: "article_overview", args: [
             "title": .string(entity.name),
         ])
+    }
+
+    /// Explicit "we're done with this article" phrases that end a "let's
+    /// discuss X" session. Conservative — exact matches only, so a genuine
+    /// question never accidentally ends the discussion. (A topic *change*
+    /// is detected separately by the host re-classifying the turn.)
+    public static func isDiscussionExit(_ raw: String) -> Bool {
+        let t = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!,"))
+            .lowercased()
+        let exits: Set<String> = [
+            "stop", "stop discussing", "stop discussing it", "stop discussing this",
+            "never mind", "nevermind", "done", "i'm done", "im done", "we're done",
+            "that's all", "thats all", "exit", "quit", "ok done", "okay done",
+            "enough", "let's stop", "lets stop", "change topic", "change the topic",
+            "new topic", "something else", "let's talk about something else",
+            "talk about something else", "move on", "forget it",
+        ]
+        return exits.contains(t)
     }
 
     /// Natural-English shared-suffix inference for `compare X and Y Z`.
@@ -803,7 +845,7 @@ public enum IntentRouter {
     /// `maxChars`). Keeps the ending punctuation when we cut on a
     /// sentence boundary; falls back to a hard cut + ellipsis if no
     /// boundary appears within budget.
-    static func firstSentences(_ text: String, maxChars: Int) -> String {
+    public static func firstSentences(_ text: String, maxChars: Int) -> String {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return "" }
         if t.count <= maxChars { return t }

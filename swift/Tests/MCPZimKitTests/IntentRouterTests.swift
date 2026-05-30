@@ -254,6 +254,34 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    // MARK: - "let's discuss X" → discuss_article
+
+    func testDiscussRoutesToDiscussArticle() {
+        for q in [
+            "let's discuss the Grand Duchy of Lithuania",
+            "lets discuss the Grand Duchy of Lithuania",
+            "let's talk about the Grand Duchy of Lithuania",
+            "discuss the Grand Duchy of Lithuania",
+            "can we discuss the Grand Duchy of Lithuania",
+            "I want to talk about the Grand Duchy of Lithuania",
+            "dig into the Grand Duchy of Lithuania",
+        ] {
+            let i = IntentRouter.classify(q)
+            XCTAssertEqual(i?.toolName, "discuss_article", "variant: \(q)")
+            XCTAssertEqual(i?.args["title"],
+                           .string("the grand duchy of lithuania"), "variant: \(q)")
+        }
+    }
+
+    func testDiscussBarePronounNotRouted() {
+        // "discuss it" has no explicit subject — leave it to the LLM/focus,
+        // not a discuss_article("it") lookup that would miss.
+        XCTAssertNotEqual(
+            IntentRouter.classify("let's discuss it")?.toolName, "discuss_article")
+        XCTAssertNotEqual(
+            IntentRouter.classify("discuss this")?.toolName, "discuss_article")
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes

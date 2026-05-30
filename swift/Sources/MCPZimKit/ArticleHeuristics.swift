@@ -256,6 +256,122 @@ public enum ArticleHeuristics {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - Discussion retrieval
+
+    /// Rank an article's sections by relevance to a question, for grounded
+    /// "let's discuss this article" answering — single-document RAG. The
+    /// lead is ALWAYS returned first (it's the topic anchor); the rest are
+    /// the top scorers, so a typical k=3 yields lead + the two most
+    /// on-topic sections, which comfortably fits the 8K context.
+    ///
+    /// Scoring blends a heading match (section titles are dense relevance
+    /// signal — "Economy" for "what's the economy like") with a body match,
+    /// title-weighted so a long off-topic body can't bury a bang-on
+    /// heading. Uses the dependency-free `HashingEmbedder` by default, so it
+    /// works with zero model assets and is deterministic under `swift test`;
+    /// the host can pass a richer (`NLContextualEmbedding`-backed) embedder
+    /// for semantic matches when the model is warm.
+    public static func rankSectionsForQuestion(
+        _ question: String,
+        sections: [ArticleSection],
+        embedder: TextEmbedder = HashingEmbedder(),
+        k: Int = 3
+    ) -> [ArticleSection] {
+        guard !sections.isEmpty else { return [] }
+        let leadIdx = sections.firstIndex(where: { $0.title.isEmpty }) ?? 0
+        let qv = embedder.embed(question)
+        let ranked = sections.indices
+            .filter { $0 != leadIdx && !sections[$0].text.isEmpty }
+            .map { i -> (Int, Float) in
+                let s = sections[i]
+                let titleScore = s.title.isEmpty
+                    ? 0 : VectorMath.cosine(qv, embedder.embed(s.title))
+                let bodyScore = VectorMath.cosine(qv, embedder.embed(s.text))
+                return (i, 0.55 * titleScore + 0.45 * bodyScore)
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(max(0, k - 1))
+            .map { sections[$0.0] }
+        return [sections[leadIdx]] + ranked
+    }
+
+    /// Content words of a follow-up question — interrogatives, pronouns, and
+    /// stopwords stripped, so the remainder is what the user is actually
+    /// asking ABOUT. Drives the coverage check and the corpus-fallback query.
+    public static func questionKeywords(_ q: String) -> [String] {
+        let stop: Set<String> = [
+            "the","and","for","with","are","was","were","does","did","how",
+            "what","when","where","why","who","which","they","them","its",
+            "their","this","that","about","have","has","had","been","get",
+            "got","gotten","along","like","tell","you","much","many","more",
+            "there","into","from","work","works","happen","happened",
+        ]
+        var seen = Set<String>()
+        var out: [String] = []
+        for w in q.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted) {
+            guard w.count >= 3, !stop.contains(w), !seen.contains(w) else { continue }
+            seen.insert(w); out.append(w)
+        }
+        return out
+    }
+
+    /// True when the article's sections plausibly cover a follow-up — any
+    /// content keyword appears in a section title or body. A question with no
+    /// content keywords ("tell me more") counts as covered (stay on anchor).
+    /// When false, the host pulls a better article from the corpus.
+    public static func sectionsCoverQuestion(
+        _ sections: [ArticleSection], _ question: String
+    ) -> Bool {
+        let kws = questionKeywords(question)
+        if kws.isEmpty { return true }
+        let hay = sections
+            .map { ($0.title + " " + $0.text).lowercased() }
+            .joined(separator: " ")
+        return kws.contains { hay.contains($0) }
+    }
+
+    /// Core topic of an article title for building a corpus-fallback query:
+    /// drop a trailing "(disambiguator)" and a leading "History of " /
+    /// "Economy of " / "List of " … so "History of Lithuania (1219-1295)" →
+    /// "Lithuania" (the broad article the follow-ups actually live in).
+    public static func topicCore(_ title: String) -> String {
+        var t = title
+        if let r = t.range(of: #"\s*\([^)]*\)\s*$"#, options: .regularExpression) {
+            t.removeSubrange(r)
+        }
+        t = t.replacingOccurrences(
+            of: #"^(?:history|economy|geography|politics|culture|demographics|religion|military|list|timeline|outline|index|government)\s+of\s+(?:the\s+)?"#,
+            with: "", options: [.regularExpression, .caseInsensitive])
+        let cleaned = t.trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? title : cleaned
+    }
+
+    /// Rank sections drawn from SEVERAL articles by relevance to a question —
+    /// the multi-article discussion retriever. Same title/body blend as
+    /// `rankSectionsForQuestion`, but flat across sources and tagged with the
+    /// owning article so the answer can ground in whichever article actually
+    /// covers the follow-up (anchor or a pulled-in one).
+    public static func rankSectionsMultiSource(
+        _ question: String,
+        sources: [(title: String, sections: [ArticleSection])],
+        embedder: TextEmbedder = HashingEmbedder(),
+        k: Int = 3
+    ) -> [(article: String, section: ArticleSection)] {
+        let qv = embedder.embed(question)
+        var scored: [(Float, String, ArticleSection)] = []
+        for (title, secs) in sources {
+            for s in secs where !s.text.isEmpty {
+                let ts = s.title.isEmpty
+                    ? 0 : VectorMath.cosine(qv, embedder.embed(s.title))
+                let bs = VectorMath.cosine(qv, embedder.embed(s.text))
+                scored.append((0.55 * ts + 0.45 * bs, title, s))
+            }
+        }
+        return scored.sorted { $0.0 > $1.0 }
+            .prefix(max(1, k))
+            .map { (article: $0.1, section: $0.2) }
+    }
+
     // MARK: - Relationship probing
 
     /// Ordered list of article titles to probe when answering

@@ -123,6 +123,38 @@ public final class ChatSession {
     }
     private var readingState: ReadingState?
 
+    /// Pinned topic for "let's discuss X" — grounded MULTI-article RAG.
+    /// `sources[0]` is the anchor article; when a follow-up isn't covered by
+    /// the articles in hand, the host searches the corpus and appends the
+    /// best-matching article, so the discussion can range beyond a single
+    /// page (population → Demographics of a different article; perovskites →
+    /// a solar-cell section). Each turn the model sees only the few passages
+    /// the question needs. Cleared when the user navigates away or says
+    /// "stop". `topic` is the broad subject (topicCore of the anchor title)
+    /// used to build corpus-fallback queries.
+    private struct DiscussionState {
+        let anchorTitle: String
+        let topic: String
+        let zim: String?
+        var sources: [(title: String, sections: [ArticleSection])]
+    }
+    private var discussionState: DiscussionState?
+
+    /// Tools whose intent means the user has LEFT a "discuss X" session
+    /// (navigation/places, or a fresh discuss/compare). `article_overview`
+    /// is intentionally absent: mid-discussion "tell me about its economy"
+    /// is a question about the pinned article, not a topic change.
+    private static func exitsDiscussion(_ toolName: String) -> Bool {
+        switch toolName {
+        case "route_from_places", "plan_driving_route", "near_places",
+             "near_named_place", "what_is_here", "locate",
+             "discuss_article", "compare_articles":
+            return true
+        default:
+            return false
+        }
+    }
+
     /// When true, double the per-turn reply token budget over the
     /// DeviceProfile default. Trades KV-cache headroom (and ~seconds
     /// of generation time) for fuller, less-clipped answers. With
@@ -1809,6 +1841,35 @@ public final class ChatSession {
             // reading request (`noteReadingState`).
             if !wantsContinue { readingState = nil }
 
+            // Discussion mode: while an article is pinned ("let's discuss
+            // X"), answer follow-ups from its sections instead of routing
+            // each turn afresh. An explicit "stop" or a navigation / new-
+            // topic intent exits; anything else is a grounded question
+            // about the pinned article.
+            if let ds = discussionState, !wantsContinue {
+                if IntentRouter.isDiscussionExit(text) {
+                    discussionState = nil
+                    updateAssistant("Okay — we can stop there. What next?")
+                    isGenerating = false
+                    if let i = messages.indices.last, messages[i].role == .assistant {
+                        messages[i].finishedAt = Date()
+                    }
+                    return
+                }
+                let switchIntent = IntentRouter.classify(
+                    text, currentLocation: currentLocation, focus: focus)
+                if let intent = switchIntent, Self.exitsDiscussion(intent.toolName) {
+                    discussionState = nil   // topic change → normal routing below
+                } else {
+                    await answerWithinDiscussion(ds, question: text)
+                    isGenerating = false
+                    if let i = messages.indices.last, messages[i].role == .assistant {
+                        messages[i].finishedAt = Date()
+                    }
+                    return
+                }
+            }
+
             // Fast-path intent router. Match a small set of simple
             // user patterns ("<category> in <place>", "directions to
             // <place>", "<category> near me") and dispatch the tool
@@ -2854,6 +2915,180 @@ public final class ChatSession {
         }
     }
 
+    // MARK: - Discussion mode ("let's discuss X")
+
+    /// Enter discussion mode from a `discuss_article` dispatch: pin the
+    /// article's sections, give a short lead-derived opener, and invite
+    /// questions. A miss falls back to the same did-you-mean reply as
+    /// `article_overview` (no confabulation). Returns `true` (fast path).
+    @MainActor
+    private func handleDiscussEntry(
+        dictArgs: [String: Any], fullResult: [String: Any]
+    ) -> Bool {
+        if let err = fullResult["error"] as? String, !err.isEmpty {
+            updateAssistant(IntentRouter.synthesizeArticleMissReply(
+                args: dictArgs, fullResult: fullResult))
+            return true
+        }
+        guard let title = fullResult["title"] as? String,
+              let rawSecs = fullResult["sections"] as? [[String: Any]],
+              !rawSecs.isEmpty
+        else {
+            updateAssistant("I couldn't open that article to discuss.")
+            return true
+        }
+        let sections: [ArticleSection] = rawSecs.map { d in
+            ArticleSection(
+                title: (d["title"] as? String) ?? "",
+                level: (d["level"] as? Int) ?? 0,
+                text: (d["text"] as? String) ?? "")
+        }
+        discussionState = DiscussionState(
+            anchorTitle: title,
+            topic: ArticleHeuristics.topicCore(title),
+            zim: fullResult["zim"] as? String,
+            sources: [(title: title, sections: sections)])
+        let lead = sections.first(where: { $0.title.isEmpty })?.text
+            ?? sections.first?.text ?? ""
+        let intro = IntentRouter.firstSentences(lead, maxChars: 300)
+        let opener = intro.isEmpty
+            ? "Sure — let's discuss \(title). Ask me anything about it."
+            : "Sure — let's discuss \(title). \(intro)\n\nAsk me anything about it — "
+                + "I'll answer from the article."
+        updateAssistant(opener)
+        debug("discuss: pinned \(title) (\(sections.count) sections)", category: "Router")
+        return true
+    }
+
+    /// Answer one follow-up within discussion mode: retrieve the lead +
+    /// the section(s) most relevant to the question, then stream a single
+    /// generation grounded strictly in those passages (mirrors the
+    /// map-reduce reduce phase). The small model only ever sees the few
+    /// passages a question needs — never the whole article.
+    @MainActor
+    private func answerWithinDiscussion(_ ds: DiscussionState, question: String) async {
+        var state = ds
+        // Corpus fallback: if none of the articles in hand cover the
+        // follow-up, search the corpus around the topic and pull in the
+        // best match — so "population" (not in History-of-Lithuania) or
+        // "perovskites" (not in Solar-panel) still gets a grounded answer.
+        let coveredByHand = state.sources.contains {
+            ArticleHeuristics.sectionsCoverQuestion($0.sections, question)
+        }
+        if !coveredByHand, let adapter {
+            let kws = ArticleHeuristics.questionKeywords(question).joined(separator: " ")
+            let query = (state.topic + " " + kws).trimmingCharacters(in: .whitespaces)
+            if let pulled = await pullArticleForDiscussion(
+                query: query, zim: state.zim, adapter: adapter),
+               !state.sources.contains(where: {
+                   $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
+               }) {
+                state.sources.append(pulled)
+                debug("discuss: pulled “\(pulled.title)” for “\(question)”",
+                      category: "Router")
+            }
+        }
+        discussionState = state   // persist any pulled-in article
+
+        // Anchor lead for topic context + the top-ranked sections across all
+        // articles in hand (deduped, capped so we stay within budget).
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            question, sources: state.sources, k: 3)
+        var picked: [(article: String, section: ArticleSection)] = []
+        if let anchor = state.sources.first,
+           let lead = anchor.sections.first(where: { $0.title.isEmpty }) {
+            picked.append((anchor.title, lead))
+        }
+        for r in ranked where !picked.contains(where: {
+            $0.article == r.article && $0.section.title == r.section.title
+        }) {
+            picked.append(r)
+            if picked.count >= 4 { break }
+        }
+        let passages = picked.map { p -> String in
+            let head = p.section.title.isEmpty
+                ? p.article : "\(p.article) — \(p.section.title)"
+            return "## \(head)\n\(p.section.text)"
+        }.joined(separator: "\n\n")
+        debug("discuss \(state.topic): \(picked.count) passages / \(state.sources.count) article(s) for “\(question)”",
+              category: "Chat")
+
+        let userTurn = """
+        We're discussing "\(state.topic)". Relevant passages from the offline Wikipedia:
+
+        \(passages)
+
+        Question: \(question)
+
+        Answer using ONLY the passages above — be concise and natural, and \
+        don't say "according to the passage". If the answer isn't there, say \
+        you don't see it in what you have on \(state.topic).
+        """
+        let preamble = "You are discussing a topic with the user using the "
+            + "offline Wikipedia, grounded strictly in the passages provided."
+        let turns = [ChatTurn(role: .user, text: userTurn)]
+        let prompt: String
+        if selectedModel is Gemma4Provider {
+            prompt = selectedModel.template.renderTranscript(
+                systemPreamble: preamble, tools: [], turns: turns)
+        } else {
+            prompt = selectedModel.formatTranscript(
+                systemPreamble: preamble, turns: turns)
+        }
+        let params = GenerationParameters(
+            maxTokens: effectiveMaxReplyTokens, temperature: 0.3, topP: 0.9)
+        var buffer = ""
+        var lastUIPush = Date.distantPast
+        do {
+            for try await chunk in selectedModel.generate(prompt: prompt, parameters: params) {
+                buffer += chunk
+                let now = Date()
+                if now.timeIntervalSince(lastUIPush) >= 0.1 {
+                    updateAssistant(buffer); lastUIPush = now
+                }
+            }
+            updateAssistant(buffer)
+        } catch {
+            debug("discuss generate failed: \(error)", category: "Chat")
+            updateAssistant("Sorry — I hit an error answering that about \(state.topic).")
+        }
+    }
+
+    /// Find an article that covers a follow-up the pinned article(s) don't,
+    /// and return its sections. Reuses the `search` (best title) +
+    /// `discuss_article` (all sections) dispatches — all real ZIM data.
+    @MainActor
+    private func pullArticleForDiscussion(
+        query: String, zim: String?, adapter: MCPToolAdapter
+    ) async -> (title: String, sections: [ArticleSection])? {
+        guard let search = try? await adapter.dispatch(
+            tool: "search", args: ["query": query, "limit": 3]) else { return nil }
+        let hits = (search["hits"] as? [[String: Any]])
+            ?? (search["results"] as? [[String: Any]]) ?? []
+        var title: String?
+        for h in hits {
+            if let t = h["title"] as? String, !t.isEmpty { title = t; break }
+            if let p = h["path"] as? String, !p.isEmpty {
+                title = p.split(separator: "/").last
+                    .map { $0.replacingOccurrences(of: "_", with: " ") }
+                break
+            }
+        }
+        guard let title else { return nil }
+        var args: [String: Any] = ["title": title]
+        if let zim { args["zim"] = zim }
+        guard let res = try? await adapter.dispatch(tool: "discuss_article", args: args),
+              let raw = res["sections"] as? [[String: Any]], !raw.isEmpty
+        else { return nil }
+        let resolvedTitle = (res["title"] as? String) ?? title
+        let secs = raw.map { d in
+            ArticleSection(title: (d["title"] as? String) ?? "",
+                           level: (d["level"] as? Int) ?? 0,
+                           text: (d["text"] as? String) ?? "")
+        }
+        return (resolvedTitle, secs)
+    }
+
     /// Run the dispatched tool, record the trace, and synthesize a
     /// one-line assistant caption. Returns `true` when the fast path
     /// was used successfully and the LLM should be skipped.
@@ -2895,6 +3130,9 @@ public final class ChatSession {
                 rawResult: rawStr,
                 error: nil
             ))
+            if intent.toolName == "discuss_article" {
+                return handleDiscussEntry(dictArgs: dictArgs, fullResult: fullResult)
+            }
             let placesTools: Set<String> = [
                 "near_named_place", "near_places",
                 "nearby_stories", "nearby_stories_at_place",

@@ -47,6 +47,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     public let huggingFaceRepo: String
     public let ggufFilename: String
+    /// When set to an existing file, load this GGUF directly instead of
+    /// downloading from HuggingFace — lets the local Mac eval harness run
+    /// the on-disk shipping model without a multi-GB fetch.
+    public let localGGUFPath: String?
 
     // MARK: - State + llama.cpp handles
 
@@ -75,6 +79,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         displayName: String = "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
         huggingFaceRepo: String = "bartowski/google_gemma-3-4b-it-GGUF",
         ggufFilename: String = "google_gemma-3-4b-it-Q4_K_M.gguf",
+        localGGUFPath: String? = nil,
         approximateMemoryMB: Int = 3200,
         template: any ModelTemplate = Gemma3Template()
     ) {
@@ -82,6 +87,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         self.displayName = displayName
         self.huggingFaceRepo = huggingFaceRepo
         self.ggufFilename = ggufFilename
+        self.localGGUFPath = localGGUFPath
         self.approximateMemoryMB = approximateMemoryMB
         self.template = template
         // One-time global init. Safe to call repeatedly per
@@ -112,7 +118,12 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     public func load() async throws {
         set(.loading)
         do {
-            let path = try await ensureGGUFDownloaded()
+            let path: URL
+            if let lp = localGGUFPath, FileManager.default.fileExists(atPath: lp) {
+                path = URL(fileURLWithPath: lp)
+            } else {
+                path = try await ensureGGUFDownloaded()
+            }
             try openModel(at: path)
             set(.ready)
         } catch {

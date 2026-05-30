@@ -320,3 +320,93 @@ enum ProbeE2ECLI {
         }
     }
 }
+
+// MARK: - Multi-turn "let's discuss X" harness
+//
+// Drives a whole conversation through the real ChatSession on the Mac —
+// real libzim ZIM + the shipping LFM2.5 GGUF loaded from a LOCAL path (no
+// download). Discussion state persists across turns (no reset), so this
+// exercises the multi-article retrieval + corpus-fallback end to end and
+// prints each answer. Lets us iterate on the discuss flow without a phone.
+//
+//   MCPZimEvalCLI --probe-discuss \
+//     --zim ~/Downloads/wikipedia_en_top_nopic_2026-03.zim \
+//     [--gguf <path>] [--turn "..." --turn "..."]
+@MainActor
+enum ProbeDiscussCLI {
+    static let defaultTurns = [
+        "let's discuss the history of Lithuania",
+        "When did they get independence from the soviets?",
+        "What is the population?",
+        "How have they gotten along with Poland?",
+    ]
+
+    static func run(args inputArgs: [String]) async {
+        var zim: String?
+        var gguf = "/Users/jasontitus/experiments/mcpzim/tools/fine-tune/"
+            + "ft-out-lfm2.5-8b-v7full/lfm2.5-8b-a1b-ft.Q3_K_M.gguf"
+        var turns: [String] = []
+        var args = inputArgs[...]
+        while let a = args.first {
+            args = args.dropFirst()
+            switch a {
+            case "--zim":
+                zim = args.first.map { String($0) }
+                if !args.isEmpty { args = args.dropFirst() }
+            case "--gguf":
+                if let g = args.first { gguf = String(g); args = args.dropFirst() }
+            case "--turn":
+                if let t = args.first { turns.append(String(t)); args = args.dropFirst() }
+            default:
+                FileHandle.standardError.write(Data("probe-discuss: unknown arg \(a)\n".utf8))
+                exit(2)
+            }
+        }
+        guard let zim, !zim.isEmpty else {
+            FileHandle.standardError.write(Data("probe-discuss: --zim <path> required\n".utf8))
+            exit(2)
+        }
+        let scenario = turns.isEmpty ? defaultTurns : turns
+        print("== probe-discuss ==\nzim:   \(zim)\ngguf:  \(gguf)\nturns: \(scenario.count)\n")
+
+        let url = URL(fileURLWithPath: zim)
+        let reader: ZimReader
+        do { reader = try LibzimReader(url: url) }
+        catch { print("ZIM open failed: \(error)"); exit(3) }
+        let service = DefaultZimService(readers: [(url.lastPathComponent, reader)])
+        let adapter = await MCPToolAdapter(service: service, hasStreetzim: false)
+
+        let provider = LlamaCppProvider(
+            id: "lfm25-ft",
+            displayName: "LFM2.5 8B-A1B FT (Q3_K_M)",
+            huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
+            ggufFilename: "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+            localGGUFPath: gguf,
+            approximateMemoryMB: 4200,
+            template: LFM25Template())
+        print("loading model from local path…")
+        let t0 = Date()
+        do { try await provider.load() }
+        catch { print("model load failed: \(error)"); exit(4) }
+        print(String(format: "model loaded in %.1fs\n", Date().timeIntervalSince(t0)))
+
+        let session = ChatSession.forTesting(
+            providers: [provider], adapter: adapter, initialModelId: "lfm25-ft")
+        session.currentLocation = (lat: 37.441, lon: -122.155)
+
+        for (i, turn) in scenario.enumerated() {
+            print("─── [\(i + 1)/\(scenario.count)] YOU: \(turn)")
+            let rt = Date()
+            session.send(turn)
+            let deadline = Date().addingTimeInterval(180)
+            while session.isGenerating, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let text = (session.messages.last { $0.role == .assistant })?.text ?? "(no reply)"
+            print("    BOT (\(String(format: "%.1fs", Date().timeIntervalSince(rt))), \(text.count) chars):")
+            print("    " + text.replacingOccurrences(of: "\n", with: "\n    "))
+            print()
+        }
+        exit(0)
+    }
+}

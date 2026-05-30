@@ -729,6 +729,8 @@ public actor MCPToolAdapter {
             return body
         case "article_overview":
             return try await dispatchArticleOverview(args: args)
+        case "discuss_article":
+            return try await dispatchDiscussArticle(args: args)
         case "compare_articles":
             return try await dispatchCompareArticles(args: args)
         case "article_relationship":
@@ -959,6 +961,49 @@ public actor MCPToolAdapter {
         return WikiLinks.parse(html: article.text, max: max).map {
             ["title": $0.title, "path": $0.path]
         }
+    }
+
+    /// "Let's discuss X" — resolve the article and hand back ALL its sections
+    /// (with text). The host pins these as a discussion focus and answers
+    /// each follow-up from the relevant section(s), so the small model gets
+    /// only the passages a given question needs, never the whole article.
+    /// A miss returns the same {error, suggestions} did-you-mean shape as
+    /// `article_overview`, so a mis-heard title never spawns a confabulation.
+    private func dispatchDiscussArticle(args: [String: Any]) async throws -> [String: Any] {
+        let title = (args["title"] as? String) ?? ""
+        guard !title.isEmpty else {
+            return ["error": "discuss_article requires a non-empty `title`."]
+        }
+        let zim = args["zim"] as? String
+        let resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
+        do {
+            resolved = try await ArticleHeuristics.sectionsByTitle(
+                service: service, title: title, zim: zim
+            )
+        } catch {
+            let candidates = (try? await service.search(
+                query: title, limit: 8, kind: .wikipedia)) ?? []
+            let suggestions = Self.didYouMeanTitles(
+                requested: title, candidates: candidates, limit: 3
+            )
+            return [
+                "error": "no article titled \"\(title)\" in the offline Wikipedia",
+                "requested_title": title,
+                "suggestions": suggestions,
+            ]
+        }
+        // Raw section titles (lead stays "") so the host's
+        // rankSectionsForQuestion sees the lead as the lead.
+        return [
+            "discussion": true,
+            "title": resolved.title,
+            "zim": resolved.zim,
+            "path": resolved.path,
+            "section_count": resolved.sections.count,
+            "sections": resolved.sections.map { s -> [String: Any] in
+                ["title": s.title, "level": s.level, "text": s.text, "bytes": s.bytes]
+            },
+        ]
     }
 
     private func dispatchCompareArticles(args: [String: Any]) async throws -> [String: Any] {
