@@ -22,18 +22,44 @@ Without this, SPM fails to resolve `LlamaCppSwift` and the iOS build
 errors out on `import llama`. See `ios/LocalPackages/llama.cpp-swift/README.md`
 for the upgrade procedure.
 
+You also need the **Metal Toolchain** component once per machine — mlx-swift
+compiles `.metal` shaders, and a stock CLI Xcode install lacks it:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain   # downloads a DMG, a few min
+xcrun metal --version                          # confirm it works
+```
+
+Without it the build fails with `cannot execute tool 'metal' due to missing
+Metal Toolchain` (an mlx-swift_Cmlx target error, not our code).
+
 ## iOS app (on physical iPhone)
+
+### Headless / scripted build + deploy (verified 2026-05-30)
+
+A plain `xcodebuild ... build` from the CLI fails with `No Accounts: Add a new
+account in Accounts settings`. Authenticate with the App Store Connect API key
+(the same one `../spoken-testimony` uses — team `A6G8H8NGAM`); `-allowProvisioningUpdates`
+then auto-provisions a profile that includes the app's special entitlements
+(`increased-memory-limit` / `extended-virtual-addressing` in
+`MCPZimChat/MCPZimChat-iOS.entitlements`) — no Xcode GUI step needed.
 
 ```sh
 cd ios
-xcodegen generate
+xcodegen generate            # only if project.yml changed
 xcodebuild -project MCPZimChat.xcodeproj \
   -scheme MCPZimChat \
   -destination 'generic/platform=iOS' \
   -configuration Debug \
   -derivedDataPath build \
+  -skipMacroValidation \
+  -allowProvisioningUpdates \
+  -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_7C7256MDM6.p8 \
+  -authenticationKeyID 7C7256MDM6 \
+  -authenticationKeyIssuerID 69a6de81-894e-47e3-e053-5b8c7c11a4d1 \
   DEVELOPMENT_TEAM=A6G8H8NGAM \
-  build
+  build > /tmp/ios_build.log 2>&1
+grep -c "BUILD SUCCEEDED" /tmp/ios_build.log   # 1 = success (don't trust $? if piped)
 
 # install to Jazzman 17 (edit UUID if device changes)
 xcrun devicectl device install app \
@@ -50,6 +76,12 @@ xcrun devicectl device process launch \
   --device 5AE213CA-315A-532A-878B-2CC4EB051ABD \
   org.mcpzim.MCPZimChat
 ```
+
+Gotchas learned the hard way:
+- **`-skipMacroValidation`** is required — `MLXHuggingFace` exposes Swift macros Xcode otherwise blocks.
+- **The phone must be UNLOCKED to launch.** `install` works while locked; `process launch` fails with `FBSOpenApplicationErrorDomain error 7 (Locked)`. Unlock, then relaunch (or just tap the icon).
+- **iOS-only compile errors don't show up in `swift test`** — that only builds MCPZimKit, not the iOS target. Missing imports / optional unwraps / wrong dict keys in `ChatSession.swift` fail ONLY in this device build. Always device-build before claiming iOS code works.
+- When backgrounding the build, don't end the command in `echo` and trust the exit code — the echo makes the task report exit 0 even on BUILD FAILED. Grep the logfile for `BUILD SUCCEEDED`.
 
 Device UUIDs:
 - Jazzman 17 (iPhone 17 Pro Max): `5AE213CA-315A-532A-878B-2CC4EB051ABD`
