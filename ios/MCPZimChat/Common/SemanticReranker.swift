@@ -118,6 +118,19 @@ actor SemanticReranker {
 
     // MARK: - Embedding
 
+    /// Public sentence embedding for arbitrary text (article leads, drift
+    /// thread labels), reusing the same loaded `NLContextualEmbedding` as the
+    /// search reranker. Returns `nil` when the model/assets aren't available,
+    /// so the conversational touch-index degrades cleanly to its deterministic
+    /// thread order. Text is capped to keep embedding cost bounded.
+    func embedText(_ text: String) async -> [Float]? {
+        await loadIfNeeded()
+        guard let embedding else { return nil }
+        let capped = String(text.prefix(512))
+        guard let v = embed(capped, with: embedding) else { return nil }
+        return v.map(Float.init)
+    }
+
     /// Mean-pool the token-level vectors `NLContextualEmbedding`
     /// returns into one sentence embedding.
     nonisolated private func embed(_ text: String, with embedding: NLContextualEmbedding) -> [Double]? {

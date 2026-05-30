@@ -10,7 +10,7 @@ git** — you download it once per clone.
 
 ```sh
 cd ios/LocalPackages/llama.cpp-swift
-TAG=b8911   # keep in sync with the comment in Package.swift
+TAG=b9434   # keep in sync with the comment in Package.swift
 curl -L -o /tmp/llama.zip \
   "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-xcframework.zip"
 rm -rf llama.xcframework

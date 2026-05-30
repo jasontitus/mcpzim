@@ -905,7 +905,15 @@ public actor MCPToolAdapter {
                 "bytes": s.bytes,
             ]
         }
-        return [
+        // Lateral topic-drift: surface the article's outbound wikilinks so the
+        // conversation can move to a related subject ("the architect", "the war
+        // it's named after"), not just drill into its own sections.
+        // `ConversationThreads.articleThreads` reads this `related` array.
+        // Best-effort: a failed re-read just omits the links, never the overview.
+        let related = (try? await Self.relatedLinks(
+            service: service, path: resolved.path, zim: resolved.zim
+        )) ?? []
+        var result: [String: Any] = [
             "zim": resolved.zim,
             "path": resolved.path,
             "title": resolved.title,
@@ -920,6 +928,21 @@ public actor MCPToolAdapter {
             },
             "available_sections": outline,
         ]
+        if !related.isEmpty { result["related"] = related }
+        return result
+    }
+
+    /// Parse the raw article HTML for outbound wikilinks and shape them into the
+    /// `[{title, path}]` array the drift extractor consumes. Reads the article
+    /// once more (the section path is already resolved) — cheap relative to the
+    /// LLM turn and keeps `article_overview`'s primary path unchanged.
+    private static func relatedLinks(
+        service: any ZimService, path: String, zim: String, max: Int = 20
+    ) async throws -> [[String: Any]] {
+        let article = try await service.article(path: path, zim: zim)
+        return WikiLinks.parse(html: article.text, max: max).map {
+            ["title": $0.title, "path": $0.path]
+        }
     }
 
     private func dispatchCompareArticles(args: [String: Any]) async throws -> [String: Any] {
