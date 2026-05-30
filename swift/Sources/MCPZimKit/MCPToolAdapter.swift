@@ -387,6 +387,22 @@ public actor MCPToolAdapter {
                         + "\"nearest ___\" queries.",
                     inputSchemaJSON: Self.nearPlacesSchema(vocabulary: categoryVocabulary)
                 ),
+                MCPTool(
+                    name: "locate",
+                    description:
+                        "Resolve a SINGLE named place — a venue, landmark, "
+                        + "hospital, school, business, or address — to its "
+                        + "location and show it on the map. THE tool for "
+                        + "\"where is <X>?\" / \"show me <X>\" / \"find <X>\" "
+                        + "/ \"take me to <X>\" when X names a specific place. "
+                        + "Centers the map on the resolved place and drops a "
+                        + "labeled pin. Use this — NOT `near_places` (which "
+                        + "answers \"what's NEAR X\" with a list) and NOT "
+                        + "`article_overview` / `get_article_section` (those "
+                        + "fetch Wikipedia articles, not map locations). Pass "
+                        + "the full place name as `place`.",
+                    inputSchemaJSON: Self.locateSchema
+                ),
                 // Composite "tell me something interesting" tool — wraps
                 // near_places(has_wiki=true) + parallel lead-paragraph
                 // fetches so the model gets story-ready excerpts on one
@@ -562,6 +578,37 @@ public actor MCPToolAdapter {
                 kinds: args["kinds"] as? [String]
             )
             return ["count": places.count, "results": places.map(Self.encodePlace)]
+        case "locate":
+            // Resolve ONE named place to a single labeled pin and center the
+            // map on it. Reuses the geocode path (the search-data index,
+            // present even on `--no-llm-bundle` ZIMs) and the near_places
+            // render shape so the host's PlacesWebView draws a pin + popup.
+            // Prefer place/POI matches over `addr` (a bare "Burbank" must not
+            // bind to a "Burbank Drive"); fall back to an all-kinds pass.
+            let locateQuery = (args["place"] as? String) ?? ""
+            let locateZim = args["zim"] as? String
+            var locateHits = try await service.geocode(
+                query: locateQuery, limit: 1, zim: locateZim, kinds: ["place", "poi"]
+            )
+            if locateHits.isEmpty {
+                locateHits = try await service.geocode(
+                    query: locateQuery, limit: 1, zim: locateZim, kinds: nil
+                )
+            }
+            guard let hit = locateHits.first else {
+                throw ZimServiceError.noMatch(locateQuery)
+            }
+            let locateBucket = hit.subtype.isEmpty ? hit.kind : hit.subtype
+            return Self.encodeNearPlaces(
+                query: locateQuery,
+                resolved: hit,
+                radius: 0,
+                result: NearPlacesResult(
+                    totalInRadius: 1,
+                    breakdown: [locateBucket: 1],
+                    results: [(place: hit, distanceMeters: 0)]
+                )
+            )
         case "show_map":
             let place = (args["place"] as? String) ?? ""
             let zim = args["zim"] as? String
@@ -1883,6 +1930,13 @@ public actor MCPToolAdapter {
         "limit":{"type":"integer","default":5},
         "zim":{"type":"string"},
         "kinds":{"type":"array","items":{"type":"string"},"description":"Optional type filter: addr, place, poi, ..."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let locateSchema: Data = #"""
+    {"type":"object","required":["place"],"properties":{
+        "place":{"type":"string","description":"Full name of the place to locate (e.g. \"Stanford Hospital\", \"Golden Gate Bridge\", \"1600 Amphitheatre Parkway\")."},
+        "zim":{"type":"string"}
     }}
     """#.data(using: .utf8)!
 

@@ -792,8 +792,13 @@ public final class ChatSession {
             `near_places` (as above) to get the winning hit's \
             lat/lon, then `plan_driving_route` from \
             (\(latStr), \(lonStr)) to those coords.
+          * "where is <place>?" / "show me <place>" / "find \
+            <place>" → `locate(place="<place>")` — resolves the one \
+            named place and drops a pin on it. NOT `near_places` \
+            (that lists what's nearby) and NOT `get_article_section` \
+            (that's a Wikipedia article, not a map location).
           * "map of where I am" / "what neighborhood is this" → \
-            `show_map(place="<the nearest named place>")`, OR \
+            `locate(place="<the nearest named place>")`, OR \
             fall back to `near_places` and describe the top result.
         """
     }
@@ -2234,6 +2239,7 @@ public final class ChatSession {
                 let placesTools: Set<String> = [
                     "near_named_place", "near_places",
                     "nearby_stories", "nearby_stories_at_place",
+                    "locate",
                 ]
                 if placesTools.contains(call.name) {
                     let synth = IntentRouter.synthesizePlacesReply(
@@ -2842,6 +2848,7 @@ public final class ChatSession {
             let placesTools: Set<String> = [
                 "near_named_place", "near_places",
                 "nearby_stories", "nearby_stories_at_place",
+                "locate",
             ]
             let routingTools: Set<String> = [
                 "route_from_places", "plan_driving_route",
@@ -2980,7 +2987,7 @@ public final class ChatSession {
             let placesAndRouting: Set<String> = [
                 "near_named_place", "near_places", "nearby_stories",
                 "nearby_stories_at_place", "route_from_places",
-                "plan_driving_route", "what_is_here",
+                "plan_driving_route", "what_is_here", "locate",
             ]
             let errText = String(describing: error)
             let isGeocodeMiss = errText.contains("could not resolve")

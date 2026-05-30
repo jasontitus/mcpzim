@@ -424,6 +424,16 @@ public enum IntentRouter {
         args: [String: Any],
         fullResult: [String: Any]
     ) -> String {
+        // `locate` resolves a single named place to a pin; the map bubble
+        // below is the real answer, so the caption just names what resolved
+        // (which may differ from what was asked — e.g. "Stanford Hospital"
+        // → "Stanford Health Care").
+        if toolName == "locate" {
+            let name = (fullResult["resolved"] as? [String: Any])?["name"] as? String
+                ?? (fullResult["results"] as? [[String: Any]])?.first?["name"] as? String
+                ?? (args["place"] as? String) ?? "the place"
+            return "\(name) — shown on the map below."
+        }
         let kind: String = {
             if let k = (args["kinds"] as? [String])?.first, !k.isEmpty { return k }
             if let k = args["kinds"] as? String, !k.isEmpty { return k }

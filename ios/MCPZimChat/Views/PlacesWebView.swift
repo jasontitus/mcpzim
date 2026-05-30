@@ -14,17 +14,15 @@ import SwiftUI
 import WebKit
 import MCPZimKit
 
-/// `true` if the trace is one of the four "nearby" tools AND it
-/// returned at least one geocoded place. Other traces should not
-/// light up the places map (e.g. `what_is_here` returns a single
-/// named place but we already have `show_map` for that).
+/// `true` if the trace is one of the place-returning tools (see
+/// `placesToolNames` in MCPZimKit — the `near_*` / `nearby_stories*`
+/// family plus `locate`) AND it returned at least one geocoded place.
+/// Other traces should not light up the places map. Gating on the kit's
+/// canonical set — rather than a local copy that once drifted and missed
+/// `locate` — keeps this render gate in lockstep with the parser.
 func traceHasPlaces(_ trace: ToolCallTrace) -> Bool {
     guard trace.succeeded else { return false }
-    let placesTools: Set<String> = [
-        "near_named_place", "near_places",
-        "nearby_stories", "nearby_stories_at_place",
-    ]
-    guard placesTools.contains(trace.name) else { return false }
+    guard placesToolNames.contains(trace.name) else { return false }
     return !parsePlaces(from: trace).places.isEmpty
 }
 

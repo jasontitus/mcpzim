@@ -15,6 +15,9 @@ import Foundation
 public let placesToolNames: Set<String> = [
     "near_named_place", "near_places",
     "nearby_stories", "nearby_stories_at_place",
+    // `locate` resolves one named place to a single pin in the same
+    // `results` shape, so its trace renders on the map too.
+    "locate",
 ]
 
 public struct PlacesPayload: Equatable, Sendable {
