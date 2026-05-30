@@ -4,6 +4,7 @@
 // set of available models, the current chat transcript, and a reference to
 // the MCPZim tool adapter that a Gemma 4 tool loop can dispatch through.
 
+import CoreLocation
 import CryptoKit
 import Foundation
 import MCPZimKit
@@ -3021,6 +3022,7 @@ public final class ChatSession {
             // rows we can actually embed (a bare bar/shop has no lead to index).
             "has_wiki": true,
         ]
+        guard let adapter = self.adapter else { return }
         guard let result = try? await adapter.dispatch(
             tool: "near_places", args: args
         ) else { return }
