@@ -85,16 +85,24 @@ struct PlacesWebView: View {
                 .frame(height: 340)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .bottomLeading) {
+                    // Labeled capsule (not a bare icon) so "view the map full
+                    // screen" is discoverable — the old `.thinMaterial` circle
+                    // blended into the tiles and users couldn't find it.
                     Button {
                         presentFullscreen = true
                     } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .padding(8)
-                            .background(.thinMaterial, in: Circle())
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            Text("Full screen")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.thinMaterial, in: Capsule())
+                        .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
                     }
-                    .accessibilityLabel("Expand map")
-                    .padding(8)
+                    .accessibilityLabel("Expand map to full screen")
+                    .padding(12)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     // Mirror `RouteWebView`'s Directions button — a one-
@@ -623,6 +631,30 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
         }
     }
 
+    /// Hand a tapped external link off to the system instead of trying to
+    /// navigate the map webview to it (which silently does nothing). Only
+    /// fires for user link taps — tile/resource loads are `.other` and pass
+    /// through. Backstops the streetzim viewer's OWN popups on older ZIMs
+    /// whose links aren't routed through the `mcpzim` bridge above.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard navigationAction.navigationType == .linkActivated,
+              let url = navigationAction.request.url,
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "tel", "mailto", "facetime"].contains(scheme)
+        else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        #if canImport(UIKit)
+        UIApplication.shared.open(url)
+        #elseif canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "mcpzim",
               let payload = message.body as? [String: Any] else { return }
@@ -684,9 +716,39 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
             #if canImport(UIKit)
             presentShareSheet(items: items)
             #endif
+        case "website", "call":
+            let value = (payload["value"] as? String) ?? ""
+            openExternalURL(value, isPhone: action == "call")
         default:
             log?("popup action: unknown \(action)")
         }
+    }
+
+    /// Open a popup's Website / Call link through the system. A WKWebView
+    /// won't follow `target="_blank"` or `tel:` on its own, so the popup
+    /// posts the value here and we hand it to UIApplication / NSWorkspace.
+    private func openExternalURL(_ raw: String, isPhone: Bool) {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        if isPhone {
+            if !s.lowercased().hasPrefix("tel:") {
+                s = "tel:" + s.filter { !$0.isWhitespace }
+            }
+        } else if !s.contains("://"), !s.lowercased().hasPrefix("mailto:") {
+            // Bare "example.com" → assume https so the URL is openable.
+            s = "https://" + s
+        }
+        guard let url = URL(string: s) else {
+            log?("popup link: bad URL \(raw)")
+            return
+        }
+        #if canImport(UIKit)
+        UIApplication.shared.open(url, options: [:]) { [weak self] ok in
+            if !ok { self?.log?("popup link: open failed \(url.absoluteString)") }
+        }
+        #elseif canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 
     #if canImport(UIKit)
@@ -976,6 +1038,18 @@ private func loadPlacesSpec(
         } catch (e) {}
         return false;
       };
+      // External-link helper — Website / Call go through the native
+      // bridge (→ UIApplication.open) because a WKWebView drops
+      // target="_blank" and `tel:` link clicks on its own, so a plain
+      // <a href> did nothing.
+      window.mcpzimPopupLink = function(kind, value) {
+        try {
+          window.webkit.messageHandlers.mcpzim.postMessage({
+            action: kind, value: value
+          });
+        } catch (e) {}
+        return false;
+      };
       // Popup HTML builder — small label + description row plus the
       // two icon buttons (➤ Directions, ⤴ Share). `esc` escapes
       // angle brackets so the label/description can't close the div
@@ -1011,16 +1085,18 @@ private func loadPlacesSpec(
         // Wikipedia tag); plumbed through PlacesPayload.Place.website
         // to here.
         if (website) {
-          html += '<a href="' + escAttr(website) + '" target="_blank" rel="noopener noreferrer"'
-            + ' style="background:#0ea5e9;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;">'
-            + '🌐 Website</a>';
+          var jsWeb = String(website).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+          html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'website\\', \\'' + jsWeb + '\\');"'
+            + ' style="background:#0ea5e9;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
+            + '🌐 Website</button>';
         }
-        // Phone button — `tel:` URI triggers the dialer when tapped
-        // in a WKWebView.
+        // Phone button — posts to the native bridge, which opens the
+        // `tel:` URL via UIApplication (a WKWebView won't dial on its own).
         if (phone) {
-          html += '<a href="tel:' + escAttr(phone) + '"'
-            + ' style="background:#22c55e;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;">'
-            + '📞 Call</a>';
+          var jsPhone = String(phone).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+          html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'call\\', \\'' + jsPhone + '\\');"'
+            + ' style="background:#22c55e;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
+            + '📞 Call</button>';
         }
         if (wikiPath) {
           // "Read article" dispatches `get_article_section(lead)`

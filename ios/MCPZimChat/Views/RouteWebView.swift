@@ -115,18 +115,25 @@ struct RouteWebView: View {
                     .frame(height: 480)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(alignment: .bottomLeading) {
-                        // Placed bottom-left so it doesn't collide with
+                        // Labeled capsule (not a bare icon) so full-screen is
+                        // discoverable — the old `.thinMaterial` circle blended
+                        // into the map. Bottom-left so it doesn't collide with
                         // MapLibre's top-right zoom (+/-) controls.
                         Button {
                             fullscreenIntent = FullscreenIntent(mode: nil)
                         } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 14, weight: .semibold))
-                                .padding(8)
-                                .background(.thinMaterial, in: Circle())
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                Text("Full screen")
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(.thinMaterial, in: Capsule())
+                            .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
                         }
-                        .accessibilityLabel("Expand map")
-                        .padding(8)
+                        .accessibilityLabel("Expand map to full screen")
+                        .padding(12)
                     }
                     .padding(.top, 4)
                 if supportsDriveMode { driveModeRow }
