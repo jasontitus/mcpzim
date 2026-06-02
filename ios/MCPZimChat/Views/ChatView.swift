@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import SwiftUI
+import MCPZimKit
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -379,6 +380,12 @@ private struct MessageRow: View {
                         copyButton.padding(6)
                     }
                 }
+                // Tappable "where to go next" chips — only on the newest
+                // assistant message (older offers are stale once the focus
+                // has moved on). A tap dispatches the pick via ChatSession.
+                if isLatestAssistant, !message.suggestions.isEmpty {
+                    suggestionChips(message.suggestions)
+                }
                 if let elapsed = message.elapsed,
                    !displayed.isEmpty,
                    !session.isGenerating || message.id != session.messages.last?.id
@@ -404,6 +411,38 @@ private struct MessageRow: View {
         case .system:
             EmptyView()
         }
+    }
+
+    /// Horizontal row of tappable drift-thread chips under the latest reply.
+    /// Each chip dispatches `ChatSession.selectSuggestion`, which re-opens the
+    /// topic exactly as typing it would. Disabled mid-generation so a tap
+    /// can't race an in-flight turn.
+    @ViewBuilder
+    private func suggestionChips(_ threads: [DiscoveryThread]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(threads, id: \.self) { thread in
+                    Button {
+                        session.selectSuggestion(thread)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.turn.down.right").font(.caption2)
+                            Text(thread.label).lineLimit(1)
+                        }
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35)))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
+        }
+        .disabled(session.isGenerating)
     }
 
     @ViewBuilder

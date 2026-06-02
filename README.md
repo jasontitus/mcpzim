@@ -1,4 +1,34 @@
-# mcpzim
+# Zimfo
+
+**Zimfo** is an offline, on-device chat app (iOS + macOS) that answers
+questions from locally-loaded [ZIM](https://wiki.openzim.org/) archives —
+Wikipedia, OpenStreetMap street data ([streetzim](https://github.com/jasontitus/streetzim)),
+and medical ([mdwiki](https://mdwiki.org/)) — using a local fine-tuned LLM
+that drives a tool loop over those archives. **Nothing leaves the device.**
+
+Ask *"tell me about the Duchy of Lithuania"*, *"how do solar panels work?"*,
+*"what's near me?"*, *"how far is it to the cathedral?"*, or *"compare Musk
+and Bezos"* — Zimfo searches the ZIMs, reads the right article, and answers.
+Follow-ups (*"tell me more"*, *"yes"*, *"what's near there?"*, *"the second
+one"*) resolve against a deterministic on-device conversation focus rather
+than the small model's own memory, so a walking conversation actually holds
+together.
+
+This repo has three layers, smallest-dependency first:
+
+- **The shared engine — [`swift/MCPZimKit`](swift/)**: a transport-agnostic,
+  Foundation-only Swift package. ZIM tool adapter, A\* routing-graph parser +
+  router, prefix geocoder, and the conversation-state machine (focus,
+  reference resolution, drift threads). Exercised by `swift test`.
+- **The app — [`ios/`](ios/)**: the SwiftUI Zimfo app (on-device Gemma 4 /
+  fine-tuned LFM2.5 via MLX + llama.cpp). Architecture and the pieces that
+  took the most iteration are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **The reusable kernel — the `mcpzim` MCP server (Python)**: the original
+  backend, documented below. It exposes the same ZIM tools to *any* agent
+  host over [MCP](https://modelcontextprotocol.io), so the engine isn't
+  locked to the app.
+
+## The `mcpzim` MCP server (Python)
 
 An [MCP](https://modelcontextprotocol.io) server that makes a group of offline
 [ZIM](https://wiki.openzim.org/) files available to local LLM agents. Point it

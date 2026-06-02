@@ -83,10 +83,11 @@ public final class ChatSession {
         public let message: String
     }
     public var debugEntries: [DebugEntry] = []
-    // Default ON — during active dev it's easier to see tool traces +
-    // memory pressure inline than to remember to toggle the pane every
-    // launch. User can turn it off in Library → Debug.
-    public var showDebugPane = true
+    // Default OFF — this ships as a discussion app, not a dev console, so a
+    // first launch shouldn't show tool traces + memory pressure. Turn it back
+    // on in Library → Debug (that toggle also re-exposes the "Send Debug
+    // Report" button used for the gist diagnostics workflow).
+    public var showDebugPane = false
     /// Debug-pane cap. Tuned for interactive use; tests that want to
     /// scan the full log can bump this before a long scenario.
     public var maxDebugEntries = 500
@@ -3642,6 +3643,10 @@ public final class ChatSession {
               messages[idx].role == .assistant else { return }
         let text = messages[idx].text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        // Attach the vetted threads as tappable chips regardless of whether we
+        // also append a prose offer below — the chips make any offer (ours or
+        // the model's own phrasing) actionable with a single tap.
+        messages[idx].suggestions = offerable
         let tail = text.suffix(90).lowercased()
         if tail.contains("want to") || tail.contains("would you like")
             || tail.contains("shall i") || tail.contains("tell you about")
@@ -3649,6 +3654,19 @@ public final class ChatSession {
             return
         }
         messages[idx].text = text + "\n\n" + line
+    }
+
+    /// A tapped suggestion chip. Clears the chips on the offering message (so a
+    /// pick doesn't leave a stale offer behind) and dispatches it as a normal
+    /// turn — the router re-opens a topic via `article_overview`, identical to
+    /// the user typing or saying "tell me about <label>". Mirrors the
+    /// `ReferenceResolver` `.thread` binding that already handles the spoken
+    /// "yes" / "the war" path.
+    public func selectSuggestion(_ thread: DiscoveryThread) {
+        if let idx = messages.indices.last, messages[idx].role == .assistant {
+            messages[idx].suggestions = []
+        }
+        send("tell me about \(thread.label)")
     }
 
     /// Order candidate threads by cosine similarity of each thread's label to

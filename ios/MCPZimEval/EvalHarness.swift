@@ -375,6 +375,69 @@ final class EvalHarness {
             )
         ),
 
+        // — Conversation-focus follow-ups (2026-06 review P1s) —
+        //   The SECOND turn is a focus-bound follow-up that the deterministic
+        //   IntentRouter.continuationIntent must route, which only works if the
+        //   FIRST turn captured the right state into ConversationFocus. These
+        //   verify the P1 fixes end-to-end through ChatSession (turn 2 is
+        //   model-independent — it's a fast-path — so it's a clean assertion).
+
+        // P1b: "where am I?" must record the place so "tell me more" re-opens
+        // its article instead of dead-ending.
+        .init(
+            name: "where_am_i_then_more",
+            turns: [
+                (user: "Where am I?",
+                 expect: TurnExpect(toolsCalledAny: ["what_is_here"])),
+                (user: "Tell me more about it.",
+                 expect: TurnExpect(
+                    toolsCalledAny: ["article_overview", "get_article",
+                                     "get_article_section"],
+                    responseExcludes: ["i don't see", "i do not see",
+                                        "don't have"])),
+            ],
+            hostState: HostStateSnapshot(
+                activeRoute: nil,
+                currentLocation: .init(lat: 37.7793, lon: -122.4193)
+            )
+        ),
+
+        // P1c: route_from_places must record the RESOLVED destination's coords
+        // so "what's near there?" routes to near_places at the destination,
+        // not an article lookup.
+        .init(
+            name: "route_then_whats_near_there",
+            turns: [
+                (user: "Give me driving directions from San Francisco City Hall to the Ferry Building.",
+                 expect: TurnExpect(toolsCalledAny: ["route_from_places"])),
+                (user: "What's near there?",
+                 expect: TurnExpect(
+                    toolsCalledAny: ["near_places", "near_named_place"],
+                    toolsNotCalled: ["article_overview"])),
+            ],
+            hostState: HostStateSnapshot(
+                activeRoute: nil,
+                currentLocation: .init(lat: 37.7793, lon: -122.4193)
+            )
+        ),
+
+        // P1a: after an overview offers drift threads, a bare "yes" accepts the
+        // lead thread and re-opens it (the .thread reference binding). The pick
+        // is deterministic, so turn 2 must call an article tool, not stall.
+        .init(
+            name: "offer_then_yes",
+            turns: [
+                (user: "Tell me about the Colosseum.",
+                 expect: TurnExpect(toolsCalledAny: ["article_overview",
+                                                     "get_article"])),
+                (user: "Yes.",
+                 expect: TurnExpect(
+                    toolsCalledAny: ["article_overview", "get_article",
+                                     "get_article_section"],
+                    responseExcludes: ["i don't", "i do not"])),
+            ]
+        ),
+
         // — Phase A of EXTENDED_CONTEXT_EVAL.md: multi-turn
         //   "walking with headphones, listening" conversations —
 

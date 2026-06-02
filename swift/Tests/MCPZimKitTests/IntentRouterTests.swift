@@ -321,6 +321,52 @@ final class IntentRouterTests: XCTestCase {
             IntentRouter.classify("how far is it")?.toolName, "route_from_places")
     }
 
+    // MARK: - Focus-bound follow-ups (continuationIntent — review P1s)
+
+    private func focusWithPlace(
+        _ name: String, lat: Double, lon: Double
+    ) -> ConversationFocus {
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: name, kind: .place, lat: lat, lon: lon))
+        return f
+    }
+
+    func testContinuationTellMeMoreReopensPlaceArticle() {
+        // After "where am I?" records the place (P1b), "tell me more about it"
+        // re-opens its article — no travel/proximity cue, so article_overview.
+        let f = focusWithPlace("San Francisco", lat: 37.7793, lon: -122.4193)
+        let i = IntentRouter.continuationIntent("tell me more about it", focus: f)
+        XCTAssertEqual(i?.toolName, "article_overview")
+        XCTAssertEqual(i?.args["title"], .string("San Francisco"))
+    }
+
+    func testContinuationWhatsNearThereUsesRememberedCoords() {
+        // "what's near there?" against a remembered place routes to near_places
+        // AT its coords — proves a routed destination (P1c) or a what_is_here
+        // place (P1b) carried its coordinates into focus, and that anaphoric
+        // "there" binds (it isn't a pronoun, so this needs the locative rule).
+        let f = focusWithPlace("Ferry Building", lat: 37.7955, lon: -122.3937)
+        let i = IntentRouter.continuationIntent("what's near there?", focus: f)
+        XCTAssertEqual(i?.toolName, "near_places")
+        XCTAssertEqual(i?.args["lat"], .double(37.7955))
+        XCTAssertEqual(i?.args["lon"], .double(-122.3937))
+    }
+
+    func testContinuationYesAcceptsOfferedThread() {
+        // A bare "yes" after an offer re-opens the lead drift thread (P1a).
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Colosseum", kind: .topic))
+        f.setThreads([
+            DiscoveryThread(label: "Ancient Rome", kind: .topic, source: .wikilink),
+            DiscoveryThread(label: "Vespasian", kind: .topic, source: .wikilink),
+        ])
+        let i = IntentRouter.continuationIntent("yes", focus: f)
+        XCTAssertEqual(i?.toolName, "article_overview")
+        XCTAssertEqual(i?.args["title"], .string("Ancient Rome"))
+    }
+
     func testClassifyQuestionsAreNotPlaces() {
         // Don't misclassify "how does X work" or "where can I find Y"
         // as places searches. Some of these ("tell me about volcanoes

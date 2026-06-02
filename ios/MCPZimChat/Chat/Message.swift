@@ -41,6 +41,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     ///     body the ChatSession fed back to the model.
     /// Empty for pure-reply assistant turns and for non-assistant roles.
     public var toolRoundTrips: [ToolRoundTripEntry] = []
+    /// Vetted "where to go next" drift threads the assistant offered on this
+    /// turn. The UI renders them as tappable chips on the latest assistant
+    /// message; a tap dispatches the pick exactly as typing/saying it would
+    /// (see `ChatSession.selectSuggestion`). Empty when nothing was offered.
+    public var suggestions: [DiscoveryThread] = []
 
     public init(id: UUID = UUID(), role: Role, text: String = "",
                 toolCalls: [ToolCallTrace] = [],

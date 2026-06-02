@@ -179,6 +179,27 @@ public enum ReferenceResolver {
             // 0 matches: fall through — "the X" may be a fresh topic.
         }
 
+        // ---- 2a. Locative "there" → most-recent place --------------------
+        // "what's near there?", "how far from there?" — anaphoric "there"
+        // points at the last place we have coordinates for (a routed
+        // destination, a what_is_here spot), so continuationIntent can route
+        // from/around it. Gated on a locational cue so "are we there yet?"
+        // doesn't bind. ("here" is deictic — left to the GPS-based what_is_here
+        // / near-me paths.)
+        if words.contains("there") {
+            let locational = ["near", "around", "nearby", "close", "how far",
+                              "distance", "how long", "walk", "drive",
+                              "directions", "route", "get to"]
+            if locational.contains(where: { lower.contains($0) }),
+               let place = focus.mostRecent(kind: .place) {
+                return ResolvedReference(
+                    binding: .entity(place),
+                    rewrittenQuery: text,
+                    isContinuation: true
+                )
+            }
+        }
+
         // ---- 2b. Named drift thread ("the war", "the bridge it crosses") --
         // When threads are open and there is NO on-screen list to pick from,
         // a content-word hit on a unique thread label binds to that thread.
