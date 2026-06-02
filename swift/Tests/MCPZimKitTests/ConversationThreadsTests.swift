@@ -81,6 +81,28 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(threads[0].zimPath, "A/Fenway_Park")
     }
 
+    func testWhatIsHereOffersWikiBackedNeighbours() {
+        // "Where am I?" surfaces the geocode's runners-up (under `nearby`) as
+        // drift threads. They're `.topic` so the place-thread offer filter
+        // (drops path-less `.place` threads) keeps them.
+        let result: [String: Any] = [
+            "nearest_named_place": "Palo Alto",
+            "nearby": [
+                ["name": "Stanford Memorial Church", "wikipedia": "en:Stanford Memorial Church",
+                 "lat": 37.4281, "lon": -122.1701, "distance_m": 300],
+                ["name": "Cantor Arts Center", "wikipedia": "en:Cantor Arts Center",
+                 "lat": 37.4324, "lon": -122.1702, "distance_m": 520],
+            ],
+        ]
+        let threads = ConversationThreads.extract(
+            toolName: "what_is_here", result: result)
+        XCTAssertEqual(threads.map(\.label),
+            ["Stanford Memorial Church", "Cantor Arts Center"])
+        XCTAssertTrue(threads.allSatisfy { $0.kind == .topic },
+            "neighbours offered as topics survive the place-thread offer filter")
+        XCTAssertEqual(threads[0].note, "300 m away")
+    }
+
     func testArticleResultYieldsLinksThenSections() {
         let result: [String: Any] = [
             "html": "<a href=\"Stanford_White\">Stanford White</a>",

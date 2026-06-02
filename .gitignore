@@ -20,6 +20,7 @@ swift/.build/
 swift/.swiftpm/
 ios/.swiftpm/
 ios/build/
+ios/build-mac/
 ios/LocalPackages/*/.build/
 ios/LocalPackages/*/.swiftpm/
 tools/*/.build/

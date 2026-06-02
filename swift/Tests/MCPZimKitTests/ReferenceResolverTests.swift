@@ -128,4 +128,62 @@ final class ReferenceResolverTests: XCTestCase {
             XCTFail("expected ambiguity, got \(r.binding)")
         }
     }
+
+    // MARK: - Drift-thread acceptance ("yes" / "the war")
+
+    private func focusWithThreads(
+        primary: String, _ threads: [DiscoveryThread]
+    ) -> ConversationFocus {
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        if !primary.isEmpty { f.remember(FocusEntity(name: primary, kind: .topic)) }
+        f.setThreads(threads)
+        return f
+    }
+
+    func testBareYesAcceptsLeadThread() {
+        let f = focusWithThreads(primary: "Stanford Memorial Church", [
+            DiscoveryThread(label: "Stanford White", kind: .topic, source: .wikilink),
+            DiscoveryThread(label: "World War II", kind: .topic, source: .wikilink),
+        ])
+        let r = ReferenceResolver.resolve("yes", focus: f)
+        XCTAssertTrue(r.isContinuation)
+        XCTAssertEqual(r.boundEntity?.name, "Stanford White",
+            "a bare affirmative accepts the lead drift thread")
+        if case .thread = r.binding {} else {
+            XCTFail("expected a .thread binding, got \(r.binding)")
+        }
+    }
+
+    func testNamedThreadBindsByLabel() {
+        let f = focusWithThreads(primary: "Stanford Memorial Church", [
+            DiscoveryThread(label: "Stanford White", kind: .topic, source: .wikilink),
+            DiscoveryThread(label: "World War II", kind: .topic, source: .wikilink),
+        ])
+        let r = ReferenceResolver.resolve("tell me about the war", focus: f)
+        XCTAssertEqual(r.boundEntity?.name, "World War II",
+            "'the war' uniquely names the WWII thread")
+    }
+
+    func testBareYesWithNoOfferDoesNotBindThread() {
+        // No threads open: "yes" has nothing to accept and must fall through
+        // (not get rewritten into a nonsense "yes <subject>" continuation).
+        let f = focusWithPrimary("Pizza")
+        let r = ReferenceResolver.resolve("yes", focus: f)
+        if case .thread = r.binding {
+            XCTFail("no offer open — 'yes' must not bind a thread")
+        }
+    }
+
+    func testEllipticalStemDoesNotMatchThreadLabel() {
+        // "how old?" must bind the SUBJECT, not a thread whose label merely
+        // contains "old" — the stopword/length filter in matchOpenThread is
+        // what prevents that false match.
+        let f = focusWithThreads(primary: "the Colosseum", [
+            DiscoveryThread(label: "Old North Church", kind: .topic, source: .wikilink),
+        ])
+        let r = ReferenceResolver.resolve("how old", focus: f)
+        XCTAssertEqual(r.boundEntity?.name, "the Colosseum",
+            "an elliptical stem binds the subject, not a label-overlap thread")
+    }
 }

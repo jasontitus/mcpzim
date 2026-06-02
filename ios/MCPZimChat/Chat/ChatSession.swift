@@ -3501,9 +3501,36 @@ public final class ChatSession {
             if !list.isEmpty { focus.setLastList(list) }
         }
 
-        if toolName == "route_from_places",
-           let dest = args["destination"] as? String, !dest.isEmpty {
-            focus.remember(FocusEntity(name: dest, kind: .place))
+        if toolName == "route_from_places" {
+            // Prefer the RESOLVED destination — it carries the canonical name
+            // plus coordinates, so a follow-up "what's near there?" / "how far
+            // back?" has real coords instead of re-geocoding a bare string.
+            let destResolved = result["destination_resolved"] as? [String: Any]
+            let destName = (destResolved?["name"] as? String)
+                ?? (args["destination"] as? String) ?? ""
+            if !destName.isEmpty {
+                focus.remember(FocusEntity(
+                    name: destName, kind: .place,
+                    lat: dbl(destResolved?["lat"]), lon: dbl(destResolved?["lon"])))
+            }
+        }
+
+        if toolName == "what_is_here" {
+            // "Where am I?" must not be a conversational dead end: remember the
+            // place so "tell me more" re-opens its article and "what's near
+            // here?" reuses its coordinates. Prefer the resolved wiki title (a
+            // clean article handle) over the bare admin name.
+            let placeName = (result["wiki_title"] as? String)
+                ?? (result["nearest_named_place"] as? String) ?? ""
+            if !placeName.isEmpty {
+                let lat = dbl(result["place_lat"]) ?? dbl(result["lat"])
+                let lon = dbl(result["place_lon"]) ?? dbl(result["lon"])
+                focus.remember(FocusEntity(
+                    name: placeName, kind: .place, lat: lat, lon: lon))
+                if let summary = result["wiki_summary"] as? String, !summary.isEmpty {
+                    indexText(key: placeName, title: placeName, text: summary)
+                }
+            }
         }
 
         let threads = ConversationThreads.rank(

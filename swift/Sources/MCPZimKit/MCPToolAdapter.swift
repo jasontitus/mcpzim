@@ -1530,6 +1530,22 @@ public actor MCPToolAdapter {
                 out["wiki_summary"] = summary
             }
         }
+        // Runners-up: the other wiki-backed places within the geocode radius
+        // become conversational drift threads ("you're in X — want to hear
+        // about the museum next door?"). The nearest place is the focus
+        // subject, so skip it; keep only wiki-backed neighbours so each offer
+        // leads to a real article.
+        let siblings: [[String: Any]] = nearest.results.dropFirst().compactMap { r in
+            guard let w = r.place.wiki, !w.isEmpty else { return nil }
+            return [
+                "name": r.place.name,
+                "wikipedia": w,
+                "lat": r.place.lat,
+                "lon": r.place.lon,
+                "distance_m": Int(r.distanceMeters.rounded()),
+            ]
+        }
+        if !siblings.isEmpty { out["nearby"] = Array(siblings.prefix(4)) }
         return out
     }
 

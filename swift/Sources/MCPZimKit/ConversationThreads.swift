@@ -41,6 +41,8 @@ public enum ConversationThreads {
             return articleThreads(result)
         case "compare_articles":
             return compareThreads(result)
+        case "what_is_here":
+            return whatIsHereThreads(result)
         default:
             return []
         }
@@ -70,6 +72,32 @@ public enum ConversationThreads {
                 lat: lat, lon: lon,
                 note: note
             ))
+        }
+        return out
+    }
+
+    /// "Where am I?" surfaces the wiki-backed places AROUND the user (the
+    /// reverse-geocode's runners-up, carried under `nearby`) as "want to hear
+    /// about it?" threads. The nearest place itself becomes the focus subject,
+    /// so the drift is to its neighbours — not back to itself.
+    private static func whatIsHereThreads(_ result: [String: Any]) -> [DiscoveryThread] {
+        let rows = (result["nearby"] as? [[String: Any]]) ?? []
+        var out: [DiscoveryThread] = []
+        for row in rows {
+            guard let label = firstString(row, "wiki_title", "label", "name", "title"),
+                  !label.isEmpty else { continue }
+            // `.topic`, not `.place`: these neighbours carry a wiki cross-ref
+            // rather than a clean ZIM path, so the offer filter would drop a
+            // path-less `.place` thread. As topics they read as "hear about
+            // it" (→ article_overview) while still carrying coords.
+            out.append(DiscoveryThread(
+                label: label,
+                kind: .topic,
+                source: .nearbyPlace,
+                zimPath: row["wiki_path"] as? String,
+                lat: doubleField(row, "lat"),
+                lon: doubleField(row, "lon"),
+                note: doubleField(row, "distance_m").map(distanceNote)))
         }
         return out
     }

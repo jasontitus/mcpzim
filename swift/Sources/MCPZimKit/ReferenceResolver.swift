@@ -33,6 +33,11 @@ public struct ResolvedReference: Equatable, Sendable {
         /// Bound to a specific known entity (a pronoun, an elliptical
         /// subject, or a unique descriptive selector).
         case entity(FocusEntity)
+        /// Bound to an open drift thread the assistant just offered — accepted
+        /// with a bare "yes"/"sure" or named ("the war it's named after").
+        /// Carried as a promoted `FocusEntity` so it dispatches like any other
+        /// bound subject (the host needs no new case).
+        case thread(FocusEntity)
         /// Bound to a slot in `focus.lastList` ("the second one").
         case listSelection(index: Int, entity: FocusEntity)
         /// A descriptive selector ("the old one") matched multiple list
@@ -54,6 +59,7 @@ public struct ResolvedReference: Equatable, Sendable {
     public var boundEntity: FocusEntity? {
         switch binding {
         case .entity(let e): return e
+        case .thread(let e): return e
         case .listSelection(_, let e): return e
         case .none, .ambiguous: return nil
         }
@@ -77,6 +83,18 @@ public enum ReferenceResolver {
         "more", "tell me more", "more about", "more on", "go on",
         "keep going", "continue", "and what", "and how", "what's next",
         "whats next", "next",
+    ]
+
+    /// Bare yes-class turns that ACCEPT an offer. Deliberately excludes
+    /// "go on"/"more"/"continue" (those mean "more about the CURRENT subject",
+    /// handled by the elliptical path) — only turns with no standalone subject
+    /// reading, so "yes"/"sure" bind to the offered thread instead of being
+    /// rewritten into a nonsense "yes <subject>" query.
+    private static let bareAffirmatives: Set<String> = [
+        "yes", "yeah", "yep", "yup", "yes please", "ok sure", "sure",
+        "ok", "okay", "okey", "ok then", "alright", "all right",
+        "do it", "please do", "go for it", "sounds good", "why not",
+        "let's", "lets", "let's hear it", "lets hear it",
     ]
 
     /// Bare elliptical question stems — a question with no subject of its own,
@@ -115,6 +133,20 @@ public enum ReferenceResolver {
         // names a list slot, or is a subjectless elliptical question.
         var isContinuation = (opener != nil) || hasPronoun
 
+        // ---- 0. Accept an offered thread ("yes", "sure") -------------------
+        // After the assistant offered "want to hear about X?", a bare
+        // affirmative picks the lead drift thread. Gated on an open offer so a
+        // stray "ok"/"sure" with nothing offered still falls through to the
+        // subject-continuation logic below.
+        if !focus.openThreads.isEmpty, bareAffirmatives.contains(lower) {
+            let t = focus.openThreads[0]
+            return ResolvedReference(
+                binding: .thread(t.asEntity(turn: focus.turn)),
+                rewrittenQuery: "tell me about \(t.label)",
+                isContinuation: true
+            )
+        }
+
         // ---- 1. List selection ("the second one", "the other one") --------
         if !focus.lastList.isEmpty {
             if let sel = resolveListSelection(lower, words: words, focus: focus) {
@@ -145,6 +177,20 @@ public enum ReferenceResolver {
                 )
             }
             // 0 matches: fall through — "the X" may be a fresh topic.
+        }
+
+        // ---- 2b. Named drift thread ("the war", "the bridge it crosses") --
+        // When threads are open and there is NO on-screen list to pick from,
+        // a content-word hit on a unique thread label binds to that thread.
+        // (With a list present, selectors mean list items — handled above; a
+        // populated list also makes article-style drift threads unlikely.)
+        if focus.lastList.isEmpty, !focus.openThreads.isEmpty,
+           let t = matchOpenThread(words: words, focus: focus) {
+            return ResolvedReference(
+                binding: .thread(t.asEntity(turn: focus.turn)),
+                rewrittenQuery: "tell me about \(t.label)",
+                isContinuation: true
+            )
         }
 
         // ---- 3. Pronoun → primary entity ----------------------------------
@@ -259,6 +305,35 @@ public enum ReferenceResolver {
         "small", "first", "last", "other", "that", "this",
     ]
 
+    // MARK: - Drift-thread selection
+
+    /// Match a turn naming an open drift thread ("the war", "tell me about the
+    /// cathedral") against `focus.openThreads` by content-word overlap with
+    /// each thread's label (+ optional gloss). Returns the thread only on a
+    /// UNIQUE hit — ambiguity falls through. Function/question words are
+    /// stripped so elliptical stems ("how old?", "how big?") never spuriously
+    /// match a label.
+    private static func matchOpenThread(
+        words: [String], focus: ConversationFocus
+    ) -> DiscoveryThread? {
+        var toks = words
+        if let i = toks.firstIndex(of: "the") { toks = Array(toks[(i + 1)...]) }
+        if toks.last == "one" || toks.last == "ones" { toks.removeLast() }
+        let functional: Set<String> = stopwords
+            .union(singularPronouns)
+            .union(["why", "how", "when", "where", "who", "what", "is", "are",
+                    "was", "were", "did", "does", "do", "and", "but", "so",
+                    "then", "about", "me", "tell", "more", "ok", "okay",
+                    "yes", "sure", "please", "hear", "want", "let's", "lets"])
+        let content = toks.filter { !functional.contains($0) && $0.count >= 3 }
+        guard !content.isEmpty else { return nil }
+        let matches = focus.openThreads.filter { thread in
+            let hay = (thread.label + " " + (thread.note ?? "")).lowercased()
+            return content.contains { hay.contains($0) }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     // MARK: - Rewriting
 
     /// Replace the first pronoun token in `text` with `name`. Falls back to
@@ -307,6 +382,7 @@ public enum ReferenceResolver {
     private static func boundName(of binding: ResolvedReference.Binding) -> String {
         switch binding {
         case .entity(let e): return e.name
+        case .thread(let e): return e.name
         case .listSelection(_, let e): return e.name
         case .none, .ambiguous: return ""
         }
