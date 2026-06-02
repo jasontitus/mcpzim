@@ -437,6 +437,9 @@ public final class VoiceChatController {
             #"<\|tool_call\|?>[\s\S]*?<tool_call\|>"#,
             #"<tool_call>[\s\S]*?</tool_call>"#,
             #"<\|tool_response\|?>[\s\S]*?<tool_response\|>"#,
+            // Reasoning blocks — the FT occasionally opens a <think>…</think>.
+            // Strip closed ones so they're never spoken.
+            #"<think>[\s\S]*?</think>"#,
         ]
         for pat in closed {
             t = t.replacingOccurrences(of: pat, with: "", options: .regularExpression)
@@ -447,6 +450,10 @@ public final class VoiceChatController {
         if let r = t.range(of: #"<tool[_a-z]*"#, options: .regularExpression) {
             t = String(t[..<r.lowerBound])
         }
+        // Mid-stream the closing </think> hasn't arrived yet — truncate at the
+        // open <think> so the reasoning is never voiced before the parser
+        // strips it. (The closed pattern above handles the post-close text.)
+        if let r = t.range(of: "<think") { t = String(t[..<r.lowerBound]) }
         for lit in ["<tool_call|>", "<tool_response|>", "<|\"|>", "<|\""] {
             t = t.replacingOccurrences(of: lit, with: "")
         }

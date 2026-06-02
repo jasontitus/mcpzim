@@ -468,6 +468,10 @@ private struct MessageRow: View {
             #"<\|tool_call\|?>[\s\S]*?<tool_call\|>"#,
             #"<tool_call>[\s\S]*?</tool_call>"#,
             #"<\|tool_response\|?>[\s\S]*?<tool_response\|>"#,
+            // Reasoning the FT sometimes emits — strip closed <think>…</think>
+            // so it isn't shown (it's scrubbed from the final text anyway, but
+            // without this it flashes on screen mid-stream then redraws away).
+            #"<think>[\s\S]*?</think>"#,
         ]
         for pat in closedPatterns {
             t = t.replacingOccurrences(of: pat, with: "", options: .regularExpression)
@@ -482,6 +486,11 @@ private struct MessageRow: View {
             t = String(t[..<r.lowerBound])
         }
         if let r = t.range(of: #"<tool[_a-z]*"#, options: .regularExpression) {
+            t = String(t[..<r.lowerBound])
+        }
+        // Unclosed <think> mid-stream: hide from the opener to end until the
+        // closing tag arrives (then the closed pattern above strips the pair).
+        if let r = t.range(of: "<think") {
             t = String(t[..<r.lowerBound])
         }
         // Drop any lingering sentinel scraps.
