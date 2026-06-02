@@ -45,12 +45,11 @@ across builds, only needed after a fresh Xcode (re)install/upgrade.
 
 ### Headless / scripted build + deploy (verified 2026-05-30)
 
-A plain `xcodebuild ... build` from the CLI fails with `No Accounts: Add a new
-account in Accounts settings`. Authenticate with the App Store Connect API key
-(the same one `../spoken-testimony` uses — team `A6G8H8NGAM`); `-allowProvisioningUpdates`
-then auto-provisions a profile that includes the app's special entitlements
-(`increased-memory-limit` / `extended-virtual-addressing` in
-`MCPZimChat/MCPZimChat-iOS.entitlements`) — no Xcode GUI step needed.
+**This is the proven "push to my phone" path — used 20+ times.** Automatic
+signing with team `A6G8H8NGAM` is already configured in Xcode, so the PLAIN
+build form just works. Do **NOT** add `-authenticationKey*` /
+`-allowProvisioningUpdates` flags (see the warning below — that recipe is a
+trap).
 
 ```sh
 cd ios
@@ -61,13 +60,22 @@ xcodebuild -project MCPZimChat.xcodeproj \
   -configuration Debug \
   -derivedDataPath build \
   -skipMacroValidation \
-  -allowProvisioningUpdates \
-  -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_7C7256MDM6.p8 \
-  -authenticationKeyID 7C7256MDM6 \
-  -authenticationKeyIssuerID 69a6de81-894e-47e3-e053-5b8c7c11a4d1 \
   DEVELOPMENT_TEAM=A6G8H8NGAM \
   build > /tmp/ios_build.log 2>&1
 grep -c "BUILD SUCCEEDED" /tmp/ios_build.log   # 1 = success (don't trust $? if piped)
+```
+
+> ⚠️ **Do not use the App Store Connect API-key form on this machine.** An
+> earlier version of this doc recommended
+> `-authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_7C7256MDM6.p8`
+> `-authenticationKeyID 7C7256MDM6 -authenticationKeyIssuerID 69a6…`. **That
+> key does not exist here** — the build dies immediately with
+> `error: The -authenticationKeyPath flag must be an absolute path to an
+> existing file.` (The keys actually present are `9FY5W363V5` / `CM54C7AR73`,
+> but you don't need any of them — the plain form above signs fine because
+> the dev account is logged into Xcode.) The `No Accounts` failure that
+> originally motivated the API-key recipe is not reproducible; plain build is
+> the path.
 
 # install to Jazzman 17 (edit UUID if device changes)
 xcrun devicectl device install app \
