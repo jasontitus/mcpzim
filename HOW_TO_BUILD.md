@@ -45,11 +45,9 @@ across builds, only needed after a fresh Xcode (re)install/upgrade.
 
 ### Headless / scripted build + deploy (verified 2026-05-30)
 
-**This is the proven "push to my phone" path — used 20+ times.** Automatic
-signing with team `A6G8H8NGAM` is already configured in Xcode, so the PLAIN
-build form just works. Do **NOT** add `-authenticationKey*` /
-`-allowProvisioningUpdates` flags (see the warning below — that recipe is a
-trap).
+**This is the proven "push to my phone" path.** Keep `-allowProvisioningUpdates`;
+do **NOT** add the `-authenticationKey*` flags. Those are two different things —
+don't conflate them (a past edit stripped both and broke device builds):
 
 ```sh
 cd ios
@@ -60,22 +58,27 @@ xcodebuild -project MCPZimChat.xcodeproj \
   -configuration Debug \
   -derivedDataPath build \
   -skipMacroValidation \
+  -allowProvisioningUpdates \
   DEVELOPMENT_TEAM=A6G8H8NGAM \
   build > /tmp/ios_build.log 2>&1
 grep -c "BUILD SUCCEEDED" /tmp/ios_build.log   # 1 = success (don't trust $? if piped)
 ```
 
-> ⚠️ **Do not use the App Store Connect API-key form on this machine.** An
-> earlier version of this doc recommended
-> `-authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_7C7256MDM6.p8`
-> `-authenticationKeyID 7C7256MDM6 -authenticationKeyIssuerID 69a6…`. **That
-> key does not exist here** — the build dies immediately with
-> `error: The -authenticationKeyPath flag must be an absolute path to an
-> existing file.` (The keys actually present are `9FY5W363V5` / `CM54C7AR73`,
-> but you don't need any of them — the plain form above signs fine because
-> the dev account is logged into Xcode.) The `No Accounts` failure that
-> originally motivated the API-key recipe is not reproducible; plain build is
-> the path.
+> ⚠️ **`-allowProvisioningUpdates` is required, not optional.** Apple Development
+> certs are short-lived, so a build *without* it works only while a profile is
+> cached, then suddenly fails with `No "iOS Development" signing certificate ...
+> matching team ID "A6G8H8NGAM"`. Diagnose with `security find-identity -v -p
+> codesigning` — in the failed state it lists only *Developer ID Application* /
+> *Apple Distribution* (no *Apple Development*). `-allowProvisioningUpdates`
+> re-mints a development cert/profile from the signed-in Apple ID and signs;
+> it's a no-op when one is already cached, so it's safe to always include.
+>
+> ⚠️ **Do NOT use the App Store Connect API-key form on this machine.** A past
+> recipe recommended `-authenticationKeyPath …/AuthKey_7C7256MDM6.p8`
+> `-authenticationKeyID 7C7256MDM6 -authenticationKeyIssuerID 69a6…`. **That key
+> does not exist here** — the build dies with `error: The -authenticationKeyPath
+> flag must be an absolute path to an existing file.` (Present keys are
+> `9FY5W363V5` / `CM54C7AR73`, but you don't need any of them.)
 
 # install to Jazzman 17 (edit UUID if device changes)
 xcrun devicectl device install app \
