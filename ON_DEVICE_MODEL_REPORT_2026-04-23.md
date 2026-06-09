@@ -56,12 +56,21 @@ phone-viability (peak @ 7k), then by 9-pass.
 | gemma-4-e4b-it-4bit *(HF template)* | ~4 GB | 0/9 ⚠️ | 1993 | 41 | 6.18 | 7.08 | 8.58 |
 | gemma-4-e4b-it-4bit *(native Gemma4 template)* | ~4 GB | **5/9** ⚠️ | 206 | 14 | 6.18 | 7.08 | 8.58 |
 | gemma-3-12b-it-qat-4bit *(mac-only)* | 6.9 GB | **9/9** | 128 | 15 | 9.17 | 10.83 | 13.39 |
+| gemma-4-12B-it-qat-4bit *(mac-only, full MM)* ‡ | 7.4 GB / 10.5 resident | **8/9** | ~190 | 11–18 | 12.59 | 13.70 | 15.52 |
 | Phi-3.5-mini-instruct-4bit | 2.1 GB | 3/9 | 509 | 59 | *not benched* | — | — |
 | Llama-3.1-Nemotron-Nano-4B-v1.1-4bit | 2.1 GB | 2/9 | 307 | 45 | *not benched* | — | — |
 | NVIDIA-Nemotron-3-Nano-4B-4bit | 2.1 GB | 0/9 | 310 | 45 | *not benched* | — | — |
 
 *All peaks in GB. ⚠️ Gemma 4 scores are the Python-harness floor (see §1b).
-† Qwen 3 Thinking uses the same weights as Instruct; peak memory assumed identical.*
+† Qwen 3 Thinking uses the same weights as Instruct; peak memory assumed identical.
+‡ gemma-4-12B-it-qat-4bit measured 2026-06-02 (M2 Max, mlx-vlm 0.6.2 — the
+QAT release uses the new `gemma4_unified` arch, unsupported before 0.6.x). It
+loads as the FULL multimodal model (audio+vision towers resident → 10.5 GB
+just post-load, vs 6.9 GB for the text-only Gemma 3 12B), so its peaks run
+~3 GB hotter than the dense Gemma 3 12B. 8/9 (no tool-count cliff — only miss
+is nearby_stories_here→what_is_here); decode is the steady-state bench figure,
+not the 1–3-token eval artifact. **Mac-only: peaks 2.1–2.5× the 6,144 MB phone
+jetsam cap.**\*
 
 ### Phone viability summary (6 GB iPhone jetsam; ~3.5–4 GB usable for model+cache)
 
@@ -78,6 +87,7 @@ phone-viability (peak @ 7k), then by 9-pass.
 | Phi-4-mini-6bit | ✓ (tight) | ✗ | ✗✗ |
 | gemma-4-e4b | ✗ | ✗ | ✗✗ |
 | gemma-3-12b-it-qat-4bit | ✗✗ | ✗✗✗ | ✗✗✗ |
+| gemma-4-12B-it-qat-4bit *(full MM, 10.5 GB resident)* | ✗✗✗ | ✗✗✗ | ✗✗✗ |
 
 ### 1b. Gemma 4 ⚠️ caveat
 
