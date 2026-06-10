@@ -447,6 +447,10 @@ enum ProbeDiscussCLI {
 
         sampler.cancel()
         let peakMB = await peak.peakMB
+        // Free the llama context BEFORE exit(0) — leaving it loaded trips
+        // GGML_ASSERT([rsets->data count] == 0) in the Metal device's static
+        // destructor at __cxa_finalize, exiting 134 after a successful run.
+        await provider.unload()
         // On macOS the GGUF is mmap'd + Metal-unified, so phys_footprint
         // under-counts the model's resident cost; iOS jetsam would see the
         // weights too. Add the model size for a phone-faithful estimate.

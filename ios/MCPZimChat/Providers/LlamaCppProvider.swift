@@ -59,6 +59,13 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// answers (which can run long, especially if the FT opens a <think>)
     /// don't truncate mid-sentence. `nil` = use the device default.
     public let replyTokensFloor: Int?
+    /// Context window (n_ctx). llama.cpp PRE-ALLOCATES the KV buffer for the
+    /// whole window at load, so this is a constant resident cost per model:
+    /// LFM2.5 has only 6 attention layers (~3 KB/token at q8_0 KV) → 32k ≈
+    /// 100 MB, which the 2026-06-10 IQ3_XS requant more than paid for.
+    /// Heavier-KV models (Gemma 3 GGUF fallbacks) keep the 8k default —
+    /// their global-attention layers cost several× more per token.
+    public let contextTokens: Int
 
     // MARK: - State + llama.cpp handles
 
@@ -90,6 +97,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         localGGUFPath: String? = nil,
         replyTokensFloor: Int? = nil,
         approximateMemoryMB: Int = 3200,
+        contextTokens: Int = 8192,
         template: any ModelTemplate = Gemma3Template()
     ) {
         self.id = id
@@ -99,6 +107,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         self.localGGUFPath = localGGUFPath
         self.replyTokensFloor = replyTokensFloor
         self.approximateMemoryMB = approximateMemoryMB
+        self.contextTokens = contextTokens
         self.template = template
         // One-time global init. Safe to call repeatedly per
         // llama.cpp docs; the backend keeps a refcount.
@@ -232,7 +241,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         // testing them now on Mac via MCPZimChatMac to see whether
         // it's iOS-Metal-specific or a Swift invocation bug).
         var cp = llama_context_default_params()
-        cp.n_ctx = 8192
+        cp.n_ctx = UInt32(contextTokens)
         cp.n_batch = 512
         cp.n_ubatch = 512
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
@@ -298,24 +307,72 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             throw LlamaCppError.notLoaded
         }
         let tokens = Self.tokenize(vocab: vocab, prompt: prompt)
-        log.notice("generate: \(tokens.count) prompt tokens")
-
-        // Clear seq 0's KV from any previous turn. Same `ctx` is
-        // reused across turns, so turn N-1's tokens stay in seq-0
-        // cells; writing turn N at pos=0 over those stale slots
-        // makes llama_decode return rc=-1 (slot manager can't
-        // reconcile pos overlap with existing entries). Hit in the
-        // wild on 2026-04-25 — gist 80daf913 — turn 2 prefill of
-        // 4003 tokens failed at batch 0..<512.
-        //
-        // Using `llama_memory_seq_rm` (per-seq) instead of
-        // `llama_memory_clear` (global). The latter was suspected
-        // of causing silent process death on iOS 2026-04-24 right
-        // after prefill started. seq_rm with p0=0, p1=-1 wipes the
-        // single seq we use without touching any other state.
-        if let mem = llama_get_memory(ctx) {
-            _ = llama_memory_seq_rm(mem, 0, 0, -1)
+        guard tokens.count < contextTokens - 16 else {
+            throw LlamaCppError.custom(
+                "prompt (\(tokens.count) tok) exceeds n_ctx=\(contextTokens) — "
+                + "trim the transcript before generating")
         }
+
+        // Cross-turn KV prefix reuse (2026-06-10). ChatSession rebuilds the
+        // transcript byte-for-byte each turn (`toolRoundTrips` exists for
+        // exactly this), so turn N's prompt is normally turn N-1's prompt +
+        // reply + one new exchange. Instead of wiping seq-0 and re-prefilling
+        // the whole transcript (cost grows linearly with conversation length:
+        // ~4 s at a full 8k, ~15 s at 32k), keep `cachedTokens` as a mirror of
+        // what seq-0's KV actually contains, drop only the divergent tail, and
+        // prefill only the new suffix.
+        //
+        // History that shaped this:
+        // - 2026-04-25 (gist 80daf913): writing turn N at pos=0 OVER stale
+        //   seq-0 cells made llama_decode rc=-1 (slot pos overlap). The fix
+        //   then was a full `llama_memory_seq_rm(0, 0, -1)` wipe per turn.
+        //   The reuse below never writes over live cells either — it removes
+        //   [lcp, ∞) first and starts the new batch at pos=lcp.
+        // - `llama_memory_clear` (global) was suspected in a silent iOS death
+        //   2026-04-24; we still avoid it.
+        var lcp = 0
+        while lcp < tokens.count, lcp < cachedTokens.count,
+              tokens[lcp] == cachedTokens[lcp] { lcp += 1 }
+        // Need at least one fresh token in the batch to obtain logits — if
+        // the new prompt is entirely a prefix of the cache, re-decode its
+        // final token (forces the divergence path below).
+        if lcp == tokens.count { lcp = max(0, lcp - 1) }
+        // Two-tier reuse. LFM2.5 is a HYBRID (6 attention layers + recurrent
+        // shortconv): llama.cpp can only wipe its recurrent state entirely,
+        // not truncate it to a midpoint — a PARTIAL `llama_memory_seq_rm`
+        // returns false and removes nothing (first probe of this feature
+        // died exactly there: stale cells + new batch → rc=-1).
+        //   Tier 1 — pure append (lcp == cachedTokens.count): the new prompt
+        //   strictly extends what's in the KV; nothing to remove, valid for
+        //   hybrids too. The common case, because ChatSession rebuilds
+        //   transcripts byte-for-byte and ChatML's special-token markers stop
+        //   BPE merges from crossing turn boundaries.
+        //   Tier 2 — divergence: try the partial rm (pure-attention models
+        //   accept it); if it returns false, fall back to a FULL wipe +
+        //   full prefill — slower, never wrong.
+        if lcp == cachedTokens.count, lcp > 0 {
+            // Pure append — KV already holds exactly tokens[0..<lcp].
+        } else if let mem = llama_get_memory(ctx) {
+            if lcp > 0, llama_memory_seq_rm(mem, 0, Int32(lcp), -1) {
+                // Partial truncation accepted (pure-attention model).
+            } else {
+                _ = llama_memory_seq_rm(mem, 0, 0, -1)
+                lcp = 0
+            }
+        }
+        log.notice("generate: \(tokens.count) prompt tokens · KV reuse \(lcp) · prefill \(tokens.count - lcp)")
+        // OSLog from unsigned CLI processes is hard to retrieve with `log
+        // show`; the Mac probes set MCPZIM_KV_DEBUG=1 to see reuse stats on
+        // stderr directly.
+        if ProcessInfo.processInfo.environment["MCPZIM_KV_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data(
+                "[kv] prompt=\(tokens.count) reuse=\(lcp) prefill=\(tokens.count - lcp)\n".utf8))
+        }
+        // Pessimistic until the prefill lands: if we throw mid-prefill the
+        // KV holds a partial suffix; an empty mirror forces the next turn to
+        // lcp=0 → full seq_rm(0,…) wipe → consistent state.
+        cachedTokens = []
+
         // Prefill via manual chunking — llama.cpp b8911 asserts
         // `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` in
         // llama-context.cpp:1599, so llama_batch_get_one(whole_prompt)
@@ -328,8 +385,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         let nBatch = 512
         var batch = llama_batch_init(Int32(nBatch), 0, 1)
         defer { llama_batch_free(batch) }
-        var pos: Int32 = 0
-        var i = 0
+        var pos: Int32 = Int32(lcp)
+        var i = lcp
         while i < tokens.count {
             let end = min(i + nBatch, tokens.count)
             batch.n_tokens = 0
@@ -347,6 +404,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             }
             i = end
         }
+        // Prefill complete — the KV now holds exactly `tokens`.
+        cachedTokens = tokens
 
         // Sampler chain. Match the MLX defaults: greedy-ish with
         // temp + top-p. `temp=0.0` → force dist sampler to greedy.
@@ -408,6 +467,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             if llama_decode(ctx, batch) != 0 {
                 throw LlamaCppError.custom("llama_decode step failed at pos=\(pos)")
             }
+            // Mirror what's actually in the KV so next turn's LCP can reuse
+            // it. (A sampled token we break on BEFORE decoding — EOG, stop
+            // sequence — is deliberately NOT appended: it never entered KV.)
+            cachedTokens.append(id)
             newTokens += 1
         }
         log.notice("generate: \(newTokens) new tokens")
