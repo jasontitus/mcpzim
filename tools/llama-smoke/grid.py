@@ -222,8 +222,24 @@ MODELS: list[ModelSpec] = [
         key="lfm2.5-8b-a1b-ft-q3km",
         quants=["Q3_K_M"],
         local_paths={
+            # 2026-06-10: ft-out-lfm2.5-8b/ was removed in the fine-tune
+            # cleanup; the shipping v7-full artifact lives in -v7full.
             "Q3_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
-                      "fine-tune/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+                      "fine-tune/ft-out-lfm2.5-8b-v7full/"
+                      "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+        },
+        tool_format="json",
+    ),
+    # v8hist = v7 dataset + 224 history-event chains (the `history` template,
+    # targeting the french_revolution_chain miss — v7-full's only failing
+    # scenario). Same 800-iter recipe, 2026-06-10.
+    ModelSpec(
+        key="lfm2.5-8b-a1b-ft-v8hist-q3km",
+        quants=["Q3_K_M"],
+        local_paths={
+            "Q3_K_M": "/Users/jasontitus/experiments/mcpzim/tools/"
+                      "fine-tune/ft-out-lfm2.5-8b-v8hist/"
+                      "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
         },
         tool_format="json",
     ),
