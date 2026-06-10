@@ -232,6 +232,48 @@ CRITICAL:
   whole point of the example."""
 
 
+# Targets the `french_revolution_chain` failure: a 3-turn HISTORY chain
+# whose final turn must be answered from cached context with NO tool call.
+# Same JSON schema as the explainer (2 tool calls + 3 replies).
+TEACHER_SYS_HISTORY = """\
+You are a teacher generating multi-turn training data for a small
+on-device assistant. Produce ONE JSON object modelling a 3-turn
+"history" dialogue about a historical event:
+
+  Turn 1: user asks how the event unfolded (e.g. "How did the French
+    Revolution unfold?"). Assistant calls article_overview(title=EVENT)
+    with the event's canonical Wikipedia title. tool_response_1 has
+    {title, lead, available_sections}. Assistant writes reply_1
+    (2-4 sentences) narrating the arc — name at least one concrete
+    year/date and the key actors or phases.
+
+  Turn 2 (followup_1): user asks what role a SPECIFIC PERSON played
+    (pick a genuinely central figure, e.g. "What role did Robespierre
+    play?"). Assistant calls article_overview(title=PERSON) — a fresh
+    related article, NOT a section drill-down. tool_response_2 has
+    {title, lead, available_sections}. Assistant writes reply_2
+    (2-4 sentences) on the person's role and fate.
+
+  Turn 3 (followup_2): user asks a SHORT elliptical conclusion
+    question ("So what ended it?" / "How did it finally end?" /
+    "What stopped it?"). Assistant writes reply_3 (2-4 sentences)
+    synthesising turns 1+2 from MEMORY — NO tool call. Name the
+    concrete ending: the coup, treaty, surrender, collapse, or
+    transition that closed the event, with its year.
+
+JSON keys: tool_call_1, tool_response_1, reply_1, followup_1,
+tool_call_2, tool_response_2, reply_2, followup_2, reply_3.
+
+CRITICAL:
+- tool_call_1.function == "article_overview", tool_call_2.function ==
+  "article_overview". Turn 3 has NO tool call — that is the whole
+  point of the example.
+- Plain canonical Wikipedia titles ("French Revolution",
+  "Maximilien Robespierre").
+- followup_2 must be SHORT and elliptical (≤ 6 words, pronoun "it").
+- reply_3 must name the concrete ending event AND a year."""
+
+
 # Targets the `narrate_hp_garage` failure: a SINGLE-turn request to
 # read a full article verbatim → narrate_article (NOT article_overview).
 TEACHER_SYS_NARRATE = """\
@@ -379,6 +421,31 @@ PLACES_OPENERS = [
     "Any good {kind}s near {place}",
 ]
 
+# History-event chains — targets the `french_revolution_chain` grid miss
+# (2026-06-09, the v7-full model's ONLY failing scenario). Shape: how-did-it-
+# unfold → role-of-person → elliptical "so what ended it?" answered from
+# cached context with NO tool call. EXPLAINER_OPENERS is all physics/nature,
+# so the FT never saw this pattern on historical narratives.
+HISTORY_OPENERS = [
+    "How did the {event} unfold?",
+    "What happened during the {event}?",
+    "Walk me through the {event}.",
+    "How did the {event} start and play out?",
+    "Tell me how the {event} developed.",
+]
+
+HISTORY_EVENTS = [
+    "French Revolution", "Russian Revolution", "American Civil War",
+    "fall of the Western Roman Empire", "Meiji Restoration",
+    "Protestant Reformation", "Norman conquest of England",
+    "Haitian Revolution", "unification of Germany", "Cuban Missile Crisis",
+    "fall of the Berlin Wall", "partition of India", "Manhattan Project",
+    "Spanish Civil War", "Glorious Revolution", "Black Death",
+    "Suez Crisis", "Apollo program", "English Civil War",
+    "Mexican Revolution", "Reconstruction era", "Hundred Years' War",
+    "Bronze Age collapse", "Taiping Rebellion",
+]
+
 # Explainer: "why is X?" science/nature phenomena. The teacher picks the
 # governing article; we just seed the natural-language opener.
 EXPLAINER_OPENERS = [
@@ -438,6 +505,11 @@ NARRATE_TOPICS = [
 
 def _explainer_query() -> str:
     return random.choice(EXPLAINER_OPENERS)
+
+
+def _history_query() -> str:
+    return random.choice(HISTORY_OPENERS).format(
+        event=random.choice(HISTORY_EVENTS))
 
 
 def _narrate_query() -> str:
@@ -581,6 +653,7 @@ TEMPLATES = {
     "compare":   (TEACHER_SYS_COMPARE,   SCHEMA_COMPARE,   lambda: _compare_query()[2], chain_to_messages),
     "places":    (TEACHER_SYS_PLACES,    SCHEMA_PLACES,    lambda: _places_query()[2],  chain_to_messages),
     "explainer": (TEACHER_SYS_EXPLAINER, SCHEMA_EXPLAINER, _explainer_query,          chain_to_messages),
+    "history":   (TEACHER_SYS_HISTORY,   SCHEMA_EXPLAINER, _history_query,            chain_to_messages),
     "narrate":   (TEACHER_SYS_NARRATE,   SCHEMA_NARRATE,   _narrate_query,            narrate_to_messages),
 }
 
