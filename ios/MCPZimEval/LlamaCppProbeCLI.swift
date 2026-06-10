@@ -22,13 +22,22 @@ import MCPZimKit
 enum LlamaCppProbeCLI {
     static func run(args: [String]) async {
         let short = args.contains("--short")
+        // `--gguf PATH` points the provider at an arbitrary local GGUF (e.g.
+        // the Gemma 4 E4B QAT) so we can smoke-test whether the SHIPPING
+        // llama.cpp xcframework loads + decodes it — no HF download involved.
+        var localGGUF: String? = nil
+        if let i = args.firstIndex(of: "--gguf"), i + 1 < args.count {
+            localGGUF = args[i + 1]
+        }
 
         print("[probe] creating LlamaCppProvider…")
         let provider = LlamaCppProvider(
-            id: "gemma3-4b-it-q4km-gguf",
-            displayName: "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
+            id: localGGUF != nil ? "local-gguf-probe" : "gemma3-4b-it-q4km-gguf",
+            displayName: localGGUF.map { "Local GGUF (\(($0 as NSString).lastPathComponent))" }
+                ?? "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
             huggingFaceRepo: "bartowski/google_gemma-3-4b-it-GGUF",
             ggufFilename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+            localGGUFPath: localGGUF,
             approximateMemoryMB: 3200,
             template: Gemma3Template()
         )

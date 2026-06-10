@@ -61,6 +61,20 @@ MODELS: list[ModelSpec] = [
         prefix="google_gemma-4-E2B-it",
         quants=["Q4_K_M", "Q5_K_M", "Q8_0"],
     ),
+    # Official Google QAT release (Q4_0) — quantization-aware-trained, so the
+    # 4-bit keeps near-BF16 quality (Python mlx eval: 9/9 vs PTQ's 5/9). Local
+    # path = the HF-cache blob of google/gemma-4-E4B-it-qat-q4_0-gguf. See
+    # GEMMA4_QAT_MTP.md for the full QAT/MTP findings.
+    ModelSpec(
+        key="gemma4-e4b-qat",
+        quants=["Q4_0"],
+        local_paths={
+            "Q4_0": "/Users/jasontitus/.cache/huggingface/hub/"
+                    "models--google--gemma-4-E4B-it-qat-q4_0-gguf/snapshots/"
+                    "bb3b92e6f031fa438b409f898dd9f14f499a0cb0/"
+                    "gemma-4-E4B_q4_0-it.gguf",
+        },
+    ),
     ModelSpec(
         key="gemma3-4b",
         repo="bartowski/google_gemma-3-4b-it-GGUF",

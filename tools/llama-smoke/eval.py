@@ -796,6 +796,19 @@ ARTICLE_FIXTURES: dict[str, dict[str, Any]] = {
 
 
 def dispatch_tool(name: str, args: dict) -> dict:
+    # Tolerate positional/array arguments. Observed 2026-06-09 on the Gemma 4
+    # E4B QAT: compare_articles arrived as `"arguments": ["Elon Musk", "Jeff
+    # Bezos"]` (a bare list) and `args.get` crashed the harness — neither a
+    # pass nor a scored fail. Normalize the obvious shapes instead, mirroring
+    # the tolerant-adapter behaviour, so malformed-but-decodable calls are
+    # SCORED rather than aborting the scenario.
+    if isinstance(args, list):
+        if name in ("compare_articles", "article_relationship"):
+            args = {"titles": [str(x) for x in args]}
+        elif len(args) == 1 and isinstance(args[0], dict):
+            args = args[0]
+        else:
+            args = {}
     if name in ("article_overview",):
         title = (args.get("title") or "").lower().strip()
         # Loose matching — model might ask for "Rayleigh scattering",

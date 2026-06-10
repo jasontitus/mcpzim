@@ -102,6 +102,49 @@ Also confirmed: the official main QAT GGUF
 runs cleanly on Metal via llama.cpp — **the QAT quality win is reachable
 through our llama.cpp path with no MLX loader gap.**
 
+## FULL TEST vs our shipping model (2026-06-09, M2 Max)
+
+The complete three-leg test, run the same way prior models were scored:
+
+**1. Full 13-scenario grid** (`tools/llama-smoke/grid.py`, KV q8_0/q8_0 — the
+exact config behind LFM2.5-FT's 12/13; results in
+`tools/llama-smoke/GRID_RESULTS_GEMMA4_E4B_QAT.md`):
+
+| Model | Score | Peak RSS | Notes |
+|---|---|---|---|
+| **LFM2.5-8B-A1B FT** *(shipping)* | **12/13** | **4.16 GB** | fine-tuned on our tools + chains |
+| **Gemma 4 E4B QAT Q4_0** *(stock)* | **8/13** | ~5.3 GB | perfect on single-turn (8/8 incl. both compares); **all 5 fails are the multi-turn knowledge chains** |
+
+Stock-vs-tuned read: QAT E4B never hit a tool-format cliff and aced every
+single-turn scenario — impressive for an untuned model — but loses every deep
+chain, exactly where our FT data targeted LFM. Quirk: it emits
+`compare_articles` arguments as a bare JSON **list** (`["A","B"]`), which
+crashed the harness until `dispatch_tool` learned to normalize it; the
+**in-app Swift adapter would need the same tolerance** before QAT could ship.
+
+**2. MTP enabled vs disabled** (same 13 scenario prompts, HEAD llama-server,
+Metal; two degenerate instant-EOS prompts excluded):
+
+| Config | Mean decode (11 prompts) | Acceptance |
+|---|---|---|
+| MTP OFF | **61.7 t/s** | — |
+| MTP ON (`draft-mtp`, official drafter, n-max 3) | **53.6 t/s** | 31% (943/3060) |
+
+**MTP = −13% on our actual workload, slower on every prompt.** The earlier
+single-prompt +7% was variance; across the real prompts MTP regresses on
+Metal, consistent with llama.cpp #23752. **Definitive skip** until acceptance
+or the Metal draft path improves upstream.
+
+**3. In-app shippability:** the **shipping b9434 xcframework loads + decodes
+the QAT GGUF cleanly** (probe: `MCPZimEvalCLI --probe-llama --gguf <qat>` →
+load OK, 64 chunks on MTL0). **QAT needs no llama.cpp bump**; only MTP would.
+
+**Bottom line:** LFM2.5-FT stays the shipping model (12/13 @ 4.16 GB beats
+stock 8/13 @ 5.3 GB). The live opportunity is **fine-tuning E4B QAT on our
+chain data** — its stock single-turn perfection suggests real FT headroom —
+but that requires a QAT-aware FT pipeline (BF16 QAT master → FT → re-quant)
+and the adapter list-args tolerance first.
+
 ## Recommendation (updated with measurements)
 
 - **Ship QAT via llama.cpp, skip MTP.** The official QAT Q4_0 GGUF loads and
