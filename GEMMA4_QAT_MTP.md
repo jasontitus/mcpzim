@@ -71,15 +71,49 @@ the official QAT drafters ship as **BF16 safetensors, not GGUF**; ready-to-run
 GGUF MTP drafters are **community-only** and lossy to convert (naive Q4_0 drops
 step-0 acceptance ~80% → ~35%).
 
-## Recommendation
+## MEASURED on Apple Silicon Metal (2026-06-09, M2 Max, llama.cpp master 76da245)
 
-- **MTP: park it.** Unmerged on MLX; untested + currently-regressing on
-  llama.cpp/Metal. Re-check in a few weeks (fast-moving).
-- **QAT quality is reachable now without waiting on upstream:** take the
-  **unquantized QAT BF16 master** and re-quantize to a *standard* MLX 4-bit
-  layout (`mlx_lm.convert`). Keeps most of QAT's quality but produces a checkpoint
-  our mlx-swift loader already accepts (like plain e4b-it-4bit did) — sidesteps
-  both the QAT-quant-layout gap and the wNa8o8 problem. **Not yet tried.**
+We built llama.cpp HEAD (post-#24282) with Metal and ran the first known
+Gemma-4-QAT + MTP measurement on Apple Silicon (llama-server `/completion`,
+256 tok, seed 1, fa on, ngl 99):
+
+| Run | Decode | Notes |
+|---|---|---|
+| E4B QAT Q4_0, no draft | **63–69 t/s** | `llama-bench tg128` = 68.98; server runs 63.1–68.6 |
+| E4B QAT Q4_0 + MTP (`draft-mtp`, official drafter, n-max 3) | **67.3 t/s** | **draft acceptance 31%** (123/392) |
+
+**Verdict: MTP works on Metal and does NOT regress — but the gain is ~+7%,**
+nowhere near the 1.7–2.2× headline (the low 31% acceptance eats the benefit;
+the PR author saw 48% on Snapdragon and called it "not amazing"). This refutes
+both the hype AND the "MTP regresses on Metal" generalization from #23752 —
+at least for Gemma 4 E4B on an M2 Max.
+
+**Conversion gotcha (cost us a debugging loop):** community Gemma-4 MTP
+drafter GGUFs (e.g. AtomicChat) are FORK-converted and do NOT load upstream —
+wrong arch string (`gemma4_assistant` vs upstream `gemma4-assistant`) and an
+hparams mismatch (`GGML_ASSERT(n_layer_nextn == n_layer_all)`). The working
+recipe is the PR's: convert the OFFICIAL
+`google/gemma-4-E4B-it-qat-q4_0-unquantized-assistant` (79M params) with the
+SAME llama.cpp checkout's `convert_hf_to_gguf.py` → 164 MB F16 GGUF, arch
+`gemma4-assistant` → loads + drafts cleanly.
+
+Also confirmed: the official main QAT GGUF
+(`google/gemma-4-E4B-it-qat-q4_0-gguf`, 4.79 GiB, arch `gemma4`) loads and
+runs cleanly on Metal via llama.cpp — **the QAT quality win is reachable
+through our llama.cpp path with no MLX loader gap.**
+
+## Recommendation (updated with measurements)
+
+- **Ship QAT via llama.cpp, skip MTP.** The official QAT Q4_0 GGUF loads and
+  runs cleanly on Metal (~63–69 t/s on M2 Max) — the 9/9-class quality win is
+  reachable through `LlamaCppProvider` with no MLX dependency. MTP measured at
+  **~+7% on Metal** — not worth a second model + a fork-sensitive conversion
+  pipeline + acceptance tuning. Revisit MTP if acceptance improves upstream.
+- App caveat: our pinned xcframework (b9434) predates the MTP merge by ~134
+  commits — fine for QAT-without-MTP (gemma4 arch support is older); an
+  xcframework bump + a Swift draft/verify loop would be needed for in-app MTP.
+- The MLX re-quant path (QAT BF16 master → `mlx_lm.convert` standard 4-bit) is
+  still the MLX-side option, but llama.cpp now looks like the shorter route.
 
 ## Open questions (unanswered by the research)
 
