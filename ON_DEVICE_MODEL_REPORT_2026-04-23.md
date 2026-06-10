@@ -55,6 +55,7 @@ phone-viability (peak @ 7k), then by 9-pass.
 | gemma-3n-E4B-it-lm-4bit | 3.7 GB | 6/9 | 436 | 43 | 4.88 | 5.38 | 6.19 |
 | gemma-4-e4b-it-4bit *(HF template)* | ~4 GB | 0/9 ⚠️ | 1993 | 41 | 6.18 | 7.08 | 8.58 |
 | gemma-4-e4b-it-4bit *(native Gemma4 template)* | ~4 GB | **5/9** ⚠️ | 206 | 14 | 6.18 | 7.08 | 8.58 |
+| gemma-4-e4b-it-qat-4bit *(QAT · native)* § | ~4 GB | **9/9** | ~900–1060 | 23–40 | 7.77 | 8.63 | 10.14 |
 | gemma-3-12b-it-qat-4bit *(mac-only)* | 6.9 GB | **9/9** | 128 | 15 | 9.17 | 10.83 | 13.39 |
 | gemma-4-12B-it-qat-4bit *(mac-only, full MM)* ‡ | 7.4 GB / 10.5 resident | **8/9** | ~190 | 11–18 | 12.59 | 13.70 | 15.52 |
 | Phi-3.5-mini-instruct-4bit | 2.1 GB | 3/9 | 509 | 59 | *not benched* | — | — |
@@ -71,6 +72,15 @@ just post-load, vs 6.9 GB for the text-only Gemma 3 12B), so its peaks run
 is nearby_stories_here→what_is_here); decode is the steady-state bench figure,
 not the 1–3-token eval artifact. **Mac-only: peaks 2.1–2.5× the 6,144 MB phone
 jetsam cap.**\*
+§ gemma-4-e4b-it-qat-4bit measured 2026-06-02 (M2 Max, Python mlx-vlm 0.6.2).
+**QAT lifts E4B 5/9 → 9/9** vs the plain q4 above — 12B-class accuracy at ~1/3
+the size; it cleared the 4 scenarios plain E4B's tool-count cliff dropped.
+Decode/prefill are the steady-state bench figures (the per-scenario eval shows
+~6 tok/s, a 1–3-token artifact). The peaks here are the FULL-multimodal
+mlx-vlm load (NOT phone-realistic — the Swift text path would be ~4–5 GB like
+the PTQ). **Caveat: this does NOT load in mlx-swift-lm (QAT quant-layout loader
+gap, `keyNotFound k_proj`), so it is NOT app-shippable as-is — see
+`GEMMA4_QAT_MTP.md` for the re-quant-from-BF16 workaround + MTP findings.**
 
 ### Phone viability summary (6 GB iPhone jetsam; ~3.5–4 GB usable for model+cache)
 
