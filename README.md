@@ -11,8 +11,21 @@ Ask *"tell me about the Duchy of Lithuania"*, *"how do solar panels work?"*,
 and Bezos"* — Zimfo searches the ZIMs, reads the right article, and answers.
 Follow-ups (*"tell me more"*, *"yes"*, *"what's near there?"*, *"the second
 one"*) resolve against a deterministic on-device conversation focus rather
-than the small model's own memory, so a walking conversation actually holds
-together.
+than the small model's own memory, and a "let's discuss X" mode grounds
+multi-turn Q&A in retrieved article passages — so a walking conversation
+actually holds together.
+
+**The shipping model** is a LoRA-fine-tuned
+[LFM2.5-8B-A1B](https://huggingface.co/sliderforthewin/lfm2.5-8b-a1b-ft-GGUF)
+(8.3B-total / 1.5B-active hybrid MoE) quantized to **IQ3_XS with an
+importance matrix** calibrated on the app's own tool-call transcripts:
+12/13 on the tool-calling eval grid at **~3.6 GB peak RSS** and ~136 t/s
+decode (M2 Max), running through llama.cpp with a **32k context** and
+cross-turn KV prefix reuse (follow-up turns prefill ~23 tokens instead of
+the whole transcript). How we got here — the full stock-model sweep
+(Gemma 3/4, Qwen 3/3.5, Phi, …), the fine-tuning pivot, the Gemma 4 QAT/MTP
+investigation, and the quantization frontier — is written up in
+[`MODEL_EVALUATION_HISTORY.md`](MODEL_EVALUATION_HISTORY.md).
 
 This repo has three layers, smallest-dependency first:
 
@@ -165,8 +178,8 @@ are shipping in 2026:
 | Desktop | Claude Desktop / Code, any MCP client | This Python server via `stdio` or `streamable-http` | **Works today** |
 | Android | [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) (Gemma 4 + LiteRT-LM, Apache 2.0) | Small Kotlin fork — add a `@Tool fun callMcp(...)` that talks JSON-RPC/HTTP to this Python server | **See [`mobile/android/README.md`](mobile/android/README.md)** — ~80 lines of Kotlin + one SKILL.md |
 | Android (fully offline) | same | Run `mcpzim` under Termux on the same device | Works; Termux has to build `libzim` from source (`pkg install python clang cmake`) |
-| iOS | [Swift-Gemma4-Core](https://github.com/yejingyang8963-byte/Swift-gemma4-core) (MIT, iOS 17+) | Link **[`swift/MCPZimKit`](swift/)** — pure-Swift port of the routing graph parser, A*, geocoder + a transport-agnostic MCP tool adapter. Host app supplies a `ZimReader` backed by `CoreKiwix.xcframework` from the Kiwix project. | **See [`swift/README.md`](swift/README.md)** |
-| iOS | Google AI Edge Gallery | Not possible — the iOS app is closed-source. | Waiting on Google |
+| iOS | **The Zimfo app in this repo** ([`ios/`](ios/)) — fine-tuned LFM2.5 via llama.cpp (+ MLX models) | Links **[`swift/MCPZimKit`](swift/)** — pure-Swift routing graph parser, A*, geocoder, transport-agnostic MCP tool adapter, conversation-state machine — with a `ZimReader` backed by `CoreKiwix.xcframework`. | **Works today** — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| iOS | Google AI Edge Gallery (closed-source app) | Available on the App Store since 2026-04 with Gemma 4 support — fine for trying models, but no tool-calling hook into this server. | Demo-only |
 
 The short version: on Android the open-source Agent Chat host already knows how
 to call a tool, so a short Kotlin patch makes it speak to this Python server.

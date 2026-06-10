@@ -178,41 +178,111 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             throw LlamaCppError.custom("bad HF URL: \(urlStr)")
         }
         log.info("GGUF download start: \(urlStr, privacy: .public)")
-        // Emit initial "0% of model download" so the UI flips from
-        // `.loading` to `.downloading(0)` immediately — the ~2.5 GB
-        // GGUF pull takes 30-120 s on wifi; without a progress
-        // signal the setup overlay looks frozen.
+        // Emit "0%" immediately so the UI flips from `.loading` to
+        // `.downloading(0)` before the first byte arrives.
         set(.downloading(0))
-        // Default URLSession.shared caps `timeoutIntervalForRequest`
-        // at 60 s and `timeoutIntervalForResource` at 7 days, but the
-        // request timeout fires any time a SINGLE chunk takes > 60s,
-        // which HF's `cas-bridge.xethub.hf.co` Xet redirect hits
-        // routinely on a 2.5 GB pull (seen on Jazzman 17 2026-04-23
-        // as NSURLErrorDomain -1001 timed-out on xethub). Use the
-        // same long-timeout + waitsForConnectivity pattern the MLX
-        // path uses for safetensors downloads (see
-        // Gemma4Provider.longDownloadSession).
+
+        // Rewritten 2026-06-10 after a real on-device failure: the old
+        // single-shot download (waitsForConnectivity + 600 s chunk timeout,
+        // no retry, no resume, progress gated on Content-Length) could sit
+        // visually frozen for many minutes on a stall, then throw away a
+        // nearly-complete multi-GB pull and land in `.failed`. New shape:
+        //   • HEAD first → expected size, so progress is accurate even when
+        //     HF's Xet CDN streams chunked (no Content-Length on the GET).
+        //   • Short 60 s idle timeout (resets whenever bytes arrive) +
+        //     waitsForConnectivity OFF → a stall surfaces in ≤60 s instead
+        //     of silently hanging.
+        //   • Up to 6 attempts with capped backoff, resuming via URLSession
+        //     resume data — persisted to disk, so even an app relaunch
+        //     continues where it left off instead of restarting from byte 0.
+        //   • Final size validation, so a truncated file can never be
+        //     half-loaded by llama.cpp.
+        let resumeBlobURL = destDir.appendingPathComponent(ggufFilename + ".resume")
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 600      // 10 minutes per chunk
-        cfg.timeoutIntervalForResource = 3600    // 1 hour overall
-        cfg.waitsForConnectivity = true
-        let progress = ProgressReporter { [weak self] fraction in
+        cfg.timeoutIntervalForRequest = 60        // idle stall detector
+        cfg.timeoutIntervalForResource = 86_400   // retries govern, not this
+        cfg.waitsForConnectivity = false
+        let session = URLSession(configuration: cfg, delegate: nil, delegateQueue: nil)
+
+        // Expected byte size via HEAD (HF serves Content-Length or
+        // x-linked-size for LFS files). 0 = unknown → reporter falls back.
+        var expectedBytes: Int64 = 0
+        var headReq = URLRequest(url: url)
+        headReq.httpMethod = "HEAD"
+        if let (_, headResp) = try? await session.data(for: headReq),
+           let http = headResp as? HTTPURLResponse {
+            if http.expectedContentLength > 0 {
+                expectedBytes = http.expectedContentLength
+            } else if let linked = http.value(forHTTPHeaderField: "x-linked-size"),
+                      let n = Int64(linked) {
+                expectedBytes = n
+            }
+        }
+        let progress = ProgressReporter(expectedBytes: expectedBytes) { [weak self] fraction in
             self?.set(.downloading(fraction))
         }
-        let session = URLSession(configuration: cfg, delegate: nil, delegateQueue: nil)
-        let (tmpURL, resp) = try await session.download(
-            for: URLRequest(url: url), delegate: progress)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
-            throw LlamaCppError.custom(
-                "HF download \(http.statusCode) for \(urlStr)")
+
+        var resumeData: Data? = try? Data(contentsOf: resumeBlobURL)
+        if resumeData != nil {
+            log.info("GGUF download: found resume blob (\(resumeData!.count) bytes) from a previous attempt")
         }
-        // Move from the URL's auto-deleted tmp location to our cache.
-        // If something already put a file there (partial fetch from a
-        // prior attempt), overwrite it.
+        let maxAttempts = 6
+        var lastError: Error = LlamaCppError.custom("download never attempted")
+        var tmpURL: URL? = nil
+        for attempt in 1...maxAttempts {
+            do {
+                let (got, resp): (URL, URLResponse)
+                if let rd = resumeData {
+                    (got, resp) = try await session.download(resumeFrom: rd, delegate: progress)
+                } else {
+                    (got, resp) = try await session.download(for: URLRequest(url: url), delegate: progress)
+                }
+                if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                    throw LlamaCppError.custom("HF download HTTP \(http.statusCode) for \(urlStr)")
+                }
+                tmpURL = got
+                break
+            } catch {
+                lastError = error
+                // Salvage partial progress: URLSession attaches resume data
+                // to the error when the server supports ranges (HF does).
+                let ns = error as NSError
+                if let rd = ns.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                    resumeData = rd
+                    try? rd.write(to: resumeBlobURL)   // survives relaunch
+                } else {
+                    // Stale/unusable resume state — start clean next attempt.
+                    resumeData = nil
+                    try? FileManager.default.removeItem(at: resumeBlobURL)
+                }
+                guard attempt < maxAttempts else { break }
+                let backoff = min(30, 1 << attempt)    // 2,4,8,16,30,30 s
+                log.warning("GGUF download attempt \(attempt)/\(maxAttempts) failed (\(ns.code)): \(ns.localizedDescription, privacy: .public) — retrying in \(backoff)s\(resumeData != nil ? " (resuming)" : " (from scratch)")")
+                try? await Task.sleep(nanoseconds: UInt64(backoff) * 1_000_000_000)
+            }
+        }
+        guard let finalTmp = tmpURL else {
+            throw LlamaCppError.custom(
+                "model download failed after \(maxAttempts) attempts: \(lastError.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: resumeBlobURL)
+
+        // Truncation guard — a clipped GGUF must never reach llama.cpp
+        // (a partial file can load far enough to crash mid-prefill).
+        if expectedBytes > 0 {
+            let gotBytes = (try? FileManager.default
+                .attributesOfItem(atPath: finalTmp.path)[.size] as? Int64) ?? 0
+            guard gotBytes >= expectedBytes else {
+                try? FileManager.default.removeItem(at: finalTmp)
+                throw LlamaCppError.custom(
+                    "model download truncated (\(gotBytes)/\(expectedBytes) bytes) — please retry")
+            }
+        }
+
         if FileManager.default.fileExists(atPath: destURL.path) {
             try? FileManager.default.removeItem(at: destURL)
         }
-        try FileManager.default.moveItem(at: tmpURL, to: destURL)
+        try FileManager.default.moveItem(at: finalTmp, to: destURL)
         log.info("GGUF download complete: \(destURL.path, privacy: .public)")
         // Transition back to .loading so the UI knows we're now doing
         // the model open + Metal warm-up, not still downloading.
@@ -542,7 +612,11 @@ private enum LlamaCppError: Error {
 private final class ProgressReporter: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     let onFraction: (Double) -> Void
     private var lastReportedPct: Int = -1
-    init(_ onFraction: @escaping (Double) -> Void) {
+    /// HEAD-derived size used when the GET response is chunked (HF's Xet CDN
+    /// often omits Content-Length, which used to freeze the UI at 0%).
+    private let expectedBytes: Int64
+    init(expectedBytes: Int64 = 0, _ onFraction: @escaping (Double) -> Void) {
+        self.expectedBytes = expectedBytes
         self.onFraction = onFraction
     }
     func urlSession(_ session: URLSession,
@@ -550,8 +624,12 @@ private final class ProgressReporter: NSObject, URLSessionDownloadDelegate, @unc
                     didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        // Prefer the response's own total; fall back to the HEAD size; as a
+        // last resort crawl against a 5 GB ceiling so the bar still moves.
+        let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite
+                  : expectedBytes > 0 ? expectedBytes
+                  : 5_000_000_000
+        let fraction = min(0.999, Double(totalBytesWritten) / Double(total))
         let pct = Int((fraction * 100).rounded(.down))
         if pct != lastReportedPct {
             lastReportedPct = pct
