@@ -69,3 +69,30 @@ chains flip with quant.
 - Result grids: `GRID_RESULTS_LFM25_V7FULL.md` (Q4_K_M 11/13),
   `/tmp/v7full_q3km.md` (Q3_K_M 12/13), `GRID_RESULTS_LFM25_MEM.md`
   (full memory sweep).
+
+## 2026-06-10 — imatrix i-quant sweep: IQ3_XS dominates the shipping Q3_K_M
+
+Importance matrix (`llama-imatrix`, 2 MB of our own tool-call transcripts,
+PPL≈2.35) + lattice i-quants, filling the Q3_K_M→Q2_K gap where plain PTQ
+collapses. Full 13-grid @ q8_0/q8_0 + llama-bench on b9434 (shipping runtime):
+
+| quant (imatrix) | file | passes /13 | peak RSS | tg128 (b9434) |
+|---|---|---|---|---|
+| IQ2_M    | 2.6G | 5/13 ✗ | 2.97 GB | — (collapses) |
+| IQ3_XXS  | 3.1G | 11/13  | 3.43 GB | 126.6 t/s |
+| **IQ3_XS** ★ | **3.3G** | **12/13 ×3 runs (only grav_waves, the v7 floater)** | **3.64 GB** | **136.3 t/s** |
+| Q3_K_S   | 3.5G | 9/13   | 3.83 GB | — |
+| Q3_K_M-imx | 3.8G | 12/13 | 4.17 GB | 117.5* |
+
+*(shipping non-imx Q3_K_M benched 110.1 t/s in the same session)*
+
+**IQ3_XS = strict Pareto improvement over shipping Q3_K_M: same stable 12/13,
+−0.53 GB peak (−13%), ~+24% decode.** Same weights — requantized only.
+Artifacts: `tools/fine-tune/ft-out-lfm2.5-8b-v7full/imx/`. Notes:
+- K-quants lose to lattice i-quants below ~3.5 bpw (Q3_K_S 9/13 vs IQ3_XS
+  12/13 despite being BIGGER).
+- 2.6–3.0 bpw stays out of reach with flat PTQ (IQ2_M 5/13; IQ3_XXS 11/13) —
+  next lever there = MoE-aware per-tensor mix (experts low, router/attn/embed
+  high; llama-quantize --tensor-type) or true QAT.
+- imatrix at the SAME size (Q3_K_M-imx) didn't move the headline — the win
+  comes from the i-quant format + imatrix together.

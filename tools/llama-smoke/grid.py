@@ -230,6 +230,19 @@ MODELS: list[ModelSpec] = [
         },
         tool_format="json",
     ),
+    # v7-full requantized WITH an importance matrix computed on our own
+    # tool-call transcripts (llama-imatrix; "poor man's QAT"). Sweep of the
+    # Q3_K_M→Q2_K gap where plain PTQ collapses (Q2_K = 3/13). 2026-06-10.
+    ModelSpec(
+        key="lfm2.5-v7-imx",
+        quants=["IQ3_XXS", "IQ3_XS", "Q3_K_S", "IQ2_M", "Q3_K_M"],
+        local_paths={
+            q: "/Users/jasontitus/experiments/mcpzim/tools/fine-tune/"
+               f"ft-out-lfm2.5-8b-v7full/imx/lfm2.5-8b-a1b-ft.imx.{q}.gguf"
+            for q in ["IQ3_XXS", "IQ3_XS", "Q3_K_S", "IQ2_M", "Q3_K_M"]
+        },
+        tool_format="json",
+    ),
     # v8hist = v7 dataset + 224 history-event chains (the `history` template,
     # targeting the french_revolution_chain miss — v7-full's only failing
     # scenario). Same 800-iter recipe, 2026-06-10.

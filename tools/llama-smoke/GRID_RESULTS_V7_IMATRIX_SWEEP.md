@@ -1,0 +1,71 @@
+# llama.cpp grid — 2026-06-10 10:05
+
+Running sequentially — each combo is its own python subprocess so peak-RSS numbers don't carry over.
+
+| model | quant | KV | scenario | pass | peak MB | ≥5GB | ≥6GB | wall s |
+|---|---|---|---|---|---|---|---|---|
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | bars_sc_caltrain_chain | ✓ | 3390 | 0 | 0 | 6.4 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | sky_is_blue_chain | ✓ | 3428 | 0 | 0 | 5.0 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | restaurants_in_sf | ✓ | 3424 | 0 | 0 | 1.7 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | nearby_stories_palo_alto | ✓ | 3424 | 0 | 0 | 2.3 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | tell_me_about_palo_alto | ✓ | 3426 | 0 | 0 | 1.4 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | compare_musk_bezos | ✓ | 3426 | 0 | 0 | 1.6 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | relations_us_iran | ✓ | 3424 | 0 | 0 | 1.5 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | narrate_hp_garage | ✓ | 3425 | 0 | 0 | 1.8 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | what_is_here_in_sf | ✗ | 3422 | 0 | 0 | 0.8 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | grav_waves_chain | ✓ | 3427 | 0 | 0 | 4.2 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | wwi_vs_wwii_chain | ✓ | 3430 | 0 | 0 | 3.2 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | french_revolution_chain | ✗ | 3433 | 0 | 0 | 3.8 |
+| lfm2.5-v7-imx | IQ3_XXS | q8_0/q8_0 | crispr_chain | ✓ | 3428 | 0 | 0 | 4.4 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | bars_sc_caltrain_chain | ✓ | 3528 | 0 | 0 | 5.8 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | sky_is_blue_chain | ✓ | 3641 | 0 | 0 | 4.0 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | restaurants_in_sf | ✓ | 3634 | 0 | 0 | 1.1 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | nearby_stories_palo_alto | ✓ | 3636 | 0 | 0 | 1.6 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | tell_me_about_palo_alto | ✓ | 3632 | 0 | 0 | 0.9 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | compare_musk_bezos | ✓ | 3634 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | relations_us_iran | ✓ | 3634 | 0 | 0 | 1.6 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | narrate_hp_garage | ✓ | 3634 | 0 | 0 | 1.4 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | what_is_here_in_sf | ✓ | 3635 | 0 | 0 | 1.4 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | grav_waves_chain | ✗ | 3639 | 0 | 0 | 3.9 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | wwi_vs_wwii_chain | ✓ | 3639 | 0 | 0 | 3.3 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | french_revolution_chain | ✓ | 3640 | 0 | 0 | 4.6 |
+| lfm2.5-v7-imx | IQ3_XS | q8_0/q8_0 | crispr_chain | ✓ | 3639 | 0 | 0 | 3.4 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | bars_sc_caltrain_chain | ✓ | 3570 | 0 | 0 | 6.4 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | sky_is_blue_chain | ✗ | 3825 | 0 | 0 | 3.6 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | restaurants_in_sf | ✓ | 3825 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | nearby_stories_palo_alto | ✓ | 3823 | 0 | 0 | 2.2 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | tell_me_about_palo_alto | ✓ | 3823 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | compare_musk_bezos | ✓ | 3824 | 0 | 0 | 1.8 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | relations_us_iran | ✓ | 3822 | 0 | 0 | 1.7 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | narrate_hp_garage | ✓ | 3825 | 0 | 0 | 1.8 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | what_is_here_in_sf | ✓ | 3824 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | grav_waves_chain | ✗ | 3832 | 0 | 0 | 4.9 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | wwi_vs_wwii_chain | ✓ | 3830 | 0 | 0 | 5.5 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | french_revolution_chain | ✗ | 3827 | 0 | 0 | 4.0 |
+| lfm2.5-v7-imx | Q3_K_S | q8_0/q8_0 | crispr_chain | ✗ | 3829 | 0 | 0 | 4.5 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | bars_sc_caltrain_chain | ✓ | 2927 | 0 | 0 | 6.4 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | sky_is_blue_chain | ✗ | 2959 | 0 | 0 | 4.3 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | restaurants_in_sf | ✗ | 2966 | 0 | 0 | 7.6 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | nearby_stories_palo_alto | ✗ | 2968 | 0 | 0 | 7.3 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | tell_me_about_palo_alto | ✓ | 2956 | 0 | 0 | 1.5 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | compare_musk_bezos | ✗ | 2954 | 0 | 0 | 0.6 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | relations_us_iran | ✓ | 2953 | 0 | 0 | 1.7 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | narrate_hp_garage | ✓ | 2956 | 0 | 0 | 1.7 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | what_is_here_in_sf | ✓ | 2956 | 0 | 0 | 1.1 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | grav_waves_chain | ✗ | 2962 | 0 | 0 | 4.9 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | wwi_vs_wwii_chain | ✗ | 2959 | 0 | 0 | 3.3 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | french_revolution_chain | ✗ | 2960 | 0 | 0 | 1.8 |
+| lfm2.5-v7-imx | IQ2_M | q8_0/q8_0 | crispr_chain | ✗ | 2959 | 0 | 0 | 2.9 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | bars_sc_caltrain_chain | ✓ | 4116 | 0 | 0 | 3.2 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | sky_is_blue_chain | ✓ | 4169 | 0 | 0 | 2.5 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | restaurants_in_sf | ✓ | 4161 | 0 | 0 | 1.0 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | nearby_stories_palo_alto | ✓ | 4161 | 0 | 0 | 1.5 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | tell_me_about_palo_alto | ✓ | 4161 | 0 | 0 | 1.4 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | compare_musk_bezos | ✓ | 4161 | 0 | 0 | 0.9 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | relations_us_iran | ✓ | 4162 | 0 | 0 | 1.0 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | narrate_hp_garage | ✓ | 4161 | 0 | 0 | 1.0 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | what_is_here_in_sf | ✓ | 4161 | 0 | 0 | 0.8 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | grav_waves_chain | ✓ | 4165 | 0 | 0 | 2.1 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | wwi_vs_wwii_chain | ✓ | 4164 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | french_revolution_chain | ✗ | 4165 | 0 | 0 | 2.0 |
+| lfm2.5-v7-imx | Q3_K_M | q8_0/q8_0 | crispr_chain | ✓ | 4165 | 0 | 0 | 2.2 |
