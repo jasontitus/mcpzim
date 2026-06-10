@@ -1133,21 +1133,25 @@ public final class ChatSession {
         // corpus as the Gemma 3 4B FT (train_v4_combined + chain-heavy +
         // 317 targeted hard-case rows) so it drives the JSON tool format
         // via LFM25Template (ChatML markers, Gemma-3 body/parse logic).
-        // Q3_K_M scored 12/13 on the llama-smoke grid — beats Gemma 3 4B
-        // FT V7C's 10/13 — at 4.16 GB peak RSS (q8_0 KV), ~1.8× faster
-        // decode (1.5B active). ~1 GB heavier than the Gemma FT's 3.2 GB
-        // but well under the iPhone 17 Pro Max 6 GB jetsam cap. See
-        // tools/llama-smoke/LFM25_MEMORY_PERF_FRONTIER.md.
+        // Quant: IQ3_XS with an importance matrix calibrated on our own
+        // tool-call transcripts (2026-06-10) — a strict Pareto win over the
+        // previous Q3_K_M: same stable 12/13 on the llama-smoke grid,
+        // 3.64 GB peak RSS (−0.53 GB), and ~+24% decode (136 vs 110 t/s on
+        // the b9434 runtime) because the bandwidth-bound MoE gains more from
+        // smaller weights than it loses to i-quant decode cost. Recipe +
+        // sweep table: tools/llama-smoke/LFM25_MEMORY_PERF_FRONTIER.md.
+        // The id keeps the legacy "q3km" so existing devices' model
+        // selection persists across the quant swap.
         let lfm25_ft = LlamaCppProvider(
             id: "lfm2.5-8b-a1b-q3km-gguf-ft",
-            displayName: "LFM2.5 8B-A1B FT (Q3_K_M · llama.cpp)",
+            displayName: "LFM2.5 8B-A1B FT (IQ3_XS · llama.cpp)",
             huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
-            ggufFilename: "lfm2.5-8b-a1b-ft.Q3_K_M.gguf",
+            ggufFilename: "lfm2.5-8b-a1b-ft.imx.IQ3_XS.gguf",
             // llama.cpp KV is fixed at n_ctx, so long replies are nearly free
             // here — give the FT room for thorough/discuss answers (and a
             // <think> preamble) instead of the device's TTS-tuned default.
             replyTokensFloor: 1024,
-            approximateMemoryMB: 4200,
+            approximateMemoryMB: 3700,
             template: LFM25Template()
         )
         var providers: [any ModelProvider] = [

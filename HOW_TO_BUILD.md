@@ -667,3 +667,57 @@ A few practical notes:
 ## Why this exists
 
 Every time the conversation compacts I forget how to invoke the macOS tools because the knowledge lives in scrolled-off chat, not in a file. If you add a new target or find a working incantation, add a section here.
+
+## Model quantization — imatrix i-quants (the shipping LFM recipe)
+
+The shipping LFM2.5 FT quant is **IQ3_XS with an importance matrix** computed
+on our own tool-call transcripts — a strict Pareto win over plain Q3_K_M
+(same 12/13, −0.53 GB peak RSS, ~+24% decode; full sweep table in
+`tools/llama-smoke/LFM25_MEMORY_PERF_FRONTIER.md`). To requantize this FT
+(or apply the recipe to a future one):
+
+```sh
+cd tools/fine-tune
+OUT=ft-out-lfm2.5-8b-v7full     # the FT artifact dir (adapters/ must exist)
+
+# 0. If the f16 GGUF is missing (cleanup deletes it), re-fuse from adapters —
+#    every finetune_lfm2.sh stage is existence-guarded, so with adapters +
+#    Q4_K_M present it ONLY runs fuse → unstack → f16 convert (~7 min).
+#    NEEDS ~35 GB free disk (fused-hf ~17G + f16 ~16G); verify the f16 is
+#    >16 GB before deleting fused-hf — a disk-full convert dies at 96% and
+#    leaves a TRUNCATED gguf (OSError "0 written").
+OUT_DIR="$PWD/$OUT" bash finetune_lfm2.sh train_v7_filtered.jsonl
+
+# 1. Calibration text = our own training transcripts (the model's real
+#    workload). ~2 MB of message contents, shuffled:
+#    (see the python snippet in git history, commit 64ee537 — concatenates
+#    message contents from $OUT/train.jsonl to /tmp/lfm_calib.txt)
+
+# 2. Importance matrix (~50 min on M2 Max for a 16G f16):
+.llama.cpp-src/build/bin/llama-imatrix \
+  -m $OUT/lfm2.5-8b-a1b-ft.f16.gguf -f /tmp/lfm_calib.txt \
+  -o $OUT/imx/lfm.imatrix -ngl 99 -fa on
+# The 17 MB imatrix is REUSABLE for any quant of the same weights — keep it.
+
+# 3. Quantize (i-quants NEED the imatrix; without it IQ2/IQ3 are garbage):
+.llama.cpp-src/build/bin/llama-quantize --imatrix $OUT/imx/lfm.imatrix \
+  $OUT/lfm2.5-8b-a1b-ft.f16.gguf $OUT/imx/lfm2.5-8b-a1b-ft.imx.IQ3_XS.gguf IQ3_XS
+
+# 4. Score + bench (grid has ±1 noise on the borderline chains at temp
+#    0.2–0.3 — run the grid 3× and take the majority before believing a delta):
+cd ../llama-smoke
+.venv/bin/python grid.py --models lfm2.5-v7-imx --only IQ3_XS --kv q8_0/q8_0
+```
+
+Sweep findings (2026-06-10): K-quants lose to imatrix i-quants below ~3.5 bpw
+(Q3_K_S = 9/13 despite being bigger than IQ3_XS's 12/13); IQ2_M (2.6 bpw)
+collapses to 5/13 — sub-3-bpw needs an MoE-aware per-tensor mix
+(`llama-quantize --tensor-type 'PATTERN=TYPE'`: experts low, router/attention/
+embeddings high) or true QAT, neither attempted yet. imatrix at the SAME size
+(Q3_K_M) does not move the headline — the win is the i-quant format + imatrix
+together.
+
+Ship path: upload the gguf to `sliderforthewin/lfm2.5-8b-a1b-ft-GGUF`, update
+`ggufFilename` (+ `approximateMemoryMB`, displayName) in the `lfm25_ft` entry
+in `ChatSession.init` — keep the provider `id` unchanged so device model
+selections persist. Phones re-download the new file on next launch (~3.3 GB).
