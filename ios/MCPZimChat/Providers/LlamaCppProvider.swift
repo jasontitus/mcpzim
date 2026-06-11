@@ -61,10 +61,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     public let replyTokensFloor: Int?
     /// Context window (n_ctx). llama.cpp PRE-ALLOCATES the KV buffer for the
     /// whole window at load, so this is a constant resident cost per model:
-    /// LFM2.5 has only 6 attention layers (~3 KB/token at q8_0 KV) → 32k ≈
-    /// 100 MB, which the 2026-06-10 IQ3_XS requant more than paid for.
-    /// Heavier-KV models (Gemma 3 GGUF fallbacks) keep the 8k default —
-    /// their global-attention layers cost several× more per token.
+    /// LFM2.5 has 6 attention layers of 24 (8 KV-heads × 64 dim ≈ 6.9 KB/tok
+    /// at q8_0 KV) → 32k ≈ 226 MB, paid for by the 2026-06-10 IQ3_XS requant
+    /// (−0.53 GB). Heavier-KV models (Gemma 3 GGUF fallbacks) keep the 8k
+    /// default. Full budget math: CONTEXT_BUDGET.md.
     public let contextTokens: Int
 
     // MARK: - State + llama.cpp handles

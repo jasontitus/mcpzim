@@ -1152,12 +1152,12 @@ public final class ChatSession {
             // <think> preamble) instead of the device's TTS-tuned default.
             replyTokensFloor: 1024,
             approximateMemoryMB: 3700,
-            // 32k window (model trains to 131k). LFM2.5's KV is uniquely
-            // cheap — 6 attention layers ≈ 3 KB/token at q8_0 → ~100 MB
-            // resident for the whole window, paid for by the IQ3_XS requant
-            // (−0.53 GB). Turn latency stays flat via the provider's
-            // cross-turn KV prefix reuse. Gemma GGUF fallbacks keep 8k
-            // (their global-attention KV costs several× more per token).
+            // 32k window (model trains to 131k). LFM2.5's KV is cheap — only
+            // 6 of 24 layers are attention (8 KV-heads × 64 dim) ≈ 6.9 KB/tok
+            // at q8_0 → ~226 MB resident for the whole window, paid for by
+            // the IQ3_XS requant (−0.53 GB). Turn latency stays flat via the
+            // provider's cross-turn KV prefix reuse. Gemma GGUF fallbacks
+            // keep 8k. Full budget math: CONTEXT_BUDGET.md.
             contextTokens: 32768,
             template: LFM25Template()
         )
