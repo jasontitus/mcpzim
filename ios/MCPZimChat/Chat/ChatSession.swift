@@ -268,6 +268,11 @@ public final class ChatSession {
     /// after the user has walked into a genuinely new area (jitter/repeat-fix
     /// filter). nil until the first seed.
     @ObservationIgnored private var lastSeedLocation: (lat: Double, lon: Double)?
+    /// Thread keys offered in recent replies, most-recent-last, capped.
+    /// Stops the appended "Want to hear about X or Y?" line repeating the
+    /// SAME offer turn after turn when the user ignores it — a fresh offer
+    /// or silence both beat nagging.
+    @ObservationIgnored private var recentlyOfferedThreadKeys: [String] = []
 
     /// Local-area seed-index tuning. Re-seed only after moving this far; pull
     /// wiki-backed places within this radius; cap how many we embed per area so
@@ -1786,10 +1791,12 @@ public final class ChatSession {
         // it, or the next turn stays pinned to the old topic (real bug
         // 2026-05-30: a fresh "how do solar panels work?" was answered "I
         // don't see it in Lithuanian history" because discussionState
-        // survived the clear).
+        // survived the clear). Offer history too, or the first offers of
+        // the new chat get suppressed as "already offered".
         readingState = nil
         discussionState = nil
         focus.reset()
+        recentlyOfferedThreadKeys.removeAll()
         if #available(macOS 26.0, iOS 19.0, *),
            let fm = selectedModel as? FoundationModelsProvider {
             fm.resetNativeConversation()
@@ -1895,6 +1902,34 @@ public final class ChatSession {
                     }
                     return
                 }
+            }
+
+            // Genuine ambiguity → ask, don't guess. When a descriptive
+            // selector ("the church") matches SEVERAL items from the
+            // list we just showed, the resolver flags `.ambiguous` —
+            // previously that fell through to the stateless patterns,
+            // which guessed (`article_overview(title: "the church")`).
+            // A deterministic clarifying question is faster and right;
+            // `focus.lastList` stays intact so the user's pick ("the
+            // second one" / the name) resolves next turn.
+            let reference = ReferenceResolver.resolve(text, focus: focus)
+            if case .ambiguous(let candidates) = reference.binding,
+               candidates.count > 1 {
+                let names = candidates.prefix(3).map(\.name)
+                let list = names.count == 2
+                    ? "\(names[0]) or \(names[1])"
+                    : names.dropLast().joined(separator: ", ")
+                        + ", or \(names.last!)"
+                updateAssistant("Which one do you mean — \(list)?")
+                debug("ambiguous reference (\(names.joined(separator: " / "))) — asked for clarification",
+                      category: "Router")
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].finishedAt = Date()
+                }
+                return
             }
 
             // Fast-path intent router. Match a small set of simple
@@ -2053,6 +2088,27 @@ public final class ChatSession {
                     turns.append(ChatTurn(role: .tool, text: rt.toolResponseTurn))
                 }
             }
+        }
+
+        // Bounded history window. The transcript used to be fed back
+        // in FULL every turn — on a long walking session the prompt
+        // grew without limit until the memory-headroom guard below
+        // aborted the turn ("reset the conversation"). Cap it at the
+        // last `maxExchanges` user exchanges, trimming in CHUNKS
+        // (down to `keepExchanges`) rather than sliding one turn at a
+        // time, so the prompt prefix — and with it the provider's
+        // KV-cache LCP match — stays stable for several turns between
+        // trims. Older subjects aren't lost to the conversation: the
+        // discourse state (`focus`) carries entities/threads
+        // deterministically outside the transcript.
+        let maxExchanges = 10
+        let keepExchanges = 6
+        let userTurnIdxs = turns.indices.filter { turns[$0].role == .user }
+        if userTurnIdxs.count > maxExchanges {
+            let cut = userTurnIdxs[userTurnIdxs.count - keepExchanges]
+            turns.removeFirst(cut)
+            debug("history window: \(userTurnIdxs.count) exchanges > \(maxExchanges) — dropped \(cut) oldest turns, keeping last \(keepExchanges) exchanges",
+                  category: "Chat")
         }
 
         // Up to 6 tool loops per user turn — enough for small models
@@ -3360,13 +3416,13 @@ public final class ChatSession {
                 // next emission is the summarising prose — no
                 // second-tool-call round.
                 let template = selectedModel.template
-                let assistantEmission = template.formatToolCall(
-                    name: intent.toolName, arguments: dictArgs
-                )
                 let trimmed = Self.trimForModel(
                     toolName: intent.toolName,
                     result: fullResult,
                     articleCapKB: self.articleCapKB
+                )
+                let assistantEmission = template.formatToolCall(
+                    name: intent.toolName, arguments: dictArgs
                 )
                 let toolResponse = template.formatToolResponse(
                     name: intent.toolName, payload: trimmed
@@ -3465,6 +3521,12 @@ public final class ChatSession {
             return nil
         }
 
+        // A missed fetch is not a subject. Recording it would make the
+        // phantom title the pronoun target for the next turn ("tell me
+        // more" → re-fetch of an article that doesn't exist), and its
+        // "threads" would be junk. Leave focus exactly as it was.
+        if result["error"] != nil { return }
+
         let topicTools: Set<String> = [
             "article_overview", "compare_articles",
             "get_article_section", "narrate_article",
@@ -3545,10 +3607,72 @@ public final class ChatSession {
             }
         }
 
+        // Persist chat-planned routes so `route_status` ("how much
+        // longer?") works. Previously ONLY the Siri App Intent path
+        // called `setActiveRoute` — a route planned by typing/voice in
+        // the app left `activeRoute == nil` and route_status errored.
+        if toolName == "route_from_places" || toolName == "plan_driving_route" {
+            persistActiveRoute(args: args, result: result)
+        }
+
         let threads = ConversationThreads.rank(
             ConversationThreads.extract(toolName: toolName, result: result),
             focus: focus, max: 4)
-        focus.setThreads(threads)
+        // Keep the previous turn's threads when this tool contributed
+        // none — a drill-in (`get_article_section` before it carried
+        // `related[]`, `route_status`, a thin `search`) used to WIPE the
+        // open threads, killing the "where next" offer exactly when the
+        // user engaged. Stale-but-grounded beats empty.
+        if !threads.isEmpty { focus.setThreads(threads) }
+    }
+
+    /// Build an `ActiveRoute` from a successful routing tool result and
+    /// store it in `ZimfoContext` (fire-and-forget actor hop). Mirrors
+    /// the construction in `ZimfoIntents.PlanRouteIntent.perform`.
+    private func persistActiveRoute(args: [String: Any], result: [String: Any]) {
+        func dbl(_ v: Any?) -> Double? {
+            if let d = v as? Double { return d }
+            if let i = v as? Int { return Double(i) }
+            if let n = v as? NSNumber { return n.doubleValue }
+            return nil
+        }
+        guard let polyRaw = result["polyline"] as? [[Double]],
+              polyRaw.count >= 2,
+              polyRaw.allSatisfy({ $0.count >= 2 })
+        else { return }
+        let totalDist = dbl(result["distance_m"])
+            ?? dbl(result["distance_km"]).map({ $0 * 1000 }) ?? 0
+        let totalDur = dbl(result["duration_s"])
+            ?? dbl(result["duration_min"]).map({ $0 * 60 }) ?? 0
+        guard totalDist > 0 else { return }
+        var cum: [Double] = [0]
+        cum.reserveCapacity(polyRaw.count)
+        for i in 1..<polyRaw.count {
+            let d = RouteProgress.haversineMetersApprox(
+                polyRaw[i - 1][0], polyRaw[i - 1][1],
+                polyRaw[i][0], polyRaw[i][1])
+            cum.append(cum[i - 1] + d)
+        }
+        let originName = ((result["origin_resolved"] as? [String: Any])?["name"] as? String)
+            ?? (args["origin"] as? String) ?? "here"
+        let destName = ((result["destination_resolved"] as? [String: Any])?["name"] as? String)
+            ?? (args["destination"] as? String) ?? "destination"
+        let route = ActiveRoute(
+            startedAt: Date(),
+            origin: .init(lat: polyRaw.first![0], lon: polyRaw.first![1]),
+            destination: .init(lat: polyRaw.last![0], lon: polyRaw.last![1]),
+            originName: originName,
+            destinationName: destName,
+            zim: (result["zim"] as? String) ?? "",
+            totalDurationSeconds: totalDur,
+            totalDistanceMeters: totalDist,
+            polyline: polyRaw.map { .init(lat: $0[0], lon: $0[1]) },
+            cumulativeDistanceMeters: cum,
+            turnByTurn: (result["turn_by_turn"] as? [String]) ?? []
+        )
+        debug("persisting active route \(originName) → \(destName) for route_status",
+              category: "Router")
+        Task { await ZimfoContext.shared.setActiveRoute(route) }
     }
 
     /// Pull the lead prose out of an article-shaped tool result for embedding.
@@ -3645,7 +3769,8 @@ public final class ChatSession {
     /// with its own offer, or the reply is empty.
     private func appendThreadOfferIfUseful() async {
         var offerable = focus.openThreads.filter {
-            $0.kind != .place || $0.zimPath != nil
+            ($0.kind != .place || $0.zimPath != nil)
+                && !recentlyOfferedThreadKeys.contains($0.matchKey)
         }
         guard !offerable.isEmpty else { return }
         offerable = await rerankBySimilarity(offerable)
@@ -3665,6 +3790,14 @@ public final class ChatSession {
             return
         }
         messages[idx].text = text + "\n\n" + line
+        // Remember what we offered so the next turn's line is fresh.
+        // `offer()` phrases the first 3 threads — mark exactly those.
+        recentlyOfferedThreadKeys.append(
+            contentsOf: offerable.prefix(3).map(\.matchKey))
+        if recentlyOfferedThreadKeys.count > 12 {
+            recentlyOfferedThreadKeys.removeFirst(
+                recentlyOfferedThreadKeys.count - 12)
+        }
     }
 
     /// A tapped suggestion chip. Clears the chips on the offering message (so a
@@ -3856,55 +3989,65 @@ public final class ChatSession {
             }
             return result
         case "article_overview", "compare_articles":
-            // Wikipedia leads are designed to be standalone summaries —
-            // the opening paragraphs carry the entire "what is this"
-            // answer the LLM needs for a compare / overview pass.
-            // Feeding additional sections just burns prompt budget
-            // AND memory: on-device repro showed two full articles
-            // (15–30 KB of raw text) jetsam'd the app mid-summary.
+            // The composite tools pre-chew: lead + the 1–2 most
+            // informative narrative sections (`pickOverview`) — or,
+            // for compares, the relations-article sections that
+            // mention the counterpart. Feeding whole articles is off
+            // the table (on-device repro: two full 15–30 KB articles
+            // jetsam'd the app mid-summary), but the previous
+            // lead-ONLY trim threw the picked sections away too, so
+            // "history of X" / "how have A and B gotten along" reached
+            // the model as 160 words of lead and nothing else.
             //
-            // Keep ONLY the lead section, truncated to ~160 words
-            // (≈1000 chars ≈ 200 tokens). At two articles that's
-            // ~400 extra tokens of prompt — safely under any
-            // threshold, with enough room for a second or third
-            // paragraph of the lead so the model has real
-            // comparable material. Word-based truncation (vs char-
-            // based) keeps words and trailing punctuation intact so
-            // the model doesn't see "...founded in 19" or mid-entity
-            // mangling at the boundary. The relations-article shape
-            // (top-level `sections`) gets the same treatment.
+            // Keep the lead (word-capped at 160 ≈ 200 tokens) PLUS up
+            // to two picked sections (word-capped at 120 each). Worst
+            // case per article ≈ 400 words ≈ 520 tokens; a two-article
+            // compare ≈ 1 K tokens — an order of magnitude under the
+            // raw-article payload that caused the jetsam. Word-based
+            // truncation keeps boundaries clean so the model doesn't
+            // see "...founded in 19".
             let leadWordCap = 160
-            func keepLeadOnly(_ sections: [[String: Any]]) -> [[String: Any]] {
+            let sectionWordCap = 120
+            let extraSectionCap = 2
+            func wordCapped(_ text: String, cap: Int) -> (text: String, truncated: Bool) {
+                let words = text.split(separator: " ",
+                                       omittingEmptySubsequences: false)
+                guard words.count > cap else { return (text, false) }
+                return (words.prefix(cap).joined(separator: " ") + "…", true)
+            }
+            func trimSections(_ sections: [[String: Any]]) -> [[String: Any]] {
                 guard let lead = sections.first else { return [] }
+                var out: [[String: Any]] = []
                 var trimmedLead = lead
                 if let text = lead["text"] as? String {
-                    // Run word-based cap across the whole lead — not
-                    // just the first paragraph. At 160 words we
-                    // typically land inside paragraph 2 or 3, which
-                    // for most Wikipedia leads is exactly the "enough
-                    // context to actually compare" sweet spot.
-                    let words = text.split(separator: " ",
-                                           omittingEmptySubsequences: false)
-                    let truncated = words.count > leadWordCap
-                    let out = truncated
-                        ? words.prefix(leadWordCap).joined(separator: " ") + "…"
-                        : text
-                    trimmedLead["text"] = out
-                    if truncated || sections.count > 1 {
-                        trimmedLead["truncated"] = true
-                    }
+                    let capped = wordCapped(text, cap: leadWordCap)
+                    trimmedLead["text"] = capped.text
+                    if capped.truncated { trimmedLead["truncated"] = true }
                 }
-                return [trimmedLead]
+                out.append(trimmedLead)
+                for section in sections.dropFirst().prefix(extraSectionCap) {
+                    var trimmed = section
+                    if let text = section["text"] as? String {
+                        let capped = wordCapped(text, cap: sectionWordCap)
+                        trimmed["text"] = capped.text
+                        if capped.truncated { trimmed["truncated"] = true }
+                    }
+                    out.append(trimmed)
+                }
+                if sections.count > out.count {
+                    out[out.count - 1]["sections_dropped"] = sections.count - out.count
+                }
+                return out
             }
             var out = result
             if let sections = out["sections"] as? [[String: Any]] {
-                out["sections"] = keepLeadOnly(sections)
+                out["sections"] = trimSections(sections)
             }
             if let articles = out["articles"] as? [[String: Any]] {
                 out["articles"] = articles.map { a -> [String: Any] in
                     var inner = a
                     if let sections = a["sections"] as? [[String: Any]] {
-                        inner["sections"] = keepLeadOnly(sections)
+                        inner["sections"] = trimSections(sections)
                     }
                     return inner
                 }
