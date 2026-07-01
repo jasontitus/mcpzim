@@ -454,6 +454,21 @@ public actor MCPToolAdapter {
                         + "active.",
                     inputSchemaJSON: Self.emptyObjectSchema
                 ),
+                MCPTool(
+                    name: "distance_to",
+                    description:
+                        "THE tool for \"how far is X?\" / \"which way is "
+                        + "X?\" / \"can I walk to X?\" — returns the "
+                        + "straight-line distance, compass direction "
+                        + "(e.g. \"north-east\"), and a rough walking-time "
+                        + "estimate from the user's position to a named "
+                        + "place. Pass `place` (free-text; geocoded "
+                        + "internally) or explicit `lat`+`lon`. "
+                        + "**NOT** for full directions (use "
+                        + "`route_from_places`) and **NOT** for \"what's "
+                        + "near X\" (use `near_places`).",
+                    inputSchemaJSON: Self.distanceToSchema
+                ),
             ])
         }
         return MCPToolRegistry(tools: tools)
@@ -527,7 +542,7 @@ public actor MCPToolAdapter {
             let section = (args["section"] as? String) ?? ""
             let zim = args["zim"] as? String
             let hit = try await service.articleSection(path: path, section: section, zim: zim)
-            return [
+            var out: [String: Any] = [
                 "zim": hit.zim,
                 "path": path,
                 "title": hit.title,
@@ -536,6 +551,16 @@ public actor MCPToolAdapter {
                 "bytes": hit.section.bytes,
                 "text": hit.section.text,
             ]
+            // Same lateral-drift `related` array `article_overview` carries —
+            // drill-in turns previously produced ZERO threads, so the
+            // conversation's "where next" offer died exactly when the user
+            // went deeper. Best-effort: omission never fails the fetch.
+            if let related = try? await Self.relatedLinks(
+                service: service, path: path, zim: hit.zim
+            ), !related.isEmpty {
+                out["related"] = related
+            }
+            return out
         case "get_article_by_title":
             let title = (args["title"] as? String) ?? ""
             let sectionArg = args["section"] as? String
@@ -543,7 +568,7 @@ public actor MCPToolAdapter {
             let hit = try await service.articleByTitle(
                 title: title, zim: zim, section: sectionArg
             )
-            return [
+            var out: [String: Any] = [
                 "zim": hit.zim,
                 "path": hit.path,
                 "title": hit.title,
@@ -552,6 +577,12 @@ public actor MCPToolAdapter {
                 "bytes": hit.section.bytes,
                 "text": hit.section.text,
             ]
+            if let related = try? await Self.relatedLinks(
+                service: service, path: hit.path, zim: hit.zim
+            ), !related.isEmpty {
+                out["related"] = related
+            }
+            return out
         case "get_main_page":
             let zim = args["zim"] as? String
             let pages = try await service.mainPage(zim: zim)
@@ -760,6 +791,8 @@ public actor MCPToolAdapter {
             return try await dispatchNearbyStoriesAtPlace(args: args)
         case "what_is_here":
             return try await dispatchWhatIsHere(args: args)
+        case "distance_to":
+            return try await dispatchDistanceTo(args: args)
         case "route_status":
             return await dispatchRouteStatus()
         default:
@@ -1468,6 +1501,90 @@ public actor MCPToolAdapter {
         return out
     }
 
+    /// Composite "how far / which way is X" answer: geocode the target,
+    /// then straight-line distance + compass bearing from the user's
+    /// position (or an explicit origin). Packages the geocode→math chain
+    /// the model can't run itself (it has no trig and `geocode` isn't
+    /// declared). Deliberately cheap — no routing graph work; the reply
+    /// carries an honest walking-time estimate and points the model at
+    /// `route_from_places` when the user wants an actual route.
+    private func dispatchDistanceTo(args: [String: Any]) async throws -> [String: Any] {
+        // Origin: explicit from_lat/from_lon, else the host GPS fix.
+        var fromLat = args["from_lat"] as? Double
+        var fromLon = args["from_lon"] as? Double
+        if fromLat == nil || fromLon == nil {
+            if let provider = hostStateProvider {
+                let snap = await provider()
+                if let loc = snap.currentLocation {
+                    fromLat = loc.lat
+                    fromLon = loc.lon
+                }
+            }
+        }
+        guard let oLat = fromLat, let oLon = fromLon,
+              !(oLat == 0 && oLon == 0)
+        else {
+            return [
+                "error": "distance_to needs the user's GPS fix (or explicit "
+                    + "`from_lat`+`from_lon`) as the origin. Neither is available.",
+            ]
+        }
+
+        // Target: explicit lat/lon, else geocode the `place` string.
+        var tLat = args["lat"] as? Double
+        var tLon = args["lon"] as? Double
+        var resolvedPlace: Place?
+        let placeName = (args["place"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if tLat == nil || tLon == nil {
+            guard !placeName.isEmpty else {
+                return [
+                    "error": "distance_to needs a `place` name or explicit "
+                        + "`lat`+`lon` for the target.",
+                ]
+            }
+            let hits = try await service.geocode(
+                query: placeName, limit: 1,
+                zim: args["zim"] as? String, kinds: nil
+            )
+            guard let hit = hits.first else {
+                return [
+                    "error": "Could not resolve \"\(placeName)\" in the loaded "
+                        + "streetzim. Try a different name or a nearby landmark.",
+                ]
+            }
+            resolvedPlace = hit
+            tLat = hit.lat
+            tLon = hit.lon
+        }
+        guard let dLat = tLat, let dLon = tLon else {
+            return ["error": "distance_to could not determine target coordinates."]
+        }
+
+        let meters = GeoMath.haversineMeters(oLat, oLon, dLat, dLon)
+        let bearing = GeoMath.bearingDegrees(
+            fromLat: oLat, fromLon: oLon, toLat: dLat, toLon: dLon)
+        let compass = GeoMath.compassPoint(degrees: bearing)
+        // Straight-line × 1.3 street-detour factor at 5 km/h — an honest
+        // "roughly N minutes on foot", not a routed figure.
+        let walkMinutes = Int(((meters * 1.3) / (5000.0 / 60.0)).rounded())
+        var out: [String: Any] = [
+            "target": resolvedPlace?.name ?? placeName,
+            "distance_m": Int(meters.rounded()),
+            "distance_km": (meters / 100).rounded() / 10,
+            "direction": compass,
+            "bearing_deg": Int(bearing.rounded()),
+            "walk_minutes_estimate": max(1, walkMinutes),
+            "note": "Straight-line distance and direction from the user's "
+                + "position. For an actual road route + driving time, call "
+                + "`route_from_places`.",
+        ]
+        if let p = resolvedPlace {
+            out["target_resolved"] = Self.encodePlace(p)
+        }
+        return out
+    }
+
     private func dispatchWhatIsHere(args: [String: Any]) async throws -> [String: Any] {
         var lat = args["lat"] as? Double
         var lon = args["lon"] as? Double
@@ -1513,6 +1630,9 @@ public actor MCPToolAdapter {
             "nearest_named_place": first.place.name,
             "admin_area": first.place.subtype.isEmpty ? first.place.kind : first.place.subtype,
             "distance_m": Int(first.distanceMeters.rounded()),
+            "direction": GeoMath.compassPoint(
+                fromLat: resolvedLat, fromLon: resolvedLon,
+                toLat: first.place.lat, toLon: first.place.lon),
             "place_lat": first.place.lat,
             "place_lon": first.place.lon,
         ]
@@ -1527,6 +1647,9 @@ public actor MCPToolAdapter {
             {
                 out["wiki_title"] = hit.title
                 out["wiki_zim"] = hit.zim
+                // Article path so the host's drift extractor can offer
+                // "hear about <neighborhood>" as a wiki-backed thread.
+                out["wiki_path"] = hit.path
                 out["wiki_summary"] = summary
             }
         }
@@ -1895,6 +2018,15 @@ public actor MCPToolAdapter {
             "results": result.results.enumerated().map { idx, pair -> [String: Any] in
                 var r = encodePlace(pair.place)
                 r["distance_m"] = Int(pair.distanceMeters.rounded())
+                // Compass direction from the query origin, so the model
+                // can say "200 m north-east" instead of a bare distance.
+                if let origin, let oLat = origin["lat"], let oLon = origin["lon"],
+                   !(oLat == 0 && oLon == 0)
+                {
+                    r["direction"] = GeoMath.compassPoint(
+                        fromLat: oLat, fromLon: oLon,
+                        toLat: pair.place.lat, toLon: pair.place.lon)
+                }
                 // Inject Wikipedia lead + path when `fetchWikiExcerpts`
                 // resolved the place's `wiki` tag. Popup rendering on
                 // the iOS side reads `excerpt` / `wiki_path` to show
@@ -2206,6 +2338,17 @@ public actor MCPToolAdapter {
         "title":{"type":"string","description":"Article title. Accepts bare title or the OSM language-prefixed form (\"en:HP Garage\")."},
         "section_index":{"type":"integer","description":"Optional: narrate one chunk starting at this document-order section (~700 chars, ends on a section boundary). Omit to narrate the whole article. Used by the host for \"continue\" / \"keep reading\" paging — section indices match article_overview's available_sections."},
         "zim":{"type":"string","description":"Optional: pin to a specific Wikipedia ZIM filename."}
+    }}
+    """#.data(using: .utf8)!
+
+    private static let distanceToSchema: Data = #"""
+    {"type":"object","properties":{
+        "place":{"type":"string","description":"Free-text target place name — geocoded against the loaded streetzim."},
+        "lat":{"type":"number","description":"Explicit target latitude (alternative to `place`)."},
+        "lon":{"type":"number","description":"Explicit target longitude."},
+        "from_lat":{"type":"number","description":"Optional origin latitude; defaults to the user's GPS fix."},
+        "from_lon":{"type":"number","description":"Optional origin longitude."},
+        "zim":{"type":"string","description":"Optional streetzim filename to geocode against."}
     }}
     """#.data(using: .utf8)!
 

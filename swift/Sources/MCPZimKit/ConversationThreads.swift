@@ -37,7 +37,8 @@ public enum ConversationThreads {
         case "near_named_place", "near_places",
              "nearby_stories", "nearby_stories_at_place":
             return placesThreads(result)
-        case "article_overview", "get_article_section", "narrate_article":
+        case "article_overview", "get_article_section",
+             "get_article_by_title", "narrate_article":
             return articleThreads(result)
         case "compare_articles":
             return compareThreads(result)

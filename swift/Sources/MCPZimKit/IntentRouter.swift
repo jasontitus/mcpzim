@@ -441,28 +441,65 @@ public enum IntentRouter {
         }
         let lower = raw.lowercased()
 
-        // Locational follow-up about a place we have coordinates for.
-        // Travel/distance phrasings ("how far is it", "how long to drive",
-        // "directions") → a route from the user's location (the routing
-        // reply carries the distance + duration). Proximity phrasings
-        // ("what's near it", "anything around") → near_places at its coords.
-        if entity.kind == .place, let lat = entity.lat, let lon = entity.lon {
-            let travel = ["how far", "distance", "how long", "walk", "drive",
-                          "directions", "route", "how do i get", "get to"]
-            let nearby = ["near", "around", "nearby", "close by", "close to"]
-            if travel.contains(where: { lower.contains($0) }) {
-                return DirectIntent(toolName: "route_from_places", args: [
-                    "origin":      .string("my location"),
-                    "destination": .string(entity.name),
-                ])
+        // Locational follow-up. The resolver binds pronouns to the
+        // most-recent entity of ANY kind, but "how far is it?" after
+        // "restaurants near the Ferry Building" then "tell me about
+        // Ohlone history" means the PLACE, not the topic — so when the
+        // turn is locational and the bound entity isn't a locatable
+        // place, rebind to the most recent place in focus.
+        //
+        // Phrase split:
+        //  * distance-shaped ("how far", "which way", "can I walk") →
+        //    `distance_to` — a distance + compass-direction + walk-estimate
+        //    answer, cheap, no routing-graph work;
+        //  * travel-shaped ("directions", "how do I get", "how long",
+        //    "get to") → `route_from_places` — the routed reply carries the
+        //    real driving duration;
+        //  * proximity-shaped ("near it", "around") → `near_places`.
+        let distanceWords = ["how far", "distance", "how close",
+                             "which way", "which direction",
+                             "can i walk", "walkable", "walking distance",
+                             "walk there", "can i drive", "drive there",
+                             "how long to walk", "how long to drive"]
+        let proximityWords = ["near", "around", "nearby", "close by",
+                              "close to", "what's close"]
+        let routeWords = ["directions", "route", "how do i get",
+                          "get to", "how long"]
+        let isLocational = (distanceWords + proximityWords + routeWords)
+            .contains { lower.contains($0) }
+        if isLocational {
+            let place: FocusEntity? = (entity.kind == .place)
+                ? entity
+                : focus.mostRecent(kind: .place)
+            if let place {
+                if distanceWords.contains(where: { lower.contains($0) }) {
+                    // "how far / which way is it" wants a distance +
+                    // direction answer, not a POI dump around the place.
+                    var args: [String: AnyJSONValue] = [
+                        "place": .string(place.name),
+                    ]
+                    if let lat = place.lat, let lon = place.lon {
+                        args["lat"] = .double(lat)
+                        args["lon"] = .double(lon)
+                    }
+                    return DirectIntent(toolName: "distance_to", args: args)
+                }
+                if routeWords.contains(where: { lower.contains($0) }) {
+                    return DirectIntent(toolName: "route_from_places", args: [
+                        "origin":      .string("my location"),
+                        "destination": .string(place.name),
+                    ])
+                }
+                if let lat = place.lat, let lon = place.lon {
+                    return DirectIntent(toolName: "near_places", args: [
+                        "lat":       .double(lat),
+                        "lon":       .double(lon),
+                        "radius_km": .double(1),
+                    ])
+                }
             }
-            if nearby.contains(where: { lower.contains($0) }) {
-                return DirectIntent(toolName: "near_places", args: [
-                    "lat":       .double(lat),
-                    "lon":       .double(lon),
-                    "radius_km": .double(1),
-                ])
-            }
+            // No locatable place in focus — fall through to the
+            // encyclopedic default below (better than guessing coords).
         }
 
         // Default: re-open the subject encyclopedically. `article_overview`
