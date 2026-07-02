@@ -138,6 +138,46 @@ Build with `-skipMacroValidation` — `MLXHuggingFace` exposes Swift macros and 
 
 `tools/gemma-smoke/Package.swift` still uses the retired `Swift-gemma4-core` URL (the harness is FP16-only — LCP + tokenizer tests — so hasn't been migrated to the upstream stack yet).
 
+## Over-WIFI crash debugging (no USB, no Xcode GUI)
+
+Hard-won 2026-07-02: two on-device llama.cpp deaths (one mid-`generate`,
+one mid-model-load) produced **no `.ips` of any kind** — no crash report,
+no JetsamEvent, no gpuRestart. The `idevice*` tools need USB. The ONLY
+reliable over-wifi forensics are the app's own persisted logs plus
+`devicectl`:
+
+```sh
+# Deploy + VERIFY (install → launch → watch liveness 45 s → auto-pull any
+# new crash reports). NEVER trust install+launch alone — a build can
+# crash-loop while "Launched application" reports success.
+ios/scripts/mcp-deploy-verify.sh            # after a build
+ios/scripts/mcp-deploy-verify.sh watch      # just watch the running app
+
+# The app streams every debug() line synchronously to
+# Documents/debug-logs/<launch-timestamp>.log (survives crash/jetsam).
+# List + pull them over wifi:
+xcrun devicectl device info files --device <UUID> \
+  --domain-type appDataContainer --domain-identifier org.mcpzim.MCPZimChat \
+  --subdirectory "Documents/debug-logs"
+xcrun devicectl device copy from --device <UUID> \
+  --domain-type appDataContainer --domain-identifier org.mcpzim.MCPZimChat \
+  --source "Documents/debug-logs/<file>.log" --destination /tmp/<file>.log
+
+# System crash reports (when they DO exist) are listable the same way:
+xcrun devicectl device info files --device <UUID> --domain-type systemCrashLogs
+```
+
+Reading the tea leaves: a log whose last line is `backgrounded — dropping
+KV cache` was a NORMAL background kill. Anything else (`iter 0 ·
+generate(…)`, `Loading <model>…`) means the app died mid-work in the
+foreground. `ChatSession.init` now detects this automatically and writes
+`⚠️ PREVIOUS SESSION ENDED UNCLEANLY` + the tail into the new session's
+log and the debug pane (`LogArchive.previousSessionUncleanTail`).
+
+Also useful: `devicectl device process launch --console` attaches stdout
+(catches C-level abort messages llama.cpp prints before dying) — but note
+your own ctrl-C/timeout then SIGTERMs the app.
+
 ## Device syslog (no more copy-paste from the in-window debug pane)
 
 `ios/scripts/mcp-logs.sh` wraps `idevicesyslog -p MCPZimChat` and writes to `/tmp/mcp-syslog.log`. The app's `ChatSession.debug()` goes through OSLog so the streamer captures it.

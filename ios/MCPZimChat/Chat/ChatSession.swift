@@ -1043,6 +1043,16 @@ public final class ChatSession {
     ///   don't have to press Load. Tests pass `false` so they can swap
     ///   the selected provider before any weights get downloaded.
     public init(autoLoadOnInit: Bool = true) {
+        // FIRST line of every session: did the previous run die mid-work?
+        // Two on-device llama.cpp deaths (2026-07-02) left no system crash
+        // report — the previous log's tail is the only evidence, so shout
+        // it here where the debug pane, OSLog, and the persisted archive
+        // all see it.
+        if let tail = LogArchive.shared.previousSessionUncleanTail() {
+            let msg = "⚠️ PREVIOUS SESSION ENDED UNCLEANLY (no clean background/terminate). Last lines of \(tail)"
+            print(msg)
+            LogArchive.shared.append(msg)
+        }
         let defaults = UserDefaults.standard
         let storedCap = defaults.integer(forKey: Self.articleCapKBKey)
         // Default to the device-tier cap so phones don't blow RAM on
@@ -3529,45 +3539,53 @@ public final class ChatSession {
                     noteDiscussionAnchor(toolName: "article_overview",
                                          result: fullResult)
                 }
-                // The fast path dispatches the tool (saving iter 0's
-                // ~13 s prefill-and-decide cost), then hands off to
-                // the LLM to generate the prose. Synthesising a
-                // caption ourselves works for simple places / routing
-                // replies — a map bubble below carries the real
-                // answer — but for compare / article_overview the
-                // reply IS the prose, and the LLM needs to see the
-                // tool result and summarise it.
-                //
-                // We inject a synthetic round-trip (assistant
-                // tool-call emission + tool response) into the
-                // transcript in the model's native wire format, then
-                // return `false` so the caller falls through to
-                // `runGenerationLoop`. That loop rebuilds the prompt,
-                // sees the round-trip already done, and the model's
-                // next emission is the summarising prose — no
-                // second-tool-call round.
-                let template = selectedModel.template
-                let trimmed = Self.trimForModel(
-                    toolName: intent.toolName,
-                    result: fullResult,
-                    articleCapKB: self.articleCapKB
-                )
-                let assistantEmission = template.formatToolCall(
-                    name: intent.toolName, arguments: dictArgs
-                )
-                let toolResponse = template.formatToolResponse(
-                    name: intent.toolName, payload: trimmed
-                )
-                recordToolRoundTrip(
-                    assistantEmission: assistantEmission,
-                    toolResponse: toolResponse
-                )
-                // Leave the assistant bubble empty — `runGenerationLoop`
-                // will stream the prose into it.
-                updateAssistant("")
-                debug("fast-path injected \(intent.toolName) round-trip → LLM will summarise",
+                // Answer as a GROUNDED SINGLE-SHOT over the fetched
+                // sections — the same machinery discuss mode uses — with
+                // NO conversation history in the prompt. The previous
+                // design injected a synthetic tool round-trip and let
+                // `runGenerationLoop` summarise with the full transcript;
+                // with unrelated prior turns in context the FT parroted
+                // a previous question verbatim instead of summarising
+                // (device + Mac captures 2026-07-02, "And tell me about
+                // Donald Trump" → reply "How about his mother?").
+                let question = messages.last(where: { $0.role == .user })?.text
+                    ?? "Tell me about this."
+                var sources: [(title: String, sections: [ArticleSection])] = []
+                func sections(from dict: [String: Any]) -> [ArticleSection] {
+                    ((dict["sections"] as? [[String: Any]]) ?? []).map {
+                        ArticleSection(
+                            title: ($0["title"] as? String) ?? "",
+                            level: ($0["level"] as? Int) ?? 0,
+                            text: ($0["text"] as? String) ?? "")
+                    }
+                }
+                if let articles = fullResult["articles"] as? [[String: Any]] {
+                    for a in articles {
+                        let t = (a["title"] as? String) ?? ""
+                        let secs = sections(from: a)
+                        if !t.isEmpty, !secs.isEmpty { sources.append((t, secs)) }
+                    }
+                } else {
+                    let t = (fullResult["title"] as? String)
+                        ?? (dictArgs["title"] as? String) ?? "the article"
+                    let secs = sections(from: fullResult)
+                    if !secs.isEmpty { sources.append((t, secs)) }
+                }
+                guard !sources.isEmpty else {
+                    updateAssistant("I found the article but couldn't read its sections.")
+                    return true
+                }
+                let anchor = sources[0].title
+                let grounded = DiscussionState(
+                    anchorTitle: anchor,
+                    topic: ArticleHeuristics.topicCore(anchor),
+                    zim: fullResult["zim"] as? String,
+                    sources: sources)
+                debug("fast-path \(intent.toolName) → grounded single-shot over \(sources.count) source(s)",
                       category: "Router")
-                return false
+                await generateGroundedAnswer(state: grounded, question: question)
+                await appendThreadOfferIfUseful()
+                return true
             } else if intent.toolName == "what_is_here" {
                 let synth = IntentRouter.synthesizeWhatIsHereReply(
                     fullResult: fullResult

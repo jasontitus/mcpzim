@@ -223,6 +223,27 @@ final class ConversationContinuationTests: XCTestCase {
         XCTAssertNil(IntentRouter.classify("What about his parents?"))
     }
 
+    func testLeadingConnectiveDoesNotDefeatTopicSwitch() {
+        // "And tell me about Donald Trump" mid-discussion — the leading
+        // "And" broke every ^-anchored stateless pattern, so no intent
+        // classified, discussion mode never exited, and the model
+        // confabulated Trump facts from Putin passages (device capture
+        // 2026-07-02).
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Putin", kind: .topic))
+        let intent = IntentRouter.classify("And tell me about Donald Trump", focus: f)
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "donald trump")
+        // A bare connective is still a continuation, not a stripped-empty
+        // misfire.
+        XCTAssertNil(IntentRouter.classify("and?"))
+        // "Andrew Jackson" is not "and rew Jackson".
+        XCTAssertEqual(
+            IntentRouter.classify("Tell me about Andrew Jackson")?.anyArgs["title"] as? String,
+            "andrew jackson")
+    }
+
     func testExplicitNameDoesNotBindPartialThreadLabel() {
         // Real capture 2026-07-02: with "The Trump Organization" offered
         // as a drift thread, "Tell me about Donald Trump" bound to it on

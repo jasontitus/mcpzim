@@ -126,6 +126,8 @@ public actor DefaultZimService: ZimService {
     private var spatialGraphs: [String: SpatialGraph] = [:]
     private var chunks: [String: [String: [[String: Any]]]] = [:]
     private var manifests: [String: [String: Int]] = [:]
+    /// zim → prefix → fan-out leaf chunk names (`manifest.sub_chunks`).
+    private var subChunkMaps: [String: [String: [String]]] = [:]
     /// Cached streetzim bbox (minLat, minLon, maxLat, maxLon), loaded
     /// lazily from `streetzim-meta.json`. `nil` entry means "tried and
     /// the file wasn't there" — older streetzims don't ship the meta.
@@ -642,9 +644,48 @@ public actor DefaultZimService: ZimService {
             let prefix = Geocoder.normalizePrefix(attempt)
             for pair in candidates {
                 let manifest = try loadManifest(pair: pair)
-                if !manifest.isEmpty && manifest[prefix] == nil { continue }
-                let records = try loadChunk(pair: pair, prefix: prefix)
-                let ranked = Geocoder.rank(records: records, query: attempt,
+                // A prefix is either a plain chunk, a fan-out split
+                // (hot prefixes on continent-scale builds — "st" →
+                // st-0-0…; the leaf list lives in `sub_chunks`), or
+                // absent. Before 2026-07-02 the split case fell through
+                // as "absent", so EVERY name lookup against the
+                // California streetzim silently returned nothing
+                // ("How far is Stanford University?" → 'not in the
+                // loaded maps').
+                let leaves: [String]
+                let subLeaves = subChunkLeaves(pair: pair, prefix: prefix)
+                if manifest[prefix] != nil {
+                    leaves = [prefix]
+                } else if !subLeaves.isEmpty {
+                    leaves = subLeaves
+                } else if manifest.isEmpty {
+                    leaves = [prefix]   // legacy build, no manifest — try direct
+                } else {
+                    continue
+                }
+                // Sub-chunk bucketing hashes the full NAME, so a query
+                // can't route to one leaf — pre-filter each leaf by
+                // substring and rank the survivors once. Early-exit
+                // when we already hold plenty of candidates; leaves are
+                // loaded uncached so a hot-prefix scan can't pin
+                // hundreds of MB in the chunk cache.
+                var matching: [[String: Any]] = []
+                let q = attempt.lowercased()
+                for leaf in leaves {
+                    let records = try loadChunk(
+                        pair: pair, prefix: leaf, cache: leaves.count == 1)
+                    if leaves.count == 1 {
+                        matching = records
+                    } else {
+                        matching += records.filter {
+                            (($0["n"] as? String) ?? "").lowercased().contains(q)
+                        }
+                    }
+                    if matching.count >= max(200, limit * 8), leaves.count > 1 {
+                        break
+                    }
+                }
+                let ranked = Geocoder.rank(records: matching, query: attempt,
                                            limit: limit, kinds: filterSet)
                 if !ranked.isEmpty {
                     if attempt != query {
@@ -1523,24 +1564,50 @@ public actor DefaultZimService: ZimService {
         log("loading search-data/manifest.json from \(pair.name)…")
         guard let entry = try pair.reader.read(path: "search-data/manifest.json") else {
             manifests[pair.name] = [:]
+            subChunkMaps[pair.name] = [:]
             return [:]
         }
         let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [String: Any]
         let chunks = (parsed?["chunks"] as? [String: Int]) ?? [:]
         manifests[pair.name] = chunks
+        // Large builds fan hot prefixes out into FNV-1a sub-chunks
+        // ("st" → st-0-0 … st-f-f, recursive to depth 5) and record the
+        // leaf list under `sub_chunks`. The bucketing hashes the full
+        // record NAME, so a substring query can't route to one leaf —
+        // the client contract (the viewer's `expandPrefix`) is: fetch
+        // every leaf under the prefix and filter by query content.
+        subChunkMaps[pair.name] =
+            (parsed?["sub_chunks"] as? [String: [String]]) ?? [:]
         return chunks
     }
 
-    private func loadChunk(pair: (name: String, reader: ZimReader), prefix: String) throws -> [[String: Any]] {
+    /// Leaf chunk names for a prefix that was fan-out split (see
+    /// `loadManifest`). Empty when the prefix is a plain single chunk.
+    /// `loadManifest(pair:)` must have run first (it populates the map).
+    func subChunkLeaves(
+        pair: (name: String, reader: ZimReader), prefix: String
+    ) -> [String] {
+        subChunkMaps[pair.name]?[prefix] ?? []
+    }
+
+    private func loadChunk(
+        pair: (name: String, reader: ZimReader), prefix: String,
+        cache: Bool = true
+    ) throws -> [[String: Any]] {
         if let cached = chunks[pair.name]?[prefix] { return cached }
         log("loading search-data/\(prefix).json from \(pair.name)…")
         guard let entry = try pair.reader.read(path: "search-data/\(prefix).json") else {
             return []
         }
         let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]] ?? []
-        var byPrefix = chunks[pair.name] ?? [:]
-        byPrefix[prefix] = parsed
-        chunks[pair.name] = byPrefix
+        // Sub-chunk leaf scans pass `cache: false`: a hot prefix can have
+        // dozens of multi-MB leaves, and pinning them all in the unbounded
+        // chunk cache would blow phone RAM for a one-off geocode.
+        if cache {
+            var byPrefix = chunks[pair.name] ?? [:]
+            byPrefix[prefix] = parsed
+            chunks[pair.name] = byPrefix
+        }
         return parsed
     }
 }

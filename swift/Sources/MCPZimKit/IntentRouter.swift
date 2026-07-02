@@ -72,10 +72,21 @@ public enum IntentRouter {
         currentLocation: (lat: Double, lon: Double)? = nil,
         focus: ConversationFocus? = nil
     ) -> DirectIntent? {
-        let text = raw
+        var text = raw
             .replacingOccurrences(of: "\u{2019}", with: "'") // iOS smart quote → ASCII, so "Putin’s" title-matches
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        // Strip a leading connective — voice turns routinely open with
+        // "And/So/Also/Ok" ("And tell me about Donald Trump"), which
+        // defeated every ^-anchored pattern below: the turn classified
+        // as nothing, discussion mode never saw the topic switch, and
+        // the model confabulated Trump answers from Putin passages
+        // (real capture 2026-07-02). Only strip when a real clause
+        // follows, so a bare "ok"/"and?" still reads as a continuation.
+        if let m = match(text.lowercased(), pattern:
+            #"^(?:and|so|also|then|ok|okay|now|next|hey|oh)[,\s]+(.{4,})$"#) {
+            text = String(text.suffix(m[0].count))
+        }
         if text.isEmpty { return nil }
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
@@ -787,18 +798,41 @@ public enum IntentRouter {
         // "museums" → "museums"; "cafes" → "cafes".
         let kindPlural = kind.hasSuffix("s") ? kind : kind + "s"
 
+        // Lead with the CLOSEST hit by name — "the nearest coffee shop is
+        // Blue Bottle, 250 m north-east" is the conversational answer;
+        // "Found 186 coffee shops… tap a pin" reads like a UI caption and
+        // is useless spoken aloud (real capture 2026-07-02). The map/list
+        // still shows the rest.
+        var nearest = ""
+        if kind != "places",
+           let rows = fullResult["results"] as? [[String: Any]],
+           let top = rows.first,
+           let name = (top["name"] as? String) ?? (top["label"] as? String) {
+            var bits = "The nearest \(kind) is \(name)"
+            if let d = (top["distance_m"] as? NSNumber)?.doubleValue {
+                bits += d < 1000
+                    ? ", \(Int(d)) m"
+                    : String(format: ", %.1f km", d / 1000)
+                if let dir = top["direction"] as? String { bits += " \(dir)" }
+            }
+            nearest = bits + ". "
+        }
         var line: String
         if let n = count, n > 0 {
-            line = "Found \(n) \(kindPlural) near \(where_)"
+            if nearest.isEmpty {
+                line = "Found \(n) \(kindPlural) near \(where_)"
+            } else if n > 1 {
+                line = nearest + "\(n - 1) more \(kindPlural) near \(where_)"
+            } else {
+                line = nearest + "It's the only one near \(where_)"
+            }
         } else if count == 0 {
             line = "No \(kindPlural) found near \(where_)"
         } else {
-            line = "Results for \(kindPlural) near \(where_)"
+            line = nearest + "Results for \(kindPlural) near \(where_)"
         }
         if let r = radiusKm { line += " (within \(formatKm(r)))" }
-        line += ". Tap a pin on the map for details"
-        if count != 0 { line += ", or tap List for the full rundown" }
-        line += "."
+        line += " — they're on the map below."
         return line
     }
 
