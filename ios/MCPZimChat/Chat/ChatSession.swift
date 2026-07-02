@@ -156,6 +156,32 @@ public final class ChatSession {
         }
     }
 
+    /// Subject-aware exit check: navigation/compare tools always leave the
+    /// pinned discussion; article tools leave only when their title names a
+    /// DIFFERENT subject than the articles in hand. Real capture 2026-07-01:
+    /// "Tell me about Donald Trump" while discussing Putin stayed pinned and
+    /// answered from Putin's sections. "Tell me about Putin's wealth" (same
+    /// subject) still stays grounded in the discussion.
+    private func intentLeavesDiscussion(
+        _ intent: DirectIntent, state: DiscussionState
+    ) -> Bool {
+        if Self.exitsDiscussion(intent.toolName) { return true }
+        let articleTools: Set<String> = [
+            "article_overview", "narrate_article", "get_article_section",
+        ]
+        guard articleTools.contains(intent.toolName),
+              let raw = intent.anyArgs["title"] as? String
+        else { return false }
+        let title = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return false }
+        var inHand = state.sources.map { $0.title.lowercased() }
+        inHand.append(state.topic.lowercased())
+        inHand.append(state.anchorTitle.lowercased())
+        // Same subject when either name contains the other
+        // ("putin" ⊂ "vladimir putin").
+        return !inHand.contains { $0.contains(title) || title.contains($0) }
+    }
+
     /// When true, double the per-turn reply token budget over the
     /// DeviceProfile default. Trades KV-cache headroom (and ~seconds
     /// of generation time) for fuller, less-clipped answers. With
@@ -1892,7 +1918,7 @@ public final class ChatSession {
                 }
                 let switchIntent = IntentRouter.classify(
                     text, currentLocation: currentLocation, focus: focus)
-                if let intent = switchIntent, Self.exitsDiscussion(intent.toolName) {
+                if let intent = switchIntent, intentLeavesDiscussion(intent, state: ds) {
                     discussionState = nil   // topic change → normal routing below
                 } else {
                     await answerWithinDiscussion(ds, question: text)
@@ -2111,6 +2137,28 @@ public final class ChatSession {
                   category: "Chat")
         }
 
+        // TOKEN-budget guard on top of the exchange-count window: a few
+        // article-heavy round-trips can overflow n_ctx long before 10
+        // exchanges (real capture 2026-07-02: 6 turns hit 10.3k tokens
+        // and generate() threw "exceeds n_ctx", leaving an empty reply).
+        // Drop oldest exchanges while the estimated prompt exceeds the
+        // provider's window minus the reply + preamble reservation.
+        // ~3.3 chars/token is conservative for English + JSON payloads.
+        let contextTokens = (selectedModel as? LlamaCppProvider)?.contextTokens ?? 8192
+        let promptTokenBudget = max(2048, contextTokens - effectiveMaxReplyTokens - 512)
+        let charBudget = promptTokenBudget * 3
+        func turnsChars() -> Int {
+            turns.reduce(systemMessage.count + 2048) { $0 + $1.text.count + 16 }
+        }
+        while turnsChars() > charBudget {
+            let userIdxs = turns.indices.filter { turns[$0].role == .user }
+            // Keep at least the current exchange (last user turn onward).
+            guard userIdxs.count > 1 else { break }
+            turns.removeFirst(userIdxs[1])
+            debug("history window: token budget — dropped oldest exchange (\(turnsChars()) chars vs \(charBudget) budget)",
+                  category: "Chat")
+        }
+
         // Up to 6 tool loops per user turn — enough for small models
         // that burn iterations exploring (small search → wrong zim →
         // retry) before landing on a useful answer. Still capped so
@@ -2254,6 +2302,14 @@ public final class ChatSession {
             } catch {
                 debug("generate threw: \(error)", category: "Chat")
                 lastError = String(describing: error)
+                // Never leave a silently EMPTY assistant bubble — the user
+                // has no idea the turn died (real capture 2026-07-02: an
+                // n_ctx overflow threw here and the reply was blank).
+                if buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    updateAssistant(
+                        "Sorry — I hit an error generating that reply. "
+                        + "Try asking again, or reset the conversation if it keeps happening.")
+                }
                 return
             }
 
@@ -3410,6 +3466,28 @@ public final class ChatSession {
                 // couldn't find it, offer the closest real titles, and
                 // STOP — don't fall through to the LLM.
                 if intent.toolName == "article_overview" {
+                    // Voice dictation drops possessive apostrophes
+                    // ("putins childhood" — real capture 2026-07-01).
+                    // Before dead-ending in a did-you-mean, retry ONCE
+                    // with the aggressive possessive strip; a wrong
+                    // guess just re-misses into the same reply.
+                    if let title = dictArgs["title"] as? String {
+                        let retry = IntentRouter.stripPossessiveFacetAggressive(from: title)
+                        if retry != title {
+                            var retryArgs = dictArgs
+                            retryArgs["title"] = retry
+                            if let second = try? await adapter.dispatch(
+                                tool: "article_overview", args: retryArgs),
+                               IntentRouter.articleOverviewResultIsUsable(second)
+                            {
+                                debug("article miss — possessive retry hit “\(retry)”",
+                                      category: "Router")
+                                return await executeDirectIntent(DirectIntent(
+                                    toolName: "article_overview",
+                                    args: ["title": .string(retry)]))
+                            }
+                        }
+                    }
                     let synth = IntentRouter.synthesizeArticleMissReply(
                         args: dictArgs, fullResult: fullResult)
                     updateAssistant(synth)

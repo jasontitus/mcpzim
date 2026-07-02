@@ -308,8 +308,14 @@ public enum IntentRouter {
         // that don't exist in the loaded ZIMs come back as a clean
         // "no article" miss, which is still faster than a 15 s
         // prefill + possibly-malformed tool call.
+        // "how/what about X" reaches here only when the focus-aware
+        // resolver did NOT bind — i.e. the turn names its own subject
+        // ("How about Donald Trump's childhood?" mid-discussion of
+        // Putin). Subject-less "what about his parents" binds upstream
+        // and never lands on this pattern; the navPronouns bail below
+        // covers the empty-focus case.
         if let m = match(lower, pattern:
-            #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
+            #"^(?:tell\s+me\s+(?:about|more\s+about)|(?:how|what)\s+about|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
         {
             let subject = m[0].trimmingCharacters(in: .whitespaces)
             let firstWord = subject
@@ -317,7 +323,8 @@ public enum IntentRouter {
                 .first.map(String.init) ?? ""
             let navPronouns: Set<String> = [
                 "my", "our", "your", "here", "now", "next",
-                "this", "that", "these", "those", "it"
+                "this", "that", "these", "those", "it",
+                "his", "her", "their", "him", "them",
             ]
             if navPronouns.contains(firstWord) { return nil }
             // Subject must have at least one content character — "what
@@ -430,6 +437,25 @@ public enum IntentRouter {
             let entityLen = m[0].trimmingCharacters(in: .whitespaces).count
             return String(subject.prefix(entityLen))
                 .trimmingCharacters(in: .whitespaces)
+        }
+        return subject
+    }
+
+    /// Aggressive variant for the article-MISS retry: also strips the
+    /// apostrophe-less possessive voice dictation produces ("putins
+    /// childhood" → "putin"). Too greedy for first-pass routing ("paris
+    /// history" → "pari"), so it only runs after the literal title
+    /// already missed — a wrong guess there just re-misses into the
+    /// same did-you-mean the user would have seen anyway.
+    public static func stripPossessiveFacetAggressive(from subject: String) -> String {
+        let conservative = stripPossessiveFacet(from: subject)
+        if conservative != subject { return conservative }
+        if let m = match(subject.lowercased(), pattern: #"^(.+?)s\s+(.+)$"#),
+           m.count >= 2,
+           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces)),
+           m[0].count >= 4
+        {
+            return m[0].trimmingCharacters(in: .whitespaces)
         }
         return subject
     }

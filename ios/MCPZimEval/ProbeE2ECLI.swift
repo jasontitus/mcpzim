@@ -411,6 +411,11 @@ enum ProbeDiscussCLI {
             localGGUFPath: gguf,
             replyTokensFloor: 1024,
             approximateMemoryMB: 4200,
+            // Match the SHIPPING config (ChatSession registers the LFM FT
+            // with a 32k window) — at the 8192 default the harness
+            // overflowed n_ctx on turn 6 of a discuss run and reported a
+            // failure the phone wouldn't have.
+            contextTokens: 32768,
             template: LFM25Template())
         print("loading model from local path…")
         let t0 = Date()

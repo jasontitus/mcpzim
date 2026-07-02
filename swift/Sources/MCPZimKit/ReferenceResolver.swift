@@ -364,7 +364,14 @@ public enum ReferenceResolver {
         guard !content.isEmpty else { return nil }
         let matches = focus.openThreads.filter { thread in
             let hay = (thread.label + " " + (thread.note ?? "")).lowercased()
-            return content.contains { hay.contains($0) }
+            // EVERY content word must appear in the label/gloss — a
+            // single shared token must not hijack an explicit query.
+            // Real capture 2026-07-02: "Tell me about Donald Trump"
+            // bound to the offered thread "The Trump Organization" on
+            // the word "trump" alone and answered about the company.
+            // "the war" ⊆ "War of 1812" still matches; "donald trump"
+            // ⊄ "The Trump Organization" no longer does.
+            return content.allSatisfy { hay.contains($0) }
         }
         return matches.count == 1 ? matches[0] : nil
     }

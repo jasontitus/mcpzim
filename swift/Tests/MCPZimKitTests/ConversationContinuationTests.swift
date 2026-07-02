@@ -187,6 +187,61 @@ final class ConversationContinuationTests: XCTestCase {
         XCTAssertEqual(intent?.anyArgs["title"] as? String, "vladimir putin")
     }
 
+    func testApostropheLessPossessiveRetryStrip() {
+        // Voice dictation drops the apostrophe ("putins childhood").
+        // Conservative strip leaves it (too risky first-pass)…
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "putins childhood"),
+            "putins childhood")
+        // …the aggressive variant (miss-retry only) recovers the entity.
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacetAggressive(from: "putins childhood"),
+            "putin")
+        // No change when the trailing phrase isn't a whitelisted facet.
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacetAggressive(from: "boston red sox"),
+            "boston red sox")
+    }
+
+    func testHowAboutWithNewSubjectClassifiesAsOverview() {
+        // Mid-discussion "How about Donald Trump's childhood?" must
+        // classify as a fresh overview (the resolver refuses to bind a
+        // possessive after an explicit subject), so the discussion-exit
+        // check can see the topic change. Real capture 2026-07-01.
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Putin", kind: .topic))
+        let intent = IntentRouter.classify(
+            "How about Donald Trump’s childhood?", focus: f)
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "donald trump")
+    }
+
+    func testWhatAboutPronounSubjectDoesNotMatchOverviewPattern() {
+        // With no focus to bind against, "what about his parents" must
+        // NOT become article_overview(title: "his parents").
+        XCTAssertNil(IntentRouter.classify("What about his parents?"))
+    }
+
+    func testExplicitNameDoesNotBindPartialThreadLabel() {
+        // Real capture 2026-07-02: with "The Trump Organization" offered
+        // as a drift thread, "Tell me about Donald Trump" bound to it on
+        // the shared token "trump" and answered about the company.
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Putin", kind: .topic))
+        f.setThreads([DiscoveryThread(
+            label: "The Trump Organization", kind: .topic, source: .wikilink)])
+        let resolved = ReferenceResolver.resolve(
+            "Tell me about Donald Trump", focus: f)
+        XCTAssertNil(resolved.boundEntity,
+                     "partial label overlap must not hijack an explicit name")
+        // A genuine thread pick (all content words in the label) still binds.
+        let picked = ReferenceResolver.resolve(
+            "the trump organization", focus: f)
+        XCTAssertEqual(picked.boundEntity?.name, "The Trump Organization")
+    }
+
     func testSubjectlessPossessiveStillBinds() {
         var f = ConversationFocus()
         f.beginUserTurn()
