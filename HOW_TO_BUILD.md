@@ -721,3 +721,38 @@ Ship path: upload the gguf to `sliderforthewin/lfm2.5-8b-a1b-ft-GGUF`, update
 `ggufFilename` (+ `approximateMemoryMB`, displayName) in the `lfm25_ft` entry
 in `ChatSession.init` — keep the provider `id` unchanged so device model
 selections persist. Phones re-download the new file on next launch (~3.3 GB).
+
+### Disk cleanup — what's safe to delete from `tools/fine-tune/`
+
+The `ft-out-lfm2.5-8b-*` dirs balloon to ~70 GB, almost all **regenerable
+intermediates**. The rule: **`adapters/adapters.safetensors` + `imx/lfm.imatrix`
+are the seeds; everything else re-derives from them** (re-fuse → f16 in ~7 min
+via the `finetune_lfm2.sh` guards above, then requantize). So the only things
+worth keeping per FT run are:
+
+- `adapters/adapters.safetensors` — the LoRA (the moat). *(The numbered
+  `NNNNNNN_adapters.safetensors` save-every-50 checkpoints are ~2.9 GB of dead
+  weight once the run finished cleanly — keep only the final.)*
+- `imx/lfm.imatrix` (~17 MB) — reusable importance matrix for this FT.
+- the **shipping** quant (`imx/…IQ3_XS.gguf`) — though it's also on HF.
+- `train.jsonl` / the `train_*.jsonl` recipe inputs (small; regenerating costs
+  teacher time).
+
+Safe to delete (zero risk — regenerable, or backed up on HF):
+
+```sh
+cd tools/fine-tune
+# pure intermediates:
+rm -rf ft-out-lfm2.5-8b-*/fused-hf                    # fused HF safetensors (~16 GB/run)
+rm -f  ft-out-lfm2.5-8b-*/*.f16.gguf                  # f16 convert (~16 GB/run; re-fuse in ~7 min)
+# losing quant-sweep candidates (result recorded in LFM25_MEMORY_PERF_FRONTIER.md):
+rm -f  ft-out-lfm2.5-8b-v7full/imx/*.{Q3_K_M,Q3_K_S,IQ3_XXS,IQ2_M}.gguf
+# shelved-experiment + on-HF quants (v8hist lost to v7; v7 Q3_K_M is on HF):
+rm -f  ft-out-lfm2.5-8b-v8hist/*.gguf ft-out-lfm2.5-8b-v7full/*.Q[34]_K_M.gguf
+```
+
+Historical note: the v8hist run (v7 + 224 history chains) was shelved at 11/13
+— its `adapters/` is kept as the experiment record, the rest of its dir is
+deletable. Deleting a `q3km` GGUF that a `grid.py` ModelSpec points at just
+means re-pulling from HF before the next grid run; the IQ3_XS ship spec is
+unaffected.
