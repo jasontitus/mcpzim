@@ -326,6 +326,10 @@ public enum ArticleHeuristics {
             // which appears in every biography sentence — 2026-07-01).
             "his","her","him","she","hers","who's","what's",
             "said","say","says","time","went","also","ever","some","any",
+            // Deictic fillers from corrections ("the ONES Einstein
+            // predicted") — content-free, and they dragged the search
+            // rescue to the wrong article (Graviton, 2026-07-02).
+            "one","ones","meant","mean","kind","sort","type",
         ]
         var seen = Set<String>()
         var out: [String] = []
@@ -507,6 +511,50 @@ public enum ArticleHeuristics {
         return scored.sorted { $0.total > $1.total }
             .prefix(max(1, k))
             .map { (article: $0.article, section: $0.section) }
+    }
+
+    /// Disambiguation candidates from an article's HATNOTES — the italic
+    /// top-of-article cross-references Wikipedia uses precisely for
+    /// ambiguity ("For the phenomenon of general relativity, see
+    /// Gravitational wave."). More reliable offline than probing
+    /// "<title> (disambiguation)": the nopic builds exclude
+    /// disambiguation pages entirely, but hatnotes ship inside the
+    /// article body. Only disambiguation-style notes count —
+    /// "Further information:" / "Main article:" are section
+    /// cross-references, not alternate meanings.
+    public static func disambiguationHatnotes(
+        html: String, max: Int = 3
+    ) -> [(title: String, path: String)] {
+        let divPattern = #"<div[^>]*class="[^"]*hatnote[^"]*"[^>]*>(.*?)</div>"#
+        guard let re = try? NSRegularExpression(
+            pattern: divPattern,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        var out: [(String, String)] = []
+        var seen = Set<String>()
+        for m in re.matches(in: html, range: range) {
+            guard m.numberOfRanges >= 2,
+                  let r = Range(m.range(at: 1), in: html) else { continue }
+            let body = String(html[r])
+            let text = body.replacingOccurrences(
+                of: "<[^>]+>", with: "", options: .regularExpression
+            ).lowercased()
+            let isDisambigStyle = text.hasPrefix("for ")
+                || text.contains("this article is about")
+                || text.contains("not to be confused")
+                || text.contains("may refer to")
+                || text.contains("(disambiguation)")
+            guard isDisambigStyle else { continue }
+            for link in WikiLinks.parse(html: body, max: 4) {
+                let key = link.title.lowercased()
+                if key.contains("disambiguation") || seen.contains(key) { continue }
+                seen.insert(key)
+                out.append((link.title, link.path))
+                if out.count >= max { return out }
+            }
+        }
+        return out
     }
 
     // MARK: - Relationship probing

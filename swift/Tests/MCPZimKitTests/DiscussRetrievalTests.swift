@@ -126,6 +126,30 @@ final class DiscussRetrievalTests: XCTestCase {
             ["crimea"])
     }
 
+    func testHatnoteDisambiguationExtraction() {
+        // Real markup shape from A/Gravity_wave (full-wiki nopic build):
+        // the FIRST hatnote is the cross-meaning; "Further information:"
+        // and "See also:" hatnotes are section cross-refs, not meanings.
+        let html = """
+        <div class="hatnote navigation-not-searchable">For the phenomenon \
+        of general relativity, see <a href="Gravitational_wave">Gravitational \
+        wave</a>.</div>
+        <p>In fluid dynamics, gravity waves are waves…</p>
+        <div class="hatnote">Further information: <a href="Atmospheric_wave">\
+        Atmospheric wave</a></div>
+        <div class="hatnote">See also: <a href="Undular_bore">Undular bore</a></div>
+        """
+        let alts = ArticleHeuristics.disambiguationHatnotes(html: html)
+        XCTAssertEqual(alts.map(\.title), ["Gravitational wave"])
+        XCTAssertEqual(alts.first?.path, "Gravitational_wave")
+    }
+
+    func testCorrectionKeywordsDropDeicticFiller() {
+        XCTAssertEqual(
+            ArticleHeuristics.questionKeywords("the ones einstein predicted"),
+            ["einstein", "predicted"])
+    }
+
     func testParentsCountsAsCoveredByEarlyLife() {
         // Synonym-aware coverage: "parents" is answered by mother/father
         // prose, so no corpus pull should fire.

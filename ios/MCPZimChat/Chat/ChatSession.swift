@@ -3498,6 +3498,44 @@ public final class ChatSession {
                             }
                         }
                     }
+                    // Descriptive-phrase rescue: "the ones Einstein
+                    // predicted" is a DESCRIPTION, not a title — search
+                    // for it (folding in the prior subject when the
+                    // phrase is deictic) and open the top hit. Real
+                    // capture 2026-07-02: "gravity waves" resolved to
+                    // the fluid-dynamics article; the correction "No, I
+                    // meant the ones Einstein predicted" was dispatched
+                    // as a literal title and dead-ended.
+                    if let title = dictArgs["title"] as? String {
+                        // Content words only — deictic filler ("the ones")
+                        // dragged the search to the wrong article.
+                        let kws = ArticleHeuristics.questionKeywords(title)
+                        var query = kws.isEmpty ? title : kws.joined(separator: " ")
+                        let lower = title.lowercased()
+                        if lower.hasPrefix("the one") || lower.hasPrefix("that one")
+                            || lower.hasPrefix("those "),
+                           let prior = focus.primaryEntity?.name {
+                            query = prior + " " + query
+                        }
+                        if let search = try? await adapter.dispatch(
+                            tool: "search", args: ["query": query, "limit": 3]),
+                           let hits = search["hits"] as? [[String: Any]],
+                           let topTitle = hits.first?["title"] as? String,
+                           !topTitle.isEmpty,
+                           topTitle.lowercased() != lower
+                        {
+                            if let second = try? await adapter.dispatch(
+                                tool: "article_overview", args: ["title": topTitle]),
+                               IntentRouter.articleOverviewResultIsUsable(second)
+                            {
+                                debug("article miss — search rescue “\(query)” → “\(topTitle)”",
+                                      category: "Router")
+                                return await executeDirectIntent(DirectIntent(
+                                    toolName: "article_overview",
+                                    args: ["title": .string(topTitle)]))
+                            }
+                        }
+                    }
                     let synth = IntentRouter.synthesizeArticleMissReply(
                         args: dictArgs, fullResult: fullResult)
                     updateAssistant(synth)
@@ -3584,6 +3622,35 @@ public final class ChatSession {
                 debug("fast-path \(intent.toolName) → grounded single-shot over \(sources.count) source(s)",
                       category: "Router")
                 await generateGroundedAnswer(state: grounded, question: question)
+                // Official ambiguity ("gravity waves" → fluid OR Einstein):
+                // name the alternate meanings and register them as the
+                // selectable list, so "the second one" / "the Einstein one"
+                // switches without a fight (real capture 2026-07-02).
+                if let alts = fullResult["disambiguation"] as? [[String: Any]] {
+                    let names = alts.compactMap { $0["title"] as? String }.prefix(3)
+                    if !names.isEmpty,
+                       let idx = messages.indices.last,
+                       messages[idx].role == .assistant,
+                       !messages[idx].text.isEmpty
+                    {
+                        let list = names.count == 1
+                            ? names[names.startIndex]
+                            : names.dropLast().joined(separator: ", ")
+                                + " or \(names.last!)"
+                        messages[idx].text +=
+                            "\n\n(\"\(anchor)\" has other meanings too — say the word if you meant \(list).)"
+                        focus.setLastList(
+                            [FocusEntity(name: anchor, kind: .topic,
+                                         zimPath: fullResult["path"] as? String)]
+                            + alts.compactMap { a -> FocusEntity? in
+                                guard let t = a["title"] as? String else { return nil }
+                                return FocusEntity(name: t, kind: .topic,
+                                                   zimPath: a["path"] as? String)
+                            })
+                        debug("disambiguation offered: \(names.joined(separator: " | "))",
+                              category: "Router")
+                    }
+                }
                 await appendThreadOfferIfUseful()
                 return true
             } else if intent.toolName == "what_is_here" {

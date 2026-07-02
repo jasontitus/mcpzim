@@ -980,7 +980,35 @@ public actor MCPToolAdapter {
             "available_sections": outline,
         ]
         if !related.isEmpty { result["related"] = related }
+        // Official ambiguity: the article's hatnotes name the OTHER
+        // meanings of the query — "gravity waves" is BOTH fluid dynamics
+        // and Einstein (real capture 2026-07-02: the user got the fluid
+        // article and had to fight for the other one). Surface them so
+        // the host can offer a switch. Best effort: no hatnotes → no key.
+        if let alts = try? await Self.disambiguationAlternates(
+            service: service, title: resolved.title, zim: resolved.zim,
+            path: resolved.path
+        ), !alts.isEmpty {
+            result["disambiguation"] = alts
+        }
         return result
+    }
+
+    /// Alternate meanings for a resolved article, from its HATNOTES
+    /// ("For the phenomenon of general relativity, see Gravitational
+    /// wave."). The "(disambiguation)"-page probe doesn't work offline —
+    /// nopic builds exclude those pages — but hatnotes ship inside the
+    /// article body itself. `[{title, path}]`, capped, self excluded.
+    static func disambiguationAlternates(
+        service: any ZimService, title: String, zim: String?,
+        path: String, max: Int = 3
+    ) async throws -> [[String: Any]] {
+        let page = try await service.article(path: path, zim: zim)
+        let selfKey = title.lowercased()
+        return ArticleHeuristics.disambiguationHatnotes(html: page.text, max: max + 1)
+            .filter { $0.title.lowercased() != selfKey }
+            .prefix(max)
+            .map { ["title": $0.title, "path": $0.path] }
     }
 
     /// Parse the raw article HTML for outbound wikilinks and shape them into the
