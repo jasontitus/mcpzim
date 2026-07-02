@@ -263,6 +263,40 @@ final class ConversationContinuationTests: XCTestCase {
         XCTAssertEqual(picked.boundEntity?.name, "The Trump Organization")
     }
 
+    func testAffirmativePlusNamePicksFromLastList() {
+        // Disambiguation offer registered [resolved, alternate]; the user
+        // answers "Yes - gravitational waves" (real capture 2026-07-02 —
+        // it fell through and re-answered from the fluid article).
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Gravity waves", kind: .topic))
+        f.setLastList([
+            FocusEntity(name: "Gravity waves", kind: .topic),
+            FocusEntity(name: "Gravitational wave", kind: .topic),
+        ])
+        let resolved = ReferenceResolver.resolve("Yes - gravitational waves", focus: f)
+        XCTAssertEqual(resolved.boundEntity?.name, "Gravitational wave")
+        // And the router turns the pick into the right overview.
+        let intent = IntentRouter.classify("Yes - gravitational waves", focus: f)
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "Gravitational wave")
+    }
+
+    func testQuestionMentioningListItemDoesNotPick() {
+        // Extra content words mean it's a QUESTION, not a pick.
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.setLastList([
+            FocusEntity(name: "Gravity waves", kind: .topic),
+            FocusEntity(name: "Gravitational wave", kind: .topic),
+        ])
+        let resolved = ReferenceResolver.resolve(
+            "What did Einstein say about gravitational waves?", focus: f)
+        if case .listSelection = resolved.binding {
+            XCTFail("question must not be treated as a list pick")
+        }
+    }
+
     func testSubjectlessPossessiveStillBinds() {
         var f = ConversationFocus()
         f.beginUserTurn()

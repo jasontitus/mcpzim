@@ -167,6 +167,22 @@ public enum ReferenceResolver {
             }
         }
 
+        // ---- 1b. Name pick from the last list ------------------------------
+        // After a disambiguation / list offer, users often say the NAME,
+        // usually wrapped in an affirmative: "Yes - gravitational waves"
+        // (real capture 2026-07-02 — it fell through to the pinned
+        // discussion and re-answered from the WRONG article). A unique
+        // stemmed content-word match against an item's name binds it.
+        if !focus.lastList.isEmpty {
+            if let pick = namePick(words: words, focus: focus) {
+                return ResolvedReference(
+                    binding: pick,
+                    rewrittenQuery: "tell me about \(boundName(of: pick))",
+                    isContinuation: true
+                )
+            }
+        }
+
         // ---- 2. Descriptive selector ("the older one", "the church") ------
         // Match "the <noun>" anywhere in the turn, so "tell me about the
         // cathedral" works, not just turns that literally start with "the".
@@ -306,6 +322,43 @@ public enum ReferenceResolver {
         }
 
         return nil
+    }
+
+    /// A turn whose content words all appear (stemmed) in exactly ONE
+    /// list item's name is a pick of that item. "Yes - gravitational
+    /// waves" → item "Gravitational wave"; a turn with extra content
+    /// ("what did Einstein say about gravitational waves") does NOT
+    /// bind — "einstein"/"say" aren't in the name.
+    private static func namePick(
+        words: [String], focus: ConversationFocus
+    ) -> ResolvedReference.Binding? {
+        let functional: Set<String> = stopwords
+            .union(singularPronouns)
+            .union(["yes", "yeah", "yep", "yup", "sure", "okay", "please",
+                    "want", "hear", "tell", "about", "more", "why", "how",
+                    "when", "where", "who", "what", "does", "did", "are",
+                    "was", "were", "and", "but", "then", "mean", "meant"])
+        let content = words.filter { !functional.contains($0) && $0.count >= 3 }
+        guard !content.isEmpty else { return nil }
+        func stem(_ w: String) -> String {
+            for suffix in ["es", "s"] where w.hasSuffix(suffix) {
+                let s = String(w.dropLast(suffix.count))
+                if s.count >= 4 { return s }
+            }
+            return w
+        }
+        let contentStems = content.map(stem)
+        let matches = focus.lastList.enumerated().filter { _, item in
+            let nameToks = Set(
+                item.name.lowercased()
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 3 }
+                    .map(stem)
+            )
+            return contentStems.allSatisfy { nameToks.contains($0) }
+        }
+        guard matches.count == 1, let (idx, item) = matches.first else { return nil }
+        return .listSelection(index: idx, entity: item)
     }
 
     // MARK: - Descriptive selection
