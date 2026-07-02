@@ -73,6 +73,7 @@ public enum IntentRouter {
         focus: ConversationFocus? = nil
     ) -> DirectIntent? {
         let text = raw
+            .replacingOccurrences(of: "\u{2019}", with: "'") // iOS smart quote → ASCII, so "Putin’s" title-matches
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
         if text.isEmpty { return nil }
@@ -323,8 +324,17 @@ public enum IntentRouter {
             // is" with nothing after would match `.+` on the trailing
             // "?!." the caller stripped. Guard against that.
             if subject.isEmpty { return nil }
+            // "Putin's early life" / "Vladimir Putin and his early life"
+            // — the ENTITY is the article title; the possessive facet is
+            // a section, not part of the title. Dispatching the raw
+            // phrase misses ("no article: putin's early life", real
+            // capture 2026-07-01) and dead-ends in a did-you-mean.
+            // `article_overview(title: entity)` succeeds and its
+            // `pickOverview` already prioritises the classic facet
+            // sections ("early life", "career", …).
+            let title = Self.stripPossessiveFacet(from: subject)
             return DirectIntent(toolName: "article_overview", args: [
-                "title": .string(subject)
+                "title": .string(title)
             ])
         }
 
@@ -378,6 +388,50 @@ public enum IntentRouter {
             return r.trimmingCharacters(in: .whitespaces)
         }
         return nil
+    }
+
+    /// Section facets people attach to a subject with a possessive
+    /// ("X's early life", "X and her career"). These are classic
+    /// Wikipedia section names, never part of the article title —
+    /// kept as an explicit whitelist because REAL titles legitimately
+    /// contain possessives ("Hitchhiker's Guide to the Galaxy").
+    private static let possessiveFacets: Set<String> = [
+        "early life", "early years", "early life and education",
+        "childhood", "youth", "education", "career", "later life",
+        "later years", "personal life", "family", "children",
+        "death", "legacy", "history", "biography", "background",
+        "rise to power", "presidency", "reign", "discography",
+        "filmography", "achievements", "accomplishments", "works",
+        "net worth", "wife", "husband", "spouse",
+    ]
+
+    /// "putin's early life" → "putin"; "vladimir putin and his early
+    /// life" → "vladimir putin". Leaves the subject untouched unless
+    /// the trailing phrase is a whitelisted facet.
+    static func stripPossessiveFacet(from subject: String) -> String {
+        let lower = subject.lowercased()
+        // "<entity>'s <facet>"
+        if let r = lower.range(of: "'s ", options: .backwards) {
+            let facet = String(lower[r.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+            if possessiveFacets.contains(facet) {
+                return String(subject[..<subject.index(
+                    subject.startIndex,
+                    offsetBy: lower.distance(from: lower.startIndex, to: r.lowerBound)
+                )]).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        // "<entity> and (his|her|its|their) <facet>"
+        if let m = match(lower, pattern:
+            #"^(.+?)\s+and\s+(?:his|her|its|their)\s+(.+)$"#),
+           m.count >= 2,
+           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces))
+        {
+            let entityLen = m[0].trimmingCharacters(in: .whitespaces).count
+            return String(subject.prefix(entityLen))
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return subject
     }
 
     /// Drop a leading "tell me about" / "what is" / "who was" / "overview

@@ -144,6 +144,65 @@ final class ConversationContinuationTests: XCTestCase {
         XCTAssertEqual(threads.first?.note, "240 m away")
     }
 
+    // MARK: - Possessive facets (real capture 2026-07-01, "Putin's early life")
+
+    func testPossessiveFacetStripsToEntity() {
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "putin's early life"),
+            "putin")
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "vladimir putin and his early life"),
+            "vladimir putin")
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "marie curie and her career"),
+            "marie curie")
+        // Real titles with possessives survive untouched.
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "hitchhiker's guide to the galaxy"),
+            "hitchhiker's guide to the galaxy")
+    }
+
+    func testTellMeAboutPossessiveFacetRoutesToEntityOverview() {
+        let intent = IntentRouter.classify("Tell me about Putin’s early life")
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "putin")
+    }
+
+    func testExplicitSubjectWithPossessivePronounIsNotHijacked() {
+        // Turn 1 subject in focus; turn 2 NAMES a new subject and uses
+        // "his" — the resolver must NOT bind "his" back to the old
+        // entity (that re-dispatched turn 1's failed title on device).
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "putin's early life", kind: .topic))
+        f.beginUserTurn()
+        let resolved = ReferenceResolver.resolve(
+            "Tell me about Vladimir Putin and his early life", focus: f)
+        XCTAssertNil(resolved.boundEntity,
+                     "possessive after an explicit subject must not bind")
+        // And the router should extract the clean entity title.
+        let intent = IntentRouter.classify(
+            "Tell me about Vladimir Putin and his early life", focus: f)
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "vladimir putin")
+    }
+
+    func testSubjectlessPossessiveStillBinds() {
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Vladimir Putin", kind: .topic))
+        let resolved = ReferenceResolver.resolve("what's his name?", focus: f)
+        XCTAssertEqual(resolved.boundEntity?.name, "Vladimir Putin")
+    }
+
+    func testWhoBuiltItStillBinds() {
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Stanford Memorial Church", kind: .topic))
+        let resolved = ReferenceResolver.resolve("who built it", focus: f)
+        XCTAssertEqual(resolved.boundEntity?.name, "Stanford Memorial Church")
+    }
+
     func testWhatIsHereWithoutNearbyYieldsNoThreads() {
         let result: [String: Any] = [
             "nearest_named_place": "Somewhereville",

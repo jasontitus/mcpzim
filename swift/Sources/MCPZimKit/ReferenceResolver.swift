@@ -75,6 +75,15 @@ public enum ReferenceResolver {
         "those", "these",
     ]
 
+    /// The possessive subset. These routinely appear in turns that NAME
+    /// their own subject ("tell me about Vladimir Putin and HIS early
+    /// life") — binding them to the prior focus entity hijacks an
+    /// explicit fresh query (real capture 2026-07-01: turn 2
+    /// re-dispatched turn 1's failed title because "his" bound to it).
+    private static let possessivePronouns: Set<String> = [
+        "his", "her", "its", "their", "hers", "theirs",
+    ]
+
     /// Words that, leading a short turn, signal "keep going on what we were
     /// just discussing" even without an explicit pronoun.
     private static let continuationOpeners: [String] = [
@@ -215,7 +224,12 @@ public enum ReferenceResolver {
         }
 
         // ---- 3. Pronoun → primary entity ----------------------------------
-        if hasPronoun, let primary = focus.primaryEntity {
+        // Possessives only bind when nothing content-like precedes them:
+        // "what's his name?" binds; "tell me about Vladimir Putin and his
+        // early life" names its own subject and must fall through to the
+        // stateless patterns.
+        if hasPronoun, let primary = focus.primaryEntity,
+           !possessiveWithOwnSubject(words) {
             return ResolvedReference(
                 binding: .entity(primary),
                 rewrittenQuery: rewrite(text, with: primary.name),
@@ -422,6 +436,27 @@ public enum ReferenceResolver {
                     "was", "were", "did", "does", "do", "and", "but", "so",
                     "then", "about", "me", "tell", "more", "ok", "okay"])
         return lowerWords.contains { !functional.contains($0) && $0.count >= 4 }
+    }
+
+    /// True when the turn's only pronouns are POSSESSIVE and a content
+    /// token precedes the first one — i.e. the sentence already names
+    /// the subject the possessive refers to ("Vladimir Putin and his
+    /// early life"). Non-possessive pronouns ("who built it") and
+    /// subject-less possessives ("what's his name?") return false.
+    private static func possessiveWithOwnSubject(_ words: [String]) -> Bool {
+        let pronounIdxs = words.indices.filter { singularPronouns.contains(words[$0]) }
+        guard let firstPronoun = pronounIdxs.first,
+              pronounIdxs.allSatisfy({ possessivePronouns.contains(words[$0]) })
+        else { return false }
+        let functional: Set<String> = singularPronouns
+            .union(stopwords)
+            .union(["why", "how", "when", "where", "who", "what", "what's",
+                    "whats", "who's", "is", "are", "was", "were", "did",
+                    "does", "do", "and", "but", "so", "then", "about", "me",
+                    "tell", "more", "ok", "okay", "please", "give", "show"])
+        return words[..<firstPronoun].contains {
+            !functional.contains($0) && $0.count >= 4
+        }
     }
 
     private static func startsWithWord(_ text: String, _ phrase: String) -> Bool {
