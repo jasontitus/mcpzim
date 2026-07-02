@@ -3125,6 +3125,49 @@ public final class ChatSession {
         }
         discussionState = state   // persist any pulled-in article
 
+        let first = await generateGroundedAnswer(state: state, question: question)
+        // Reactive corpus fallback: the coverage gate is lexical, so a
+        // question whose keywords merely APPEAR in the articles in hand
+        // ("why did he invade Ukraine?" while holding the Crimea-annexation
+        // article) skips the pull, and the model rightly answers "I don't
+        // see it". Treat that answer as the coverage signal: pull the best
+        // corpus article for the question and regenerate ONCE.
+        if Self.looksLikeDontSee(first), let adapter {
+            let kwList = ArticleHeuristics.questionKeywords(question)
+            let query = (state.topic + " " + kwList.joined(separator: " "))
+                .trimmingCharacters(in: .whitespaces)
+            if let pulled = await pullArticleForDiscussion(
+                query: query, keywords: kwList, zim: state.zim, adapter: adapter),
+               !state.sources.contains(where: {
+                   $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
+               }) {
+                state.sources.append(pulled)
+                discussionState = state
+                debug("discuss: retry — pulled “\(pulled.title)” after a don't-see answer",
+                      category: "Router")
+                _ = await generateGroundedAnswer(state: state, question: question)
+            }
+        }
+    }
+
+    /// The canned honesty reply from the grounded-discuss instruction —
+    /// used as the trigger for the one-shot corpus-pull retry.
+    private static func looksLikeDontSee(_ s: String) -> Bool {
+        let t = s.lowercased()
+        return t.contains("don't see") || t.contains("do not see")
+            || t.contains("not in the passages")
+            || t.contains("don't have that")
+            || t.contains("isn't in what i have")
+    }
+
+    /// One grounded generation over the discussion's current sources:
+    /// rank sections for the question, assemble capped passages, stream
+    /// the answer into the assistant bubble, and return the final text.
+    @MainActor
+    @discardableResult
+    private func generateGroundedAnswer(
+        state: DiscussionState, question: String
+    ) async -> String {
         // Anchor lead for topic context + the top-ranked sections across all
         // articles in hand. Wider budget (6) than before — llama.cpp KV is
         // cheap, and specific-fact follow-ups need the deeper section, not
@@ -3160,8 +3203,14 @@ public final class ChatSession {
 
         Answer using ONLY the passages above — be concise and natural, and \
         don't say "according to the passage". If the answer isn't there, say \
-        you don't see it in what you have on \(state.topic). Give just the \
-        answer directly — no reasoning steps, no preamble, no <think> block.
+        you don't see it in what you have on \(state.topic). Attribute \
+        carefully: the passages may mix statements by DIFFERENT parties \
+        (\(state.topic), other governments, critics) — never put one party's \
+        words in another's mouth; if the question asks what someone said, \
+        report only THAT person's statements. Answer in one to three \
+        sentences, keeping the key specifics (names, dates, places) when \
+        the passages give them. Give just the answer directly — no \
+        reasoning steps, no preamble, no <think> block.
         """
         let preamble = "You are discussing a topic with the user using the "
             + "offline Wikipedia, grounded strictly in the passages provided."
@@ -3191,10 +3240,14 @@ public final class ChatSession {
                     updateAssistant(buffer); lastUIPush = now
                 }
             }
-            updateAssistant(stripLeakedReasoning(buffer))
+            let final = stripLeakedReasoning(buffer)
+            updateAssistant(final)
+            return final
         } catch {
             debug("discuss generate failed: \(error)", category: "Chat")
-            updateAssistant("Sorry — I hit an error answering that about \(state.topic).")
+            let msg = "Sorry — I hit an error answering that about \(state.topic)."
+            updateAssistant(msg)
+            return msg
         }
     }
 

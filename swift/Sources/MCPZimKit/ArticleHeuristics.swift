@@ -280,18 +280,34 @@ public enum ArticleHeuristics {
         guard !sections.isEmpty else { return [] }
         let leadIdx = sections.firstIndex(where: { $0.title.isEmpty }) ?? 0
         let qv = embedder.embed(question)
-        let ranked = sections.indices
+        let weighted = weightedKeywords(questionKeywords(question))
+        // Keyword evidence dominates when the question HAS keywords —
+        // pure n-gram cosine ranked "Pets" over "Early life" for "what
+        // about his parents" (real device capture 2026-07-01). The
+        // embedder remains the sole signal for keyword-less questions
+        // ("tell me more") and a small tiebreak otherwise.
+        let embedderWeight: Float = weighted.isEmpty ? 1.0 : 0.35
+        var scored = sections.indices
             .filter { $0 != leadIdx && !sections[$0].text.isEmpty }
-            .map { i -> (Int, Float) in
+            .map { i -> (idx: Int, kw: Float, total: Float) in
                 let s = sections[i]
                 let titleScore = s.title.isEmpty
                     ? 0 : VectorMath.cosine(qv, embedder.embed(s.title))
                 let bodyScore = VectorMath.cosine(qv, embedder.embed(s.text))
-                return (i, 0.55 * titleScore + 0.45 * bodyScore)
+                let embed = 0.55 * titleScore + 0.45 * bodyScore
+                let kw = keywordScore(weighted, section: s)
+                return (i, kw, kw + embedderWeight * embed)
             }
-            .sorted { $0.1 > $1.1 }
+        // When ANY section carries keyword evidence, sections with none
+        // are out of the running — padding the context with off-topic
+        // passages ("Pets" for a parents question) invites drivel.
+        if scored.contains(where: { $0.kw > 0 }) {
+            scored = scored.filter { $0.kw > 0 }
+        }
+        let ranked = scored
+            .sorted { $0.total > $1.total }
             .prefix(max(0, k - 1))
-            .map { sections[$0.0] }
+            .map { sections[$0.idx] }
         return [sections[leadIdx]] + ranked
     }
 
@@ -305,6 +321,11 @@ public enum ArticleHeuristics {
             "their","this","that","about","have","has","had","been","get",
             "got","gotten","along","like","tell","you","much","many","more",
             "there","into","from","work","works","happen","happened",
+            // Pronouns/auxiliaries that slipped through and polluted
+            // retrieval ("what about HIS parents" scored on "his",
+            // which appears in every biography sentence — 2026-07-01).
+            "his","her","him","she","hers","who's","what's",
+            "said","say","says","time","went","also","ever","some","any",
         ]
         var seen = Set<String>()
         var out: [String] = []
@@ -313,6 +334,91 @@ public enum ArticleHeuristics {
             seen.insert(w); out.append(w)
         }
         return out
+    }
+
+    /// Synonym expansion for question keywords whose answer prose uses
+    /// different words: "parents" almost never appears in a biography —
+    /// the "Early life" section says "his mother … his father". Expanded
+    /// terms score at reduced weight so an exact keyword still wins.
+    static let keywordSynonyms: [String: [String]] = [
+        "parents": ["mother", "father", "family", "early life"],
+        "parent": ["mother", "father", "family", "early life"],
+        "mother": ["parents", "family", "early life"],
+        "father": ["parents", "family", "early life"],
+        "siblings": ["brother", "sister", "family", "early life"],
+        "brothers": ["brother", "family", "early life"],
+        "sisters": ["sister", "family", "early life"],
+        "wife": ["married", "marriage", "personal life"],
+        "husband": ["married", "marriage", "personal life"],
+        "married": ["marriage", "wife", "personal life"],
+        "children": ["daughter", "son", "personal life", "family"],
+        "kids": ["children", "daughter", "son", "personal life"],
+        "childhood": ["early life", "born", "school"],
+        "young": ["early life", "childhood", "born"],
+        "grew": ["early life", "childhood", "born"],
+        "born": ["early life", "birth"],
+        "education": ["school", "university", "studied", "early life"],
+        "job": ["career", "work"],
+        "money": ["wealth", "net worth", "income"],
+        "rich": ["wealth", "net worth"],
+        "died": ["death"],
+        "dead": ["death"],
+    ]
+
+    /// (keyword, weight) pairs: the question's own keywords at full
+    /// weight plus their synonyms at reduced weight, deduped.
+    static func weightedKeywords(_ kws: [String]) -> [(term: String, weight: Float)] {
+        var out: [(String, Float)] = []
+        var seen = Set<String>()
+        for k in kws where !seen.contains(k) {
+            seen.insert(k)
+            out.append((k, 1.0))
+        }
+        for k in kws {
+            for syn in keywordSynonyms[k] ?? [] where !seen.contains(syn) {
+                seen.insert(syn)
+                out.append((syn, 0.6))
+            }
+        }
+        return out
+    }
+
+    /// Crude stem so "parents" matches "parent(s)" and "annexed" matches
+    /// "annex…": strip one plural/verbal suffix when the remainder stays
+    /// ≥4 chars.
+    static func stem(_ w: String) -> String {
+        for suffix in ["ies", "es", "s", "ed", "ing"] where w.hasSuffix(suffix) {
+            let stemmed = String(w.dropLast(suffix.count))
+            if stemmed.count >= 4 { return stemmed }
+        }
+        return w
+    }
+
+    /// Keyword-evidence score for one section: heading hits are a strong
+    /// "this section is about it" signal; recurring body mentions are a
+    /// medium one (capped so one long section can't win on volume alone).
+    static func keywordScore(
+        _ weighted: [(term: String, weight: Float)],
+        section: ArticleSection
+    ) -> Float {
+        guard !weighted.isEmpty else { return 0 }
+        let title = section.title.lowercased()
+        let body = section.text.lowercased()
+        var score: Float = 0
+        for (term, weight) in weighted {
+            let st = stem(term)
+            if !title.isEmpty, title.contains(st) {
+                score += 2.0 * weight
+            }
+            var count = 0
+            var idx = body.startIndex
+            while count < 5, let r = body.range(of: st, range: idx..<body.endIndex) {
+                count += 1
+                idx = r.upperBound
+            }
+            score += Float(count) * 0.3 * weight
+        }
+        return score
     }
 
     /// True when the article's sections plausibly cover a follow-up — any
@@ -324,16 +430,20 @@ public enum ArticleHeuristics {
     ) -> Bool {
         let kws = questionKeywords(question)
         if kws.isEmpty { return true }
+        // Expand with synonyms (stemmed) so "parents" counts the "his
+        // mother … his father" prose of an Early-life section as
+        // coverage instead of triggering a spurious corpus pull.
+        let terms = weightedKeywords(kws).map { stem($0.term) }
         for s in sections {
             let title = s.title.lowercased()
             // A keyword in a HEADING is a strong "this section is about it"
             // signal.
-            if kws.contains(where: { title.contains($0) }) { return true }
+            if terms.contains(where: { title.contains($0) }) { return true }
             // Otherwise require a keyword to recur (≥2×) in one section's
             // body — a single passing mention isn't real coverage, and was
             // letting "population" skip a useful corpus pull (2026-05-30).
             let body = s.text.lowercased()
-            for k in kws {
+            for k in terms {
                 var count = 0
                 var idx = body.startIndex
                 while let r = body.range(of: k, range: idx..<body.endIndex) {
@@ -374,18 +484,29 @@ public enum ArticleHeuristics {
         k: Int = 3
     ) -> [(article: String, section: ArticleSection)] {
         let qv = embedder.embed(question)
-        var scored: [(Float, String, ArticleSection)] = []
+        let weighted = weightedKeywords(questionKeywords(question))
+        // Same keyword-first blend as `rankSectionsForQuestion` — see
+        // the rationale there.
+        let embedderWeight: Float = weighted.isEmpty ? 1.0 : 0.35
+        var scored: [(total: Float, kw: Float, article: String, section: ArticleSection)] = []
         for (title, secs) in sources {
             for s in secs where !s.text.isEmpty {
                 let ts = s.title.isEmpty
                     ? 0 : VectorMath.cosine(qv, embedder.embed(s.title))
                 let bs = VectorMath.cosine(qv, embedder.embed(s.text))
-                scored.append((0.55 * ts + 0.45 * bs, title, s))
+                let embed = 0.55 * ts + 0.45 * bs
+                let kw = keywordScore(weighted, section: s)
+                scored.append((kw + embedderWeight * embed, kw, title, s))
             }
         }
-        return scored.sorted { $0.0 > $1.0 }
+        // Same off-topic cut as `rankSectionsForQuestion`: with keyword
+        // evidence anywhere, zero-evidence sections don't pad the list.
+        if scored.contains(where: { $0.kw > 0 }) {
+            scored = scored.filter { $0.kw > 0 }
+        }
+        return scored.sorted { $0.total > $1.total }
             .prefix(max(1, k))
-            .map { (article: $0.1, section: $0.2) }
+            .map { (article: $0.article, section: $0.section) }
     }
 
     // MARK: - Relationship probing
