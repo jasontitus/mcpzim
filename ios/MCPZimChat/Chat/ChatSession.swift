@@ -3308,6 +3308,14 @@ public final class ChatSession {
             }
             let final = stripLeakedReasoning(buffer)
             updateAssistant(final)
+            // Mirror the answer into the debug log — the grounded path
+            // didn't, so device logs showed WHICH passages were used but
+            // never WHAT the model said, making bad answers undiagnosable
+            // from a pasted log (2026-07-02).
+            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                debug(trimmed, category: "Assistant")
+            }
             return final
         } catch {
             debug("discuss generate failed: \(error)", category: "Chat")

@@ -126,6 +126,31 @@ final class DiscussRetrievalTests: XCTestCase {
             ["crimea"])
     }
 
+    func testNestedNavboxTablesFullyStripped() {
+        // Maxi builds nest tables 3 deep inside navbox/sidebar templates.
+        // The old non-greedy strip cut at the FIRST </table>, leaking the
+        // inner link farm into prose (device capture 2026-07-02: a
+        // "gravitational waves" answer that was 2 kB of looping physicist
+        // names). Depth-aware removal must eat the whole thing.
+        let html = """
+        <p>Gravitational waves are ripples in spacetime.</p>
+        <div class="navbox"><table class="navbox-inner"><tr><td>
+        <table class="navbox-subgroup"><tr><td>
+        <a href="Kerr_metric">Kerr</a> <a href="Taub">Taub</a>
+        </td></tr></table>
+        <table class="navbox-subgroup"><tr><td>
+        <a href="Hulse">Hulse</a> <a href="Wheeler">Wheeler</a>
+        </td></tr></table>
+        </td></tr></table></div>
+        <p>They were predicted by Einstein in 1916.</p>
+        """
+        let text = ArticleSections.stripHTML(html)
+        XCTAssertTrue(text.contains("ripples in spacetime"), "got: \(text)")
+        XCTAssertTrue(text.contains("predicted by Einstein in 1916"), "got: \(text)")
+        XCTAssertFalse(text.contains("Kerr"), "navbox leaked: \(text)")
+        XCTAssertFalse(text.contains("Wheeler"), "navbox leaked: \(text)")
+    }
+
     func testHatnoteDisambiguationExtraction() {
         // Real markup shape from A/Gravity_wave (full-wiki nopic build):
         // the FIRST hatnote is the cross-meaning; "Further information:"
