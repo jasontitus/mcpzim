@@ -15,6 +15,26 @@ final class QwenClippedToolCallTests: XCTestCase {
 
     private let tpl = QwenChatMLTemplate()
 
+    func testRebuiltAssistantTurnStrictlyExtendsGenerationPrompt() {
+        let system = "Answer briefly."
+        let user = ChatTurn(role: .user, text: "Tell me about the Alamo.")
+        let firstPrompt = tpl.renderTranscript(
+            systemPreamble: system, tools: [], turns: [user])
+        let answer = "The Battle of the Alamo was fought in 1836."
+        let followUpPrompt = tpl.renderTranscript(
+            systemPreamble: system,
+            tools: [],
+            turns: [
+                user,
+                ChatTurn(role: .assistant, text: answer),
+                ChatTurn(role: .user, text: "Who were the combatants?"),
+            ])
+
+        XCTAssertTrue(
+            followUpPrompt.hasPrefix(firstPrompt + answer),
+            "A rebuilt Qwen transcript must preserve the exact generated prefix for hybrid KV/recurrent reuse")
+    }
+
     // MARK: - Strict streaming parser (canonical)
 
     func testCanonicalCloseMatches() {

@@ -181,4 +181,94 @@ final class DiscussRetrievalTests: XCTestCase {
         XCTAssertTrue(ArticleHeuristics.sectionsCoverQuestion(
             putinSections, "What about his parents?"))
     }
+
+    func testEvidenceDepthTracksQuestionComplexity() {
+        XCTAssertEqual(ArticleHeuristics.groundedPassageLimit(
+            for: "Where did he go to school?"), 2)
+        XCTAssertEqual(ArticleHeuristics.groundedPassageLimit(
+            for: "What about his parents?"), 2)
+        XCTAssertEqual(ArticleHeuristics.groundedPassageLimit(
+            for: "Explain how gravitational waves are created."), 4)
+    }
+
+    func testGroundedWindowFindsParentsInMiddleInsteadOfPrefix() {
+        let padding = String(repeating:
+            "Putin held a number of public offices during his career. ", count: 18)
+        let text = padding
+            + "He grew up in Leningrad. His mother Maria was a factory worker, "
+            + "and his father Vladimir served in the Soviet Navy. Two older brothers died young. "
+            + padding
+        let window = ArticleHeuristics.groundedPassageWindow(
+            text, question: "What about his parents?", maxChars: 420)
+        XCTAssertTrue(window.contains("mother Maria"), "got: \(window)")
+        XCTAssertTrue(window.contains("father Vladimir"), "got: \(window)")
+        XCTAssertLessThanOrEqual(window.count, 420)
+    }
+
+    func testGroundedWindowDoesNotSplitSchoolNumberAbbreviation() {
+        let text = String(repeating: "Earlier context about his childhood. ", count: 12)
+            + "He attended School No. 193 and later High School 281. "
+            + String(repeating: "Later context about politics. ", count: 12)
+        let window = ArticleHeuristics.groundedPassageWindow(
+            text, question: "Where did he go to school?", maxChars: 240)
+        XCTAssertTrue(window.contains("School No. 193"), "got: \(window)")
+        XCTAssertTrue(window.contains("High School 281"), "got: \(window)")
+    }
+
+    func testDeathQuestionRanksCasualtiesAndFindsCountWindow() {
+        let sections = [
+            ArticleSection(title: "", level: 0,
+                           text: "The battle was fought in 1836."),
+            ArticleSection(title: "Interior fighting", level: 2,
+                           text: "The defenders withdrew into barracks rooms."),
+            ArticleSection(title: "Casualties", level: 2, text:
+                "Historians disagree on some details. Between 182 and 257 Texians died, while Mexican casualty estimates vary. Later reports gave other totals."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "How many people died there?",
+            sources: [(title: "Battle of the Alamo", sections: sections)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "Casualties")
+        let window = ArticleHeuristics.groundedPassageWindow(
+            sections[2].text,
+            question: "How many people died there?", maxChars: 150)
+        XCTAssertTrue(window.contains("182"), "got: \(window)")
+    }
+
+    func testCombatantsQuestionRanksArmyOrForcesHeading() {
+        let sections = [
+            ArticleSection(title: "", level: 0, text: "A major battle."),
+            ArticleSection(title: "Legacy", level: 2, text: "Remembered later."),
+            ArticleSection(title: "Opposing armies", level: 2,
+                           text: "Texian defenders faced Mexican troops."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "Who were the combatants?",
+            sources: [(title: "Battle", sections: sections)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "Opposing armies")
+    }
+
+    func testFirstDetectionQuestionPrefersHistoryOverDetectorDesign() {
+        let sections = [
+            ArticleSection(title: "", level: 0,
+                           text: "Gravitational waves are ripples in spacetime."),
+            ArticleSection(title: "Ground-based detectors", level: 2,
+                           text: "Ground-based detectors use laser interferometers to detect tiny strains."),
+            ArticleSection(title: "History", level: 2,
+                           text: "The first indirect observation came from a binary pulsar. The first direct observation was GW150914 in 2015."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "How were they first detected?",
+            sources: [(title: "Gravitational waves", sections: sections)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "History")
+    }
+
+    func testGroundedWindowCapsLongUnpunctuatedEvidenceBlock() {
+        let text = String(repeating: "opening context ", count: 70)
+            + "Mexican reports listed 70 killed and 300 wounded while Texian reports gave different estimates "
+            + String(repeating: "later context ", count: 70)
+        let window = ArticleHeuristics.groundedPassageWindow(
+            text, question: "How many people died?", maxChars: 300)
+        XCTAssertLessThanOrEqual(window.count, 300)
+        XCTAssertTrue(window.contains("70 killed"), "got: \(window)")
+    }
 }

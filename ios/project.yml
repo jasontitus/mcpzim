@@ -62,7 +62,7 @@ packages:
     url: https://github.com/mlalma/MLXUtilsLibrary.git
     from: 0.0.6
   # Wrapper SPM package over the upstream llama.cpp XCFramework
-  # (pinned b8911 today — bump by replacing the unzipped framework
+  # (pinned Prism `prism-b9591` today — bump by replacing the framework
   # on disk; see LocalPackages/llama.cpp-swift/Package.swift header).
   # Exposes the `llama` C module so LlamaCppProvider.swift can hit
   # the full `llama_context_params` surface (swa_full, type_k/v,

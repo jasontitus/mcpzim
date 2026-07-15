@@ -16,6 +16,8 @@ Usage:
   .venv/bin/python grid.py --only Q4_K_M          # filter weight quants
   .venv/bin/python grid.py --scenarios bars_sc_caltrain_chain,sky_is_blue_chain
   .venv/bin/python grid.py --models gemma         # model substring
+  .venv/bin/python grid.py --server-url http://127.0.0.1:8091 \\
+    --server-model bonsai-ternary-27b --out GRID_RESULTS_BONSAI.md
 """
 
 import argparse
@@ -301,7 +303,7 @@ KV_QUANTS: list[tuple[str, str]] = [
 ]
 
 
-# All 12 scenarios currently defined in eval.py.
+# All scenarios currently defined in eval.py.
 ALL_SCENARIOS = [
     "bars_sc_caltrain_chain",
     "sky_is_blue_chain",
@@ -312,6 +314,9 @@ ALL_SCENARIOS = [
     "relations_us_iran",
     "narrate_hp_garage",
     "what_is_here_in_sf",
+    "putin_biography_chain",
+    "alamo_history_chain",
+    "gravity_waves_creation",
     "grav_waves_chain",
     "wwi_vs_wwii_chain",
     "french_revolution_chain",
@@ -357,15 +362,25 @@ def parse_result(stdout: str) -> Optional[Row]:
 
 
 def run_one(model: ModelSpec, quant: str, kv: tuple[str, str],
-            scenario: str, timeout_s: int = 600) -> Row:
+            scenario: str, timeout_s: int = 600,
+            server_url: Optional[str] = None,
+            server_model: str = "local-model",
+            max_turn_tokens: int = 2048,
+            seed: int = 42,
+            native_tools: bool = False,
+            force_expected_tools: bool = False) -> Row:
     cmd = [str(VENV_PYTHON), str(EVAL_SCRIPT)]
-    if model.local_paths and quant in model.local_paths:
+    if server_url:
+        cmd += ["--server-url", server_url, "--server-model", server_model]
+    elif model.local_paths and quant in model.local_paths:
         cmd += ["--local-path", model.local_paths[quant]]
     else:
         fname = f"{model.prefix}-{quant}.gguf"
         cmd += ["--repo", model.repo, "--file", fname]
     cmd += [
         "--scenario", scenario,
+        "--max-turn-tokens", str(max_turn_tokens),
+        "--seed", str(seed),
         "--cache-type-k", kv[0], "--cache-type-v", kv[1],
         "--flash-attn",
         "--swa-full", "false",   # engage iSWA rotation-pruning — our
@@ -375,6 +390,10 @@ def run_one(model: ModelSpec, quant: str, kv: tuple[str, str],
                                    # PR #21513 attention rotation).
         "--tool-format", model.tool_format,
     ]
+    if native_tools:
+        cmd.append("--native-tools")
+    if force_expected_tools:
+        cmd.append("--force-expected-tools")
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -424,6 +443,18 @@ def main():
     ap.add_argument("--kv", default="",
                     help="Comma-sep KV filter (e.g. 'q8_0/q8_0')")
     ap.add_argument("--out", default="GRID_RESULTS.md")
+    ap.add_argument("--server-url", default="",
+                    help="Evaluate one model already hosted by llama.cpp.")
+    ap.add_argument("--server-model", default="local-model",
+                    help="Display/API model id for --server-url.")
+    ap.add_argument("--max-turn-tokens", type=int, default=2048,
+                    help="Maximum tokens for each model response.")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="Sampling seed for an external llama.cpp server.")
+    ap.add_argument("--native-tools", action="store_true",
+                    help="Use native OpenAI-style tool call round trips.")
+    ap.add_argument("--force-expected-tools", action="store_true",
+                    help="Require retrieval on scenario turns that expect it.")
     args = ap.parse_args()
 
     model_filt = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -431,12 +462,18 @@ def main():
     scen_filt = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     kv_filt = [k.strip() for k in args.kv.split(",") if k.strip()]
 
-    models = [m for m in MODELS
-              if not model_filt or any(f in m.key for f in model_filt)]
+    if args.server_url:
+        models = [ModelSpec(key=args.server_model, quants=["server"])]
+    else:
+        models = [m for m in MODELS
+                  if not model_filt or any(f in m.key for f in model_filt)]
     scenarios = [s for s in ALL_SCENARIOS
                  if not scen_filt or any(f in s for f in scen_filt)]
-    kv_opts = [(k, v) for k, v in KV_QUANTS
-               if not kv_filt or f"{k}/{v}" in kv_filt]
+    if args.server_url:
+        kv_opts = [("server", "server")]
+    else:
+        kv_opts = [(k, v) for k, v in KV_QUANTS
+                   if not kv_filt or f"{k}/{v}" in kv_filt]
 
     combos = []
     for m in models:
@@ -455,13 +492,24 @@ def main():
         fh.write(f"# llama.cpp grid — {time.strftime('%Y-%m-%d %H:%M')}\n\n")
         fh.write("Running sequentially — each combo is its own python "
                  "subprocess so peak-RSS numbers don't carry over.\n\n")
+        if args.server_url:
+            fh.write("Peak RSS is the Python client only; model/server memory "
+                     "is excluded.\n\n")
         fh.write("| model | quant | KV | scenario | pass | peak MB | ≥5GB | ≥6GB | wall s |\n")
         fh.write("|---|---|---|---|---|---|---|---|---|\n")
         fh.flush()
 
         for i, (m, q, kv, s) in enumerate(combos, 1):
             t0 = time.perf_counter()
-            row = run_one(m, q, kv, s)
+            row = run_one(
+                m, q, kv, s,
+                server_url=args.server_url or None,
+                server_model=args.server_model,
+                max_turn_tokens=args.max_turn_tokens,
+                seed=args.seed,
+                native_tools=args.native_tools,
+                force_expected_tools=args.force_expected_tools,
+            )
             dt = time.perf_counter() - t0
             results.append(row)
             pass_cell = "✓" if row.passed else ("·" if row.error else "✗")

@@ -4,23 +4,27 @@ Durable notes on every working build + run incantation in this repo. Update this
 
 ## First-time setup after a fresh clone
 
-The prebuilt `llama.xcframework` (~562 MB, 6 platform slices) isn't
-checked in. Restore it once:
+The prebuilt `llama.xcframework` (~626 MB, 6 platform slices) isn't
+checked in. Bonsai's Q1/Q2 formats require Prism ML's llama.cpp fork;
+the upstream release framework does not contain those kernels. Restore
+the pinned runtime once:
 
 ```sh
-cd ios/LocalPackages/llama.cpp-swift
-TAG=b9434   # stay in sync with the comment in Package.swift
-curl -L -o /tmp/llama.zip \
-  "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-xcframework.zip"
-rm -rf llama.xcframework
-unzip -q /tmp/llama.zip -d /tmp/llama-zip
-mv /tmp/llama-zip/build-apple/llama.xcframework .
-rm -rf /tmp/llama.zip /tmp/llama-zip
+git clone https://github.com/PrismML-Eng/llama.cpp /tmp/prism-llama.cpp
+cd /tmp/prism-llama.cpp
+git checkout 62061f9   # prism-b9591; keep in sync with Package.swift
+bash build-xcframework.sh
+
+cd /path/to/mcpzim
+rsync -a --delete \
+  /tmp/prism-llama.cpp/build-apple/llama.xcframework/ \
+  ios/LocalPackages/llama.cpp-swift/llama.xcframework/
 ```
 
 Without this, SPM fails to resolve `LlamaCppSwift` and the iOS build
-errors out on `import llama`. See `ios/LocalPackages/llama.cpp-swift/README.md`
-for the upgrade procedure.
+errors out on `import llama`. An upstream framework may compile but will
+reject Bonsai's `Q1_0_g128`/`Q2_0_g128` tensors at load time. See
+`ios/LocalPackages/llama.cpp-swift/README.md` for the upgrade procedure.
 
 ## Metal Toolchain (Xcode 26+, one-time)
 

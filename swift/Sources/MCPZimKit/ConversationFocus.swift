@@ -99,6 +99,12 @@ public struct DiscoveryThread: Equatable, Sendable, Hashable {
     public var lon: Double?
     /// Optional one-line gloss for the offer ("the architect", "350 m away").
     public var note: String?
+    /// Exact conversational turn dispatched when the chip is tapped. Older
+    /// topic/place threads leave this nil and retain the historical
+    /// `tell me about <label>` behavior. Contextual section chips carry a
+    /// complete question ("How was it first detected?") so tapping one does
+    /// not accidentally start a new article titled after the section.
+    public var prompt: String?
 
     public init(
         label: String,
@@ -107,7 +113,8 @@ public struct DiscoveryThread: Equatable, Sendable, Hashable {
         zimPath: String? = nil,
         lat: Double? = nil,
         lon: Double? = nil,
-        note: String? = nil
+        note: String? = nil,
+        prompt: String? = nil
     ) {
         self.label = label
         self.kind = kind
@@ -116,6 +123,7 @@ public struct DiscoveryThread: Equatable, Sendable, Hashable {
         self.lat = lat
         self.lon = lon
         self.note = note
+        self.prompt = prompt
     }
 
     public var matchKey: String {

@@ -230,6 +230,170 @@ public enum ArticleHeuristics {
         return String(text.prefix(maxChars)).trimmingCharacters(in: .whitespaces) + "…"
     }
 
+    /// Evidence depth for one grounded conversational turn. The previous
+    /// path always sent lead + up to five sections, even for a direct fact,
+    /// which made a simple biography opener pay a 2k-token cold prefill. Use
+    /// the already-established query classification to spend context where it
+    /// changes answer quality.
+    public static func groundedPassageLimit(for question: String) -> Int {
+        switch QueryComplexity.classify(question) {
+        case .factoid, .navigational:
+            return 2       // lead + one precise section/window
+        case .explanatory:
+            return 4       // lead + enough evidence for mechanism/synthesis
+        case .topical:
+            // Short facet follow-ups ("What about his parents?") behave like
+            // factoids even though their opener is not who/when/where.
+            let words = question.split(whereSeparator: { $0.isWhitespace })
+            return words.count <= 8 ? 2 : 3
+        }
+    }
+
+    /// Character budget for each passage after section ranking. Named
+    /// sections are reduced to a sentence window around the user's terms;
+    /// explanatory turns retain a wider window for causal context.
+    public static func groundedPassageCharacterLimit(for question: String) -> Int {
+        switch QueryComplexity.classify(question) {
+        case .factoid, .navigational: return 700
+        case .topical: return 900
+        case .explanatory: return 1_100
+        }
+    }
+
+    /// Extract a compact, sentence-aligned window from a selected section.
+    /// Ranking picks the right *section*; this picks the right part inside a
+    /// long section so a fact near the middle is not lost by `prefix(1500)`.
+    /// The best matching sentence is returned with adjacent context, bounded
+    /// by `maxChars`. With no useful content words we retain the beginning,
+    /// which is the natural behavior for an overview or "tell me more".
+    public static func groundedPassageWindow(
+        _ text: String,
+        question: String,
+        maxChars: Int
+    ) -> String {
+        guard maxChars > 0, text.count > maxChars else { return text }
+        let sentences = sentenceChunks(text)
+        guard !sentences.isEmpty else { return trimToSentence(text, maxChars: maxChars) }
+        let weighted = weightedKeywords(questionKeywords(question))
+        guard !weighted.isEmpty else { return trimToSentence(text, maxChars: maxChars) }
+
+        func score(_ sentence: String) -> Float {
+            let lower = sentence.lowercased()
+            var value: Float = 0
+            for (term, weight) in weighted {
+                let root = stem(term)
+                if lower.contains(root) { value += weight }
+            }
+            return value
+        }
+        let scores = sentences.map(score)
+        guard let best = scores.indices.max(by: { scores[$0] < scores[$1] }),
+              scores[best] > 0
+        else { return trimToSentence(text, maxChars: maxChars) }
+
+        // Cleaned Wikipedia occasionally contains a table-like block with no
+        // sentence boundaries. Do not let one 1,300-character "sentence"
+        // defeat the evidence cap; center a word-bounded window on the best
+        // exact/synonym match so the requested fact stays in view.
+        if sentences[best].count > maxChars {
+            let sentence = sentences[best]
+            let lower = sentence.lowercased()
+            let hitOffset = weighted.lazy.compactMap { term -> Int? in
+                guard let range = lower.range(of: stem(term.term)) else { return nil }
+                return lower.distance(from: lower.startIndex, to: range.lowerBound)
+            }.first ?? 0
+            let startOffset = min(
+                max(0, hitOffset - maxChars / 3),
+                max(0, sentence.count - maxChars))
+            let endOffset = min(sentence.count, startOffset + maxChars)
+            let start = sentence.index(sentence.startIndex, offsetBy: startOffset)
+            let end = sentence.index(sentence.startIndex, offsetBy: endOffset)
+            var snippet = String(sentence[start..<end])
+            if startOffset > 0,
+               let firstSpace = snippet.firstIndex(where: { $0.isWhitespace }) {
+                snippet.removeSubrange(snippet.startIndex...firstSpace)
+            }
+            if endOffset < sentence.count,
+               let lastSpace = snippet.lastIndex(where: { $0.isWhitespace }) {
+                snippet.removeSubrange(lastSpace..<snippet.endIndex)
+                snippet += "…"
+            }
+            return snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var lo = best
+        var hi = best
+        var count = sentences[best].count
+        // One preceding sentence is valuable for pronoun resolution ("His
+        // father…"); then grow toward the higher-scoring neighbor.
+        if lo > 0, count + 1 + sentences[lo - 1].count <= maxChars {
+            lo -= 1
+            count += 1 + sentences[lo].count
+        }
+        while true {
+            let leftFits = lo > 0 && count + 1 + sentences[lo - 1].count <= maxChars
+            let rightFits = hi + 1 < sentences.count
+                && count + 1 + sentences[hi + 1].count <= maxChars
+            guard leftFits || rightFits else { break }
+            if rightFits && (!leftFits || scores[hi + 1] >= scores[lo - 1]) {
+                hi += 1
+                count += 1 + sentences[hi].count
+            } else {
+                lo -= 1
+                count += 1 + sentences[lo].count
+            }
+        }
+        return sentences[lo...hi].joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Lightweight sentence splitter for cleaned Wikipedia prose. Keep the
+    /// punctuation and split only when a terminator is followed by whitespace
+    /// and an uppercase/digit opener; this avoids most decimal/abbreviation
+    /// damage without adding a NaturalLanguage dependency to MCPZimKit.
+    private static func sentenceChunks(_ text: String) -> [String] {
+        let chars = Array(text)
+        guard !chars.isEmpty else { return [] }
+        var out: [String] = []
+        var start = 0
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "." || chars[i] == "!" || chars[i] == "?" {
+                var next = i + 1
+                while next < chars.count, chars[next].isWhitespace { next += 1 }
+                var wordStart = i
+                while wordStart > start,
+                      chars[wordStart - 1].isLetter || chars[wordStart - 1] == "."
+                { wordStart -= 1 }
+                let priorWord = String(chars[wordStart..<i]).lowercased()
+                let abbreviations: Set<String> = [
+                    "no", "dr", "mr", "mrs", "ms", "st", "prof", "sr", "jr",
+                    "e.g", "i.e", "u.s", "u.k",
+                ]
+                let decimal = i > 0 && chars[i - 1].isNumber
+                    && next < chars.count && chars[next].isNumber
+                let boundary = !decimal && !abbreviations.contains(priorWord)
+                    && (next >= chars.count
+                        || chars[next].isUppercase || chars[next].isNumber)
+                if boundary {
+                    let value = String(chars[start...i])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty { out.append(value) }
+                    start = next
+                    i = next
+                    continue
+                }
+            }
+            i += 1
+        }
+        if start < chars.count {
+            let tail = String(chars[start...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty { out.append(tail) }
+        }
+        return out
+    }
+
     /// Concatenate `sections` into one TTS-ready body. Leads in with the
     /// article title as a sentence ("Palo Alto."), announces each named
     /// section as a short sentence ("History."), and separates sections
@@ -296,6 +460,7 @@ public enum ArticleHeuristics {
                 let bodyScore = VectorMath.cosine(qv, embedder.embed(s.text))
                 let embed = 0.55 * titleScore + 0.45 * bodyScore
                 let kw = keywordScore(weighted, section: s)
+                    + sectionIntentBoost(question: question, section: s)
                 return (i, kw, kw + embedderWeight * embed)
             }
         // When ANY section carries keyword evidence, sections with none
@@ -330,6 +495,7 @@ public enum ArticleHeuristics {
             // predicted") — content-free, and they dragged the search
             // rescue to the wrong article (Graviton, 2026-07-02).
             "one","ones","meant","mean","kind","sort","type",
+            "people","person",
         ]
         var seen = Set<String>()
         var out: [String] = []
@@ -362,11 +528,18 @@ public enum ArticleHeuristics {
         "grew": ["early life", "childhood", "born"],
         "born": ["early life", "birth"],
         "education": ["school", "university", "studied", "early life"],
+        "school": ["education", "university", "studied", "early life"],
+        "university": ["education", "school", "studied"],
         "job": ["career", "work"],
         "money": ["wealth", "net worth", "income"],
         "rich": ["wealth", "net worth"],
-        "died": ["death"],
-        "dead": ["death"],
+        "died": ["death", "killed", "casualty", "casualties", "fatalities", "losses"],
+        "dead": ["death", "killed", "casualty", "casualties", "fatalities", "losses"],
+        "deaths": ["death", "died", "killed", "casualty", "casualties", "fatalities", "losses"],
+        "killed": ["death", "died", "casualty", "casualties", "fatalities", "losses"],
+        "fatalities": ["death", "died", "killed", "casualty", "casualties", "losses"],
+        "combatants": ["belligerents", "armies", "forces", "troops", "defenders"],
+        "combatant": ["belligerent", "army", "forces", "troops", "defenders"],
     ]
 
     /// (keyword, weight) pairs: the question's own keywords at full
@@ -423,6 +596,29 @@ public enum ArticleHeuristics {
             score += Float(count) * 0.3 * weight
         }
         return score
+    }
+
+    /// A few conversational questions express a *kind* of section rather
+    /// than repeating its heading. In particular, "How was it first
+    /// detected?" otherwise over-ranks "Ground-based detectors" on the
+    /// shared `detect` stem, even though the answer lives in History /
+    /// Discovery. Keep this small and heading-only: it breaks lexical ties
+    /// without pretending we have evidence that is not in the article.
+    static func sectionIntentBoost(
+        question: String,
+        section: ArticleSection
+    ) -> Float {
+        let q = question.lowercased()
+        let title = section.title.lowercased()
+        guard !title.isEmpty else { return 0 }
+        if q.contains("first"),
+           q.contains("detect") || q.contains("observ") || q.contains("discover"),
+           title.contains("history") || title.contains("discover")
+                || title.contains("observ") || title.contains("first detection")
+        {
+            return 4.0
+        }
+        return 0
     }
 
     /// True when the article's sections plausibly cover a follow-up — any
@@ -500,6 +696,7 @@ public enum ArticleHeuristics {
                 let bs = VectorMath.cosine(qv, embedder.embed(s.text))
                 let embed = 0.55 * ts + 0.45 * bs
                 let kw = keywordScore(weighted, section: s)
+                    + sectionIntentBoost(question: question, section: s)
                 scored.append((kw + embedderWeight * embed, kw, title, s))
             }
         }

@@ -46,6 +46,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     /// message; a tap dispatches the pick exactly as typing/saying it would
     /// (see `ChatSession.selectSuggestion`). Empty when nothing was offered.
     public var suggestions: [DiscoveryThread] = []
+    /// User-visible provenance for grounded prose. Tool traces are a debug
+    /// representation; these compact records intentionally contain only the
+    /// library/article/section identity needed to answer "where did this come
+    /// from?" in the normal chat UI.
+    public var groundingSources: [GroundingSource] = []
 
     public init(id: UUID = UUID(), role: Role, text: String = "",
                 toolCalls: [ToolCallTrace] = [],
@@ -61,6 +66,30 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     public var elapsed: TimeInterval? {
         guard let s = startedAt, let f = finishedAt else { return nil }
         return max(0, f.timeIntervalSince(s))
+    }
+}
+
+public struct GroundingSource: Hashable, Sendable {
+    public enum Kind: String, Hashable, Sendable {
+        case wikipedia = "Wikipedia"
+        case streetZIM = "StreetZIM"
+    }
+
+    public let kind: Kind
+    public let title: String
+    public let section: String?
+    public let library: String?
+
+    public init(
+        kind: Kind,
+        title: String,
+        section: String? = nil,
+        library: String? = nil
+    ) {
+        self.kind = kind
+        self.title = title
+        self.section = section
+        self.library = library
     }
 }
 

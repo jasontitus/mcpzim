@@ -493,6 +493,36 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    func testComparisonCasualtyFollowUpAlignsBothArticles() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.setLastList([
+            FocusEntity(name: "World War I", kind: .topic),
+            FocusEntity(name: "World War II", kind: .topic),
+        ])
+
+        let intent = IntentRouter.classify(
+            "How many people were killed in each?", focus: focus)
+        XCTAssertEqual(intent?.toolName, "compare_articles")
+        XCTAssertEqual(
+            intent?.args["titles"],
+            .array([.string("World War I"), .string("World War II")]))
+        XCTAssertEqual(intent?.args["section"], .string("Casualties"))
+    }
+
+    func testComparisonInterpretiveFollowUpStaysSynthesisOnly() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.setLastList([
+            FocusEntity(name: "World War I", kind: .topic),
+            FocusEntity(name: "World War II", kind: .topic),
+        ])
+
+        XCTAssertNil(IntentRouter.classify(
+            "What changed between the two that made WWII so much more deadly?",
+            focus: focus))
+    }
+
     func testCompareExpandsSharedSuffix() {
         // "Compare north and south korea" literally parses as
         // ["north", "south korea"], but the intended English reading
@@ -1041,5 +1071,13 @@ final class IntentRouterTests: XCTestCase {
         // `kinds` was nil → fallback bucket is "places".
         XCTAssertTrue(s.contains("Found 1 places near Palo Alto"), "got: \(s)")
         XCTAssertTrue(s.contains("3 km"), "got: \(s)")
+    }
+
+    func testDiscussionFacetTitlesDoNotMeanTopicChanges() {
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("the combatants"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("his parents"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("Casualties"))
+        XCTAssertFalse(IntentRouter.isDiscussionFacetTitle("Donald Trump"))
+        XCTAssertFalse(IntentRouter.isDiscussionFacetTitle("The French Revolution"))
     }
 }

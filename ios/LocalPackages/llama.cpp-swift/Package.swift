@@ -3,7 +3,9 @@
 // Wrapper SPM package over the upstream llama.cpp XCFramework.
 //
 // Vendored from:
-//   https://github.com/ggml-org/llama.cpp/releases/download/b9434/llama-b9434-xcframework.zip
+//   PrismML-Eng/llama.cpp branch `prism`, commit 62061f9
+//   (`prism-b9591`). This fork supplies the Q1_0_g128 Metal kernels used by
+//   Bonsai 27B as well as the ordinary upstream quantizations.
 //
 // The XCFramework ships iOS device + iOS sim + macOS + visionOS (device+sim)
 // + tvOS (device+sim) slices with Metal embedded via
@@ -13,19 +15,17 @@
 // hit the C API directly.
 //
 // UPGRADE PROCEDURE (weekly-ish):
-//   1. Check https://github.com/ggml-org/llama.cpp/releases for the
-//      newest `bXXXX` tag that ships a `llama-bXXXX-xcframework.zip`.
-//   2. `curl -L -o /tmp/x.zip <URL> && unzip /tmp/x.zip -d /tmp/`
+//   1. Check out the desired PrismML-Eng/llama.cpp `prism` commit.
+//   2. Run its `build-xcframework.sh` with Xcode's Metal toolchain installed.
 //   3. `rm -rf ios/LocalPackages/llama.cpp-swift/llama.xcframework`
-//   4. `mv /tmp/build-apple/llama.xcframework ios/LocalPackages/llama.cpp-swift/`
-//   5. Bump the pinned tag in this comment and in HOW_TO_BUILD.md.
+//   4. Copy `build-apple/llama.xcframework` here.
+//   5. Bump the pinned commit in this comment and in HOW_TO_BUILD.md.
 //   6. Rebuild the app — any newly-renamed C symbols will surface as
 //      compile errors against our `LlamaCppProvider.swift` wrapper.
 //
-// Why not bump to each master commit: releases are tagged roughly
-// daily (the GH Actions CI auto-tags on green). Using a release rather
-// than a raw commit means we're on a ggml-org-validated binary, not a
-// "last minute" master push.
+// Keep the exact commit pinned: Bonsai's packed Q1_0_g128 format depends on
+// fork-specific kernels that are not interchangeable with an arbitrary
+// upstream llama.cpp release.
 
 import PackageDescription
 

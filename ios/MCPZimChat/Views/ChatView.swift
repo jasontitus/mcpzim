@@ -260,11 +260,22 @@ struct ChatView: View {
             }
             .accessibilityLabel("Voice chat")
             .disabled(session.isGenerating)
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 28))
+            if session.isGenerating {
+                Button {
+                    session.stopGeneration()
+                } label: {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.red)
+                }
+                .accessibilityLabel("Stop response")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || session.isGenerating)
         }
         .padding(10)
         .background(.bar)
@@ -380,6 +391,9 @@ private struct MessageRow: View {
                         copyButton.padding(6)
                     }
                 }
+                if !userFacingSources.isEmpty {
+                    provenanceChips(userFacingSources)
+                }
                 // Tappable "where to go next" chips — only on the newest
                 // assistant message (older offers are stale once the focus
                 // has moved on). A tap dispatches the pick via ChatSession.
@@ -443,6 +457,56 @@ private struct MessageRow: View {
             .padding(.top, 2)
         }
         .disabled(session.isGenerating)
+    }
+
+    /// Grounding is part of the product answer, not a debug-only tool trace.
+    /// Wikipedia responses show their article/section; map/place responses
+    /// show StreetZIM. This makes model preknowledge distinguishable from
+    /// offline-library evidence at a glance.
+    private var userFacingSources: [GroundingSource] {
+        if !message.groundingSources.isEmpty { return message.groundingSources }
+        let streetTools: Set<String> = [
+            "near_named_place", "near_places", "nearby_stories",
+            "nearby_stories_at_place", "route_from_places",
+            "plan_driving_route", "what_is_here", "locate",
+        ]
+        if message.toolCalls.contains(where: {
+            $0.succeeded && streetTools.contains($0.name)
+        }) {
+            return [GroundingSource(
+                kind: .streetZIM,
+                title: "Offline OpenStreetMap")]
+        }
+        return []
+    }
+
+    @ViewBuilder
+    private func provenanceChips(_ sources: [GroundingSource]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(sources.enumerated()), id: \.offset) { _, source in
+                    HStack(spacing: 4) {
+                        Image(systemName: source.kind == .wikipedia
+                            ? "book.closed.fill" : "map.fill")
+                        Text(sourceLabel(source)).lineLimit(1)
+                    }
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.secondary.opacity(0.10)))
+                    .accessibilityLabel("Source: \(sourceLabel(source))")
+                }
+            }
+            .padding(.horizontal, 10)
+        }
+    }
+
+    private func sourceLabel(_ source: GroundingSource) -> String {
+        if let section = source.section, !section.isEmpty {
+            return "\(source.kind.rawValue) · \(source.title) › \(section)"
+        }
+        return "\(source.kind.rawValue) · \(source.title)"
     }
 
     @ViewBuilder

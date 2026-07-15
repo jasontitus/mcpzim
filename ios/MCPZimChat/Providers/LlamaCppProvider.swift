@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // LlamaCppProvider — ModelProvider conformance that runs GGUF
-// models via the upstream llama.cpp C API (vendored as the
-// `llama-b8911-xcframework.zip` release, exposed through the
+// models via the llama.cpp C API (vendored as Prism ML's
+// `prism-b9591` XCFramework, exposed through the
 // LocalPackages/llama.cpp-swift wrapper → `import LlamaCppSwift`).
 //
 // Why a direct-to-C provider instead of a Swift wrapper:
@@ -30,6 +30,11 @@ import LlamaCppSwift
 
 private let log = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "LlamaCpp")
 
+public enum LlamaKVCacheType: String, Sendable {
+    case q4_0 = "Q4_0"
+    case q8_0 = "Q8_0"
+}
+
 public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     // MARK: - ModelProvider conformance
@@ -47,6 +52,11 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     public let huggingFaceRepo: String
     public let ggufFilename: String
+    /// Exact byte count for models whose publisher provides a stable file.
+    /// When set, a truncated cache entry is never handed to llama.cpp. This
+    /// also enables side-loaded `.part-NN` files to be assembled atomically,
+    /// which is useful because CoreDevice can drop multi-GB copy sockets.
+    public let expectedGGUFBytes: Int64?
     /// When set to an existing file, load this GGUF directly instead of
     /// downloading from HuggingFace — lets the local Mac eval harness run
     /// the on-disk shipping model without a multi-GB fetch.
@@ -66,6 +76,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// (−0.53 GB). Heavier-KV models (Gemma 3 GGUF fallbacks) keep the 8k
     /// default. Full budget math: CONTEXT_BUDGET.md.
     public let contextTokens: Int
+    /// Per-provider KV precision. Existing Gemma/LFM builds retain Q8_0;
+    /// phone-class Bonsai uses Q4_0, matching Prism's recommended compact
+    /// context configuration and leaving more iOS jetsam headroom.
+    public let kvCacheType: LlamaKVCacheType
 
     // MARK: - State + llama.cpp handles
 
@@ -77,6 +91,11 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// generate() can take a long time and we don't want `unload()`
     /// racing it.
     private let modelLock = NSLock()
+    /// Separate from `modelLock`: cancellation must be writable while the
+    /// detached llama.cpp task holds the model for a multi-second decode.
+    private let generationControlLock = NSLock()
+    private var activeGenerationID: UUID?
+    private var cancelledGenerationIDs: Set<UUID> = []
     private var model: OpaquePointer?
     private var ctx: OpaquePointer?
     private var vocab: OpaquePointer?
@@ -87,6 +106,16 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// turn's prefix can reuse it (same-prefix rule).
     private var cachedTokens: [Int32] = []
 
+    /// DEBUG-only one-shot guard for the explicit llama.cpp session-file
+    /// benchmark. Set MCPZIM_BENCH_STATE_CACHE=1 on launch to measure a full
+    /// save + restore without paying the cost on normal turns.
+    private var didBenchmarkStateCache = false
+
+    /// In-window + persistent-log sink. ChatSession wires this after provider
+    /// construction so stage timings survive a crash/jetsam and are visible
+    /// without an attached Xcode console.
+    public var debugSink: (@Sendable (String) -> Void)?
+
     // MARK: - Init
 
     public init(
@@ -94,20 +123,24 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         displayName: String = "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
         huggingFaceRepo: String = "bartowski/google_gemma-3-4b-it-GGUF",
         ggufFilename: String = "google_gemma-3-4b-it-Q4_K_M.gguf",
+        expectedGGUFBytes: Int64? = nil,
         localGGUFPath: String? = nil,
         replyTokensFloor: Int? = nil,
         approximateMemoryMB: Int = 3200,
         contextTokens: Int = 8192,
+        kvCacheType: LlamaKVCacheType = .q8_0,
         template: any ModelTemplate = Gemma3Template()
     ) {
         self.id = id
         self.displayName = displayName
         self.huggingFaceRepo = huggingFaceRepo
         self.ggufFilename = ggufFilename
+        self.expectedGGUFBytes = expectedGGUFBytes
         self.localGGUFPath = localGGUFPath
         self.replyTokensFloor = replyTokensFloor
         self.approximateMemoryMB = approximateMemoryMB
         self.contextTokens = contextTokens
+        self.kvCacheType = kvCacheType
         self.template = template
         // One-time global init. Safe to call repeatedly per
         // llama.cpp docs; the backend keeps a refcount.
@@ -170,7 +203,36 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             at: destDir, withIntermediateDirectories: true)
         let destURL = destDir.appendingPathComponent(ggufFilename)
         if FileManager.default.fileExists(atPath: destURL.path) {
-            return destURL
+            if try cachedFileHasExpectedSize(destURL) {
+                return destURL
+            }
+            let bytes = try Self.fileSize(destURL)
+            log.warning(
+                "Removing incomplete GGUF cache entry: \(bytes, privacy: .public) bytes at \(destURL.path, privacy: .public)"
+            )
+            try FileManager.default.removeItem(at: destURL)
+        }
+
+        // `devicectl` can drop its file-service socket during one multi-GB
+        // transfer. Deployment tooling may instead place ordered files named
+        // `<model>.part-00`, `.part-01`, … beside the destination. Assemble
+        // only when their total exactly matches the publisher's byte count;
+        // the final rename is atomic, so a killed app never exposes a partial
+        // GGUF as complete.
+        if let expectedGGUFBytes {
+            let assembled = try await Task.detached(priority: .utility) {
+                try Self.assembleSideLoadedParts(
+                    in: destDir,
+                    filename: self.ggufFilename,
+                    expectedBytes: expectedGGUFBytes
+                )
+            }.value
+            if assembled {
+                log.info(
+                    "Assembled side-loaded GGUF: \(expectedGGUFBytes, privacy: .public) bytes"
+                )
+                return destURL
+            }
         }
         let urlStr =
             "https://huggingface.co/\(huggingFaceRepo)/resolve/main/\(ggufFilename)"
@@ -269,7 +331,14 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
         // Truncation guard — a clipped GGUF must never reach llama.cpp
         // (a partial file can load far enough to crash mid-prefill).
-        if expectedBytes > 0 {
+        if let requiredBytes = expectedGGUFBytes {
+            let gotBytes = (try? Self.fileSize(finalTmp)) ?? 0
+            guard gotBytes == requiredBytes else {
+                try? FileManager.default.removeItem(at: finalTmp)
+                throw LlamaCppError.custom(
+                    "model download size mismatch (\(gotBytes)/\(requiredBytes) bytes) — update the pinned model metadata before retrying")
+            }
+        } else if expectedBytes > 0 {
             let gotBytes = (try? FileManager.default
                 .attributesOfItem(atPath: finalTmp.path)[.size] as? Int64) ?? 0
             guard gotBytes >= expectedBytes else {
@@ -288,6 +357,80 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         // the model open + Metal warm-up, not still downloading.
         set(.loading)
         return destURL
+    }
+
+    private func cachedFileHasExpectedSize(_ url: URL) throws -> Bool {
+        guard let expectedGGUFBytes else { return true }
+        return try Self.fileSize(url) == expectedGGUFBytes
+    }
+
+    private static func fileSize(_ url: URL) throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw LlamaCppError.custom("could not read file size for \(url.path)")
+        }
+        return size.int64Value
+    }
+
+    /// Join a complete set of deployment parts without ever exposing a
+    /// truncated destination. Returns false when no complete set is present,
+    /// allowing the normal resumable HTTP downloader to take over.
+    private static func assembleSideLoadedParts(
+        in directory: URL,
+        filename: String,
+        expectedBytes: Int64
+    ) throws -> Bool {
+        let manager = FileManager.default
+        let prefix = filename + ".part-"
+        let parts = try manager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.lastPathComponent.hasPrefix(prefix) }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        guard !parts.isEmpty else { return false }
+        let total = try parts.reduce(Int64(0)) { partial, url in
+            partial + (try fileSize(url))
+        }
+        guard total == expectedBytes else { return false }
+
+        let destination = directory.appendingPathComponent(filename)
+        let staging = directory.appendingPathComponent(filename + ".assembling")
+        try? manager.removeItem(at: staging)
+        guard manager.createFile(atPath: staging.path, contents: nil) else {
+            throw LlamaCppError.custom("could not create GGUF assembly file")
+        }
+
+        do {
+            do {
+                let output = try FileHandle(forWritingTo: staging)
+                defer { try? output.close() }
+                for part in parts {
+                    do {
+                        let input = try FileHandle(forReadingFrom: part)
+                        defer { try? input.close() }
+                        while let data = try input.read(upToCount: 8 * 1_024 * 1_024),
+                              !data.isEmpty {
+                            try output.write(contentsOf: data)
+                        }
+                    }
+                }
+                try output.synchronize()
+            }
+
+            guard try fileSize(staging) == expectedBytes else {
+                throw LlamaCppError.custom("assembled GGUF size mismatch")
+            }
+            try? manager.removeItem(at: destination)
+            try manager.moveItem(at: staging, to: destination)
+            for part in parts { try? manager.removeItem(at: part) }
+            return true
+        } catch {
+            try? manager.removeItem(at: staging)
+            throw error
+        }
     }
 
     /// Open the model + create a context configured with our
@@ -315,8 +458,14 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         cp.n_batch = 512
         cp.n_ubatch = 512
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
-        cp.type_k = GGML_TYPE_Q8_0
-        cp.type_v = GGML_TYPE_Q8_0
+        switch kvCacheType {
+        case .q4_0:
+            cp.type_k = GGML_TYPE_Q4_0
+            cp.type_v = GGML_TYPE_Q4_0
+        case .q8_0:
+            cp.type_k = GGML_TYPE_Q8_0
+            cp.type_v = GGML_TYPE_Q8_0
+        }
         cp.swa_full = false
         cp.offload_kqv = true
         guard let c = llama_init_from_model(m, cp) else {
@@ -325,7 +474,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             throw LlamaCppError.custom("llama_init_from_model failed")
         }
         self.ctx = c
-        log.notice("loaded \(self.ggufFilename, privacy: .public) · n_ctx=\(cp.n_ctx) kv=Q8_0 fa=on swa_full=false")
+        log.notice("loaded \(self.ggufFilename, privacy: .public) · n_ctx=\(cp.n_ctx) kv=\(self.kvCacheType.rawValue, privacy: .public) fa=on swa_full=false")
+        debug("loaded context · n_ctx=\(cp.n_ctx) · kv=\(kvCacheType.rawValue) · flash-attn=on · swa-full=false")
     }
 
     public func unload() async {
@@ -338,12 +488,28 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         set(.notLoaded)
     }
 
+    /// Exact token count using the loaded model's tokenizer. ChatSession uses
+    /// this to compact an append-only grounded transcript before it consumes
+    /// the reply reservation in n_ctx. Tokenisation is cheap (~5 ms for a
+    /// 2k-token prompt in current device captures).
+    public func promptTokenCount(_ prompt: String) -> Int? {
+        modelLock.lock()
+        defer { modelLock.unlock() }
+        guard let vocab else { return nil }
+        return Self.tokenize(vocab: vocab, prompt: prompt).count
+    }
+
     // MARK: - Generate
 
     public func generate(
         prompt: String, parameters: GenerationParameters
     ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        let generationID = UUID()
+        generationControlLock.lock()
+        activeGenerationID = generationID
+        cancelledGenerationIDs.remove(generationID)
+        generationControlLock.unlock()
+        return AsyncThrowingStream { continuation in
             Task.detached { [weak self] in
                 guard let self else {
                     continuation.finish(throwing: LlamaCppError.notLoaded)
@@ -353,13 +519,46 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                     try self.generateLocked(
                         prompt: prompt,
                         parameters: parameters,
+                        generationID: generationID,
                         emit: { continuation.yield($0) })
+                    self.finishGeneration(generationID)
                     continuation.finish()
                 } catch {
+                    self.finishGeneration(generationID)
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { [weak self] termination in
+                if case .cancelled = termination {
+                    self?.cancelGeneration(generationID)
+                }
+            }
         }
+    }
+
+    public func cancelGeneration() {
+        generationControlLock.lock()
+        if let id = activeGenerationID { cancelledGenerationIDs.insert(id) }
+        generationControlLock.unlock()
+    }
+
+    private func cancelGeneration(_ id: UUID) {
+        generationControlLock.lock()
+        cancelledGenerationIDs.insert(id)
+        generationControlLock.unlock()
+    }
+
+    private func finishGeneration(_ id: UUID) {
+        generationControlLock.lock()
+        cancelledGenerationIDs.remove(id)
+        if activeGenerationID == id { activeGenerationID = nil }
+        generationControlLock.unlock()
+    }
+
+    private func generationIsCancelled(_ id: UUID) -> Bool {
+        generationControlLock.lock()
+        defer { generationControlLock.unlock() }
+        return cancelledGenerationIDs.contains(id)
     }
 
     /// Synchronous generation body. Runs on a Task-detached background
@@ -369,14 +568,28 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     private func generateLocked(
         prompt: String,
         parameters: GenerationParameters,
+        generationID: UUID,
         emit: @escaping (String) -> Void
     ) throws {
+        if generationIsCancelled(generationID) { throw CancellationError() }
+        let requestStarted = ProcessInfo.processInfo.systemUptime
+        let memoryStarted = MemoryStats.physFootprintMB()
+        let thermalStarted = Self.thermalStateLabel()
+        let lockStarted = requestStarted
         modelLock.lock()
         defer { modelLock.unlock() }
+        let lockSeconds = ProcessInfo.processInfo.systemUptime - lockStarted
         guard let ctx = ctx, let vocab = vocab else {
             throw LlamaCppError.notLoaded
         }
+
+        let tokenizeStarted = ProcessInfo.processInfo.systemUptime
         let tokens = Self.tokenize(vocab: vocab, prompt: prompt)
+        let tokenizeSeconds = ProcessInfo.processInfo.systemUptime - tokenizeStarted
+        debug(String(format:
+            "perf start · prompt=%d chars · lock=%.3fs · tokenize=%d tok/%.3fs · thermal=%@ · footprint=%.0f MB",
+            prompt.count, lockSeconds, tokens.count, tokenizeSeconds,
+            thermalStarted, memoryStarted))
         guard tokens.count < contextTokens - 16 else {
             throw LlamaCppError.custom(
                 "prompt (\(tokens.count) tok) exceeds n_ctx=\(contextTokens) — "
@@ -403,6 +616,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         var lcp = 0
         while lcp < tokens.count, lcp < cachedTokens.count,
               tokens[lcp] == cachedTokens[lcp] { lcp += 1 }
+        let lcpCandidate = lcp
+        var cacheMode = "cold"
         // Need at least one fresh token in the batch to obtain logits — if
         // the new prompt is entirely a prefix of the cache, re-decode its
         // final token (forces the divergence path below).
@@ -422,12 +637,15 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         //   full prefill — slower, never wrong.
         if lcp == cachedTokens.count, lcp > 0 {
             // Pure append — KV already holds exactly tokens[0..<lcp].
+            cacheMode = "append"
         } else if let mem = llama_get_memory(ctx) {
             if lcp > 0, llama_memory_seq_rm(mem, 0, Int32(lcp), -1) {
                 // Partial truncation accepted (pure-attention model).
+                cacheMode = "truncate"
             } else {
                 _ = llama_memory_seq_rm(mem, 0, 0, -1)
                 lcp = 0
+                cacheMode = lcpCandidate > 0 ? "reset-after-divergence" : "reset"
             }
         }
         log.notice("generate: \(tokens.count) prompt tokens · KV reuse \(lcp) · prefill \(tokens.count - lcp)")
@@ -457,7 +675,11 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         defer { llama_batch_free(batch) }
         var pos: Int32 = Int32(lcp)
         var i = lcp
+        var prefillBatches = 0
+        let prefillTokens = tokens.count - lcp
+        let prefillStarted = ProcessInfo.processInfo.systemUptime
         while i < tokens.count {
+            if generationIsCancelled(generationID) { throw CancellationError() }
             let end = min(i + nBatch, tokens.count)
             batch.n_tokens = 0
             for j in i..<end {
@@ -473,9 +695,22 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                     "llama_decode prefill rc=\(rc) at batch \(i)..<\(end) of \(tokens.count)")
             }
             i = end
+            prefillBatches += 1
         }
+        let prefillFinished = ProcessInfo.processInfo.systemUptime
+        let prefillSeconds = prefillFinished - prefillStarted
+        let prefillRate = prefillSeconds > 0
+            ? Double(prefillTokens) / prefillSeconds : 0
         // Prefill complete — the KV now holds exactly `tokens`.
         cachedTokens = tokens
+        let prefillMemory = MemoryStats.physFootprintMB()
+        debug(String(format:
+            "perf prefill · prompt=%d tok · LCP candidate=%d · reused=%d · mode=%@ · batches=%d · %.3fs · %.1f tok/s · footprint=%.0f MB (Δ%+.0f)",
+            tokens.count, lcpCandidate, lcp, cacheMode, prefillBatches,
+            prefillSeconds, prefillRate, prefillMemory,
+            prefillMemory - memoryStarted))
+
+        benchmarkSSDStateCacheIfRequested(ctx: ctx, tokens: tokens)
 
         // Sampler chain. Match the MLX defaults: greedy-ish with
         // temp + top-p. `temp=0.0` → force dist sampler to greedy.
@@ -495,11 +730,21 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
         // Decode loop. Sample → detokenise → emit → feed back.
         var newTokens = 0
+        var sampledTokens = 0
         var buffered = ""
+        var firstVisibleSeconds: Double?
+        var firstVisibleAt: TimeInterval?
+        var stopReason = "max_tokens"
+        let decodeStarted = ProcessInfo.processInfo.systemUptime
         let maxTokens = parameters.maxTokens
         while newTokens < maxTokens {
+            if generationIsCancelled(generationID) { throw CancellationError() }
             let id = llama_sampler_sample(sp, ctx, -1)
-            if llama_vocab_is_eog(vocab, id) { break }
+            if llama_vocab_is_eog(vocab, id) {
+                stopReason = "eog"
+                break
+            }
+            sampledTokens += 1
             // Detokenise the piece — llama.cpp returns raw bytes, we
             // accumulate into `buffered` and emit on every chunk
             // since callers expect UTF-8 strings. Occasional partial
@@ -516,6 +761,14 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                     decoding: pieceBuf.prefix(Int(n)).map { UInt8(bitPattern: $0) },
                     as: UTF8.self)
                 buffered += piece
+                if firstVisibleSeconds == nil {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    firstVisibleAt = now
+                    firstVisibleSeconds = now - requestStarted
+                    debug(String(format:
+                        "perf first token · TTFT=%.3fs · after-prefill=%.3fs",
+                        firstVisibleSeconds!, now - prefillFinished))
+                }
                 emit(piece)
             }
             // Check stop sequences. Post-emit so we don't clip the
@@ -526,6 +779,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                    buffered.contains($0)
                })
             {
+                stopReason = "stop_sequence"
                 break
             }
             // Feed the new token back for the next decode.
@@ -543,10 +797,108 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             cachedTokens.append(id)
             newTokens += 1
         }
+        let requestFinished = ProcessInfo.processInfo.systemUptime
+        let decodeSeconds = requestFinished - decodeStarted
+        let decodeRate = decodeSeconds > 0
+            ? Double(sampledTokens) / decodeSeconds : 0
+        let steadyDecodeSeconds = firstVisibleAt.map {
+            max(0, requestFinished - $0)
+        } ?? 0
+        let steadyDecodeTokens = max(0, sampledTokens - 1)
+        let steadyDecodeRate = steadyDecodeSeconds > 0
+            ? Double(steadyDecodeTokens) / steadyDecodeSeconds : 0
+        let ttft = firstVisibleSeconds ?? -1
+        let memoryFinished = MemoryStats.physFootprintMB()
+        debug(String(format:
+            "perf complete · output=%d tok · generation=%.3fs/%.2f tok/s · steady-decode=%d tok/%.3fs/%.2f tok/s · TTFT=%.3fs · total=%.3fs · stop=%@ · thermal=%@ · footprint=%.0f MB (Δ%+.0f)",
+            sampledTokens, decodeSeconds, decodeRate,
+            steadyDecodeTokens, steadyDecodeSeconds, steadyDecodeRate, ttft,
+            requestFinished - requestStarted, stopReason,
+            Self.thermalStateLabel(), memoryFinished,
+            memoryFinished - memoryStarted))
         log.notice("generate: \(newTokens) new tokens")
     }
 
     // MARK: - Helpers
+
+    /// llama.cpp's `--prompt-cache` is a serialization of the complete
+    /// context, not a transparent SSD tier. Keep this as an opt-in DEBUG
+    /// experiment: it measures the exact file size plus save/restore latency
+    /// on the target device, then deletes the temporary snapshot. Normal
+    /// conversation turns never touch disk.
+    private func benchmarkSSDStateCacheIfRequested(
+        ctx: OpaquePointer, tokens: [Int32]
+    ) {
+        #if DEBUG
+        guard !didBenchmarkStateCache,
+              ProcessInfo.processInfo.environment["MCPZIM_BENCH_STATE_CACHE"] == "1",
+              !tokens.isEmpty
+        else { return }
+        didBenchmarkStateCache = true
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcpzim-llama-state-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let sizeStarted = ProcessInfo.processInfo.systemUptime
+        let advertisedBytes = llama_state_get_size(ctx)
+        let sizeSeconds = ProcessInfo.processInfo.systemUptime - sizeStarted
+
+        let saveStarted = ProcessInfo.processInfo.systemUptime
+        let saved = url.path.withCString { path in
+            tokens.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return false }
+                return llama_state_save_file(ctx, path, base, buf.count)
+            }
+        }
+        let saveSeconds = ProcessInfo.processInfo.systemUptime - saveStarted
+        let fileBytes = ((try? FileManager.default.attributesOfItem(
+            atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+
+        var restoredTokens = [Int32](repeating: 0, count: contextTokens)
+        var restoredCount = 0
+        let loadStarted = ProcessInfo.processInfo.systemUptime
+        let loaded = saved && url.path.withCString { path in
+            restoredTokens.withUnsafeMutableBufferPointer { buf in
+                guard let base = buf.baseAddress else { return false }
+                return llama_state_load_file(
+                    ctx, path, base, buf.count, &restoredCount)
+            }
+        }
+        let loadSeconds = ProcessInfo.processInfo.systemUptime - loadStarted
+        let tokenMatch = loaded && restoredCount == tokens.count
+            && Array(restoredTokens.prefix(restoredCount)) == tokens
+
+        debug(String(format:
+            "SSD state benchmark · state=%.1f MB (size %.3fs) · file=%.1f MB · save=%.3fs · load=%.3fs · tokens=%d/%d match=%@",
+            Double(advertisedBytes) / 1_048_576,
+            sizeSeconds,
+            Double(fileBytes) / 1_048_576,
+            saveSeconds,
+            loadSeconds,
+            restoredCount,
+            tokens.count,
+            tokenMatch ? "yes" : "NO"))
+        #endif
+    }
+
+    private func debug(_ message: String) {
+        if let debugSink {
+            debugSink(message)
+        } else {
+            log.notice("\(message, privacy: .public)")
+        }
+    }
+
+    private static func thermalStateLabel() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
 
     private static func tokenize(vocab: OpaquePointer, prompt: String) -> [llama_token] {
         let utf8 = Array(prompt.utf8)
@@ -654,6 +1006,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     public let approximateMemoryMB: Int
     public let supportsToolCalls = true
     public let template: any ModelTemplate
+    public var debugSink: (@Sendable (String) -> Void)?
     public init(
         id: String = "llamacpp-unlinked",
         displayName: String = "llama.cpp (unlinked)",

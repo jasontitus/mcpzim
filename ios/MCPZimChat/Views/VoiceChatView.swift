@@ -20,6 +20,15 @@ struct VoiceChatView: View {
                 .lineLimit(2)
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if canInterrupt {
+                Button("Interrupt") {
+                    controller?.interruptAndListen()
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel("Interrupt response and listen")
+            }
             endButton
         }
         .padding(.horizontal, 12)
@@ -72,6 +81,12 @@ struct VoiceChatView: View {
     }
     private var isThinking: Bool {
         if case .thinking = state { return true } else { return false }
+    }
+    private var canInterrupt: Bool {
+        switch state {
+        case .thinking, .speaking: return true
+        default: return false
+        }
     }
 
     private var iconName: String {

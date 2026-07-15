@@ -664,7 +664,8 @@ final class EvalHarness {
                     user: "How many people were killed in each?",
                     expect: TurnExpect(
                         toolsCalledAny: ["get_article_section",
-                                          "article_overview", "search"],
+                                          "article_overview", "search",
+                                          "compare_articles"],
                         responseIncludesAny: ["million", "casualt",
                                                "civilian", "deaths"]
                     )

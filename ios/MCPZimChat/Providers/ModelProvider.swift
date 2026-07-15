@@ -67,6 +67,13 @@ public protocol ModelProvider: AnyObject, Sendable {
         parameters: GenerationParameters
     ) -> AsyncThrowingStream<String, Error>
 
+    /// Request cancellation of the active generation. Implementations should
+    /// return promptly at their next safe batch/token boundary. The default is
+    /// a no-op for providers whose async stream already follows Task
+    /// cancellation; llama.cpp overrides it because its decode loop is a
+    /// detached blocking task.
+    func cancelGeneration()
+
     /// Render a transcript into the provider's native chat template. The
     /// returned string is ready to feed into `generate(prompt:…)` and ends
     /// on the provider's "open model/assistant turn" marker so generation
@@ -75,6 +82,8 @@ public protocol ModelProvider: AnyObject, Sendable {
 }
 
 public extension ModelProvider {
+    func cancelGeneration() {}
+
     /// Default: Gemma 4's template. Providers for other families
     /// (Qwen, Llama 3, …) should override. Safe default for the
     /// MockProvider / FoundationModelsProvider paths — those never

@@ -116,7 +116,7 @@ final class ConversationThreadsTests: XCTestCase {
             toolName: "article_overview", result: result)
         let labels = threads.map(\.label)
         XCTAssertTrue(labels.contains("Stanford White"))
-        XCTAssertTrue(labels.contains("History"))
+        XCTAssertTrue(labels.contains("What about history?"))
         XCTAssertFalse(labels.contains("References"))
         XCTAssertFalse(labels.contains(""))
     }
@@ -141,7 +141,10 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(white?.zimPath, "A/Stanford_White")
         XCTAssertTrue(threads.contains { $0.label == "1906 San Francisco earthquake" })
         // The section is still offered as a deeper thread.
-        XCTAssertTrue(threads.contains { $0.label == "History" && $0.source == .section })
+        XCTAssertTrue(threads.contains {
+            $0.label == "What about history?" && $0.source == .section
+                && $0.prompt == "What about history?"
+        })
     }
 
     // MARK: - rank
@@ -192,5 +195,101 @@ final class ConversationThreadsTests: XCTestCase {
                             source: .nearbyPlace, note: "420 m away"),
         ])
         XCTAssertEqual(line, "Want to hear about Fenway Park (420 m away)?")
+    }
+
+    func testContextualBiographyQuestionsAreNaturalAndSkipAskedFacet() {
+        let sections = [
+            ArticleSection(title: "Early life", level: 2, text: "Born in Leningrad."),
+            ArticleSection(title: "Education", level: 2, text: "Studied law."),
+            ArticleSection(title: "Political career", level: 2, text: "Entered politics."),
+            ArticleSection(title: "Family", level: 2, text: "Family details."),
+            ArticleSection(title: "History", level: 2, text: "Template artifact."),
+            ArticleSection(title: "References", level: 2, text: "Noisy."),
+        ]
+        let first = ConversationThreads.contextualQuestions(
+            topic: "Vladimir Putin", sections: sections,
+            after: "Tell me about Vladimir Putin", max: 3)
+        XCTAssertEqual(first.map(\.label), [
+            "What was Vladimir Putin's early life like?",
+            "Where did Vladimir Putin go to school?",
+            "How did Vladimir Putin's career develop?",
+        ])
+        XCTAssertTrue(first.allSatisfy { $0.prompt == $0.label })
+
+        let afterSchool = ConversationThreads.contextualQuestions(
+            topic: "Vladimir Putin", sections: sections,
+            after: "Where did he go to school?", max: 4)
+        XCTAssertFalse(afterSchool.contains { $0.note == "Education" })
+        XCTAssertTrue(afterSchool.contains { $0.note == "Family" })
+        XCTAssertFalse(afterSchool.contains { $0.note == "History" })
+    }
+
+    func testContextualBattleAndScienceQuestionsUseFacetLanguage() {
+        let battle = ConversationThreads.contextualQuestions(
+            topic: "Battle of the Alamo",
+            sections: [
+                ArticleSection(title: "Combatants", level: 2, text: ""),
+                ArticleSection(title: "Casualties", level: 2, text: ""),
+                ArticleSection(title: "Aftermath", level: 2, text: ""),
+            ],
+            after: "When was the Alamo?", max: 3)
+        XCTAssertEqual(battle.map(\.label), [
+            "Who were the combatants?",
+            "How many people died?",
+            "What happened afterward?",
+        ])
+
+        let science = ConversationThreads.contextualQuestions(
+            topic: "Gravitational wave",
+            sections: [
+                ArticleSection(title: "Binaries", level: 2, text: ""),
+                ArticleSection(title: "Detection", level: 2, text: ""),
+                ArticleSection(title: "Effects of passing", level: 2, text: ""),
+            ],
+            after: "What are gravitational waves?", max: 3)
+        XCTAssertEqual(science.map(\.label), [
+            "What kinds of systems create them?", "How was it first detected?",
+            "What effects does it have?",
+        ])
+    }
+
+    func testContextualBattleOverviewKeepsBattleFacetsAndNeverInventsNATO() {
+        let battle = ConversationThreads.contextualQuestions(
+            topic: "Battle of the Alamo",
+            sections: [
+                ArticleSection(title: "Opposing armies", level: 2, text: ""),
+                ArticleSection(title: "Casualties", level: 2, text: ""),
+                ArticleSection(title: "Aftermath", level: 2, text: ""),
+                ArticleSection(title: "Fighting in the West", level: 2, text: ""),
+                ArticleSection(title: "Education of Santa Anna", level: 3, text: ""),
+                ArticleSection(title: "Relationship with NATO", level: 3, text: ""),
+            ],
+            after: "Tell me about the Battle of the Alamo", max: 4)
+        XCTAssertEqual(battle.map(\.label), [
+            "Who were the combatants?",
+            "How many people died?",
+            "What happened afterward?",
+        ])
+        XCTAssertFalse(battle.contains { $0.label.contains("NATO") })
+    }
+
+    func testContextualBiographyQuestionsDoNotLeakWikipediaHeadingProse() {
+        let suggestions = ConversationThreads.contextualQuestions(
+            topic: "Vladimir Putin",
+            sections: [
+                ArticleSection(title: "Early life and education", level: 2, text: ""),
+                ArticleSection(title: "Public image, polls and rankings", level: 2, text: ""),
+                ArticleSection(title: "Relationship with the West and NATO", level: 2, text: ""),
+                ArticleSection(title: "Historical evaluations", level: 2, text: ""),
+                ArticleSection(title: "Miscellaneous", level: 2, text: ""),
+            ],
+            after: "What about his parents?", max: 4)
+        XCTAssertEqual(suggestions.map(\.label), [
+            "How has Vladimir Putin dealt with the West and NATO?",
+            "How has Vladimir Putin's legacy been assessed?",
+            "How is Vladimir Putin viewed by the public?",
+        ])
+        XCTAssertFalse(suggestions.contains { $0.label.contains("its history") })
+        XCTAssertFalse(suggestions.contains { $0.label.contains("miscellaneous") })
     }
 }

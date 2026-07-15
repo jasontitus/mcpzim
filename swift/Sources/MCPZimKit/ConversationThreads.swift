@@ -144,10 +144,240 @@ public enum ConversationThreads {
                       !skipSections.contains(title.lowercased())
                 else { continue }
                 out.append(DiscoveryThread(
-                    label: title, kind: .topic, source: .section))
+                    label: "What about \(title.lowercased())?",
+                    kind: .topic,
+                    source: .section,
+                    prompt: "What about \(title.lowercased())?"))
             }
         }
         return out
+    }
+
+    // MARK: - Contextual follow-up questions
+
+    /// Turn real article headings into natural, tappable follow-up questions.
+    /// Unlike lateral wikilink offers, these keep the current discussion
+    /// pinned and ask about a facet the loaded article can actually answer.
+    /// The heading remains the source of truth; phrasing is deterministic so
+    /// the chips can never invent an unsupported subject.
+    public static func contextualQuestions(
+        topic: String,
+        sections: [ArticleSection],
+        after question: String,
+        max: Int = 3
+    ) -> [DiscoveryThread] {
+        guard max > 0 else { return [] }
+        func termSet(_ rawTerms: [String]) -> Set<String> {
+            Set(rawTerms.flatMap {
+                $0.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            }.filter { $0.count >= 3 }.map(stem))
+        }
+        let topicTerms = termSet(ArticleHeuristics.questionKeywords(topic))
+        var asked = termSet(ArticleHeuristics.questionKeywords(question))
+        asked.subtract(topicTerms)
+        // Expand only the facet the user explicitly asked about. Broad
+        // retrieval synonyms are wrong here: "Tell me about the Battle of
+        // the Alamo" used to expand "battle" into casualties/combatants and
+        // suppress exactly the useful next questions.
+        let q = question.lowercased()
+        let askedFacetAliases: [([String], [String])] = [
+            (["school", "university", "college", "education"], ["school", "university", "education"]),
+            (["parent", "mother", "father", "family"], ["parent", "mother", "father", "family", "early life"]),
+            (["died", "dead", "death", "killed", "casualt", "fatalit"], ["death", "killed", "casualty", "casualties", "fatality", "fatalities", "losses"]),
+            (["combatant", "belligerent", "who fought", "which side"], ["combatant", "belligerent", "army", "forces", "troops", "defenders"]),
+            (["detect", "observ"], ["detection", "observation", "experiment"]),
+            (["created", "create", "formed", "formation", "produced"], ["source", "formation", "production", "binary"]),
+        ]
+        for (cues, aliases) in askedFacetAliases
+        where cues.contains(where: { q.contains($0) }) {
+            asked.formUnion(termSet(aliases))
+        }
+        var seen = Set<String>()
+        var candidates: [(score: Int, order: Int, thread: DiscoveryThread)] = []
+        let normalizedHeadings = sections.map {
+            $0.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let topicWords = Set(topic.lowercased().components(
+            separatedBy: CharacterSet.alphanumerics.inverted))
+        let eventWords: Set<String> = [
+            "battle", "war", "siege", "revolution", "massacre",
+            "uprising", "conflict", "campaign", "attack",
+        ]
+        let isNamedEvent = !topicWords.isDisjoint(with: eventWords)
+        let isBiography = !isNamedEvent && normalizedHeadings.contains { h in
+            ["early life", "childhood", "education", "personal life", "family"]
+                .contains(where: { h.contains($0) })
+        }
+
+        for (order, section) in sections.enumerated() {
+            let raw = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = raw.lowercased()
+            guard !lower.isEmpty, lower != "lead",
+                  !skipSections.contains(lower) else { continue }
+            if isNamedEvent,
+               ["nato", "foreign policy", "the west", "education",
+                "personal life", "family", "public image", "poll", "ranking"]
+                .contains(where: { lower.contains($0) }) {
+                continue
+            }
+            // A bare "History" heading inside a biography is normally a
+            // template/subtopic artifact and produced the contextless chip
+            // "How did its history unfold?". Biography-specific facets are
+            // both more useful and more natural.
+            if isBiography, lower == "history" { continue }
+            let headingTerms = Set(lower.components(
+                separatedBy: CharacterSet.alphanumerics.inverted
+            ).filter { $0.count >= 3 }.map(stem))
+            // Do not immediately suggest the facet the user just asked. A
+            // generic opener ("Tell me about X") has subject-name keywords
+            // but no heading overlap, so its best drill-ins remain eligible.
+            if !asked.isEmpty, !asked.isDisjoint(with: headingTerms) { continue }
+
+            let priority = contextualPriority(lower, isBiography: isBiography)
+            // Low-signal table-of-contents residue made the chips feel like
+            // random Wikipedia navigation ("What about polls and rankings?").
+            // Only offer facets for which we have deliberate conversational
+            // wording. Two strong chips are better than three padded ones.
+            guard priority > 20 else { continue }
+            let phrased = contextualQuestion(
+                topic: topic, heading: raw, isBiography: isBiography)
+            var promptTerms = termSet(ArticleHeuristics.questionKeywords(phrased))
+            promptTerms.subtract(topicTerms)
+            if !asked.isEmpty, !asked.isDisjoint(with: promptTerms) { continue }
+            let key = phrased.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            candidates.append((
+                score: priority,
+                order: order,
+                thread: DiscoveryThread(
+                    label: phrased,
+                    kind: .topic,
+                    source: .section,
+                    note: raw,
+                    prompt: phrased)))
+        }
+
+        return candidates.sorted {
+            if $0.score == $1.score { return $0.order < $1.order }
+            return $0.score > $1.score
+        }.prefix(max).map(\.thread)
+    }
+
+    private static func contextualQuestion(
+        topic: String,
+        heading: String,
+        isBiography: Bool
+    ) -> String {
+        let h = heading.lowercased()
+        let possessive = topic.hasSuffix("s") ? "\(topic)'" : "\(topic)'s"
+        if h.contains("early life") || h.contains("childhood") || h == "youth" {
+            return "What was \(possessive) early life like?"
+        }
+        if h.contains("education") || h.contains("school") {
+            return "Where did \(topic) go to school?"
+        }
+        if h.contains("family") || h.contains("parents") {
+            return "What about \(possessive) family?"
+        }
+        if h.contains("personal life") || h.contains("marriage") {
+            return "What was \(possessive) personal life like?"
+        }
+        if h.contains("career") || h.contains("rise to power") {
+            return "How did \(possessive) career develop?"
+        }
+        if h.contains("foreign policy") || h.contains("nato")
+            || (isBiography && h.contains("the west"))
+        {
+            return "How has \(topic) dealt with the West and NATO?"
+        }
+        if h.contains("public image") || h.contains("approval")
+            || h.contains("popularity") || h.contains("poll")
+            || h.contains("ranking")
+        {
+            return "How is \(topic) viewed by the public?"
+        }
+        if h.contains("legacy") || h.contains("influence") {
+            return "What is \(possessive) legacy?"
+        }
+        if h.contains("death") {
+            return "How did \(topic) die?"
+        }
+        if h.contains("background") || h.contains("prelude") {
+            return "What led up to it?"
+        }
+        if h.contains("combatant") || h.contains("belligerent")
+            || h.contains("forces") || h.contains("army") || h.contains("armies")
+            || h.contains("troops") || h.contains("defender")
+            || h.contains("reinforcement")
+        {
+            return "Who were the combatants?"
+        }
+        if h.contains("casualt") || h.contains("losses") {
+            return "How many people died?"
+        }
+        if h.contains("aftermath") || h.contains("consequences") {
+            return "What happened afterward?"
+        }
+        if h.contains("outcome") || h.contains("result") {
+            return "What was the outcome?"
+        }
+        if h.contains("cause") || h.contains("origin") {
+            return "What caused it?"
+        }
+        if h.contains("detect") || h.contains("observ") || h.contains("experiment") {
+            return "How was it first detected?"
+        }
+        if h.contains("source") || h.contains("formation") || h.contains("production") {
+            return "How is it created?"
+        }
+        if h.contains("binar") || h.contains("compact object") {
+            return "What kinds of systems create them?"
+        }
+        if h.contains("effect") || h.contains("impact") {
+            return "What effects does it have?"
+        }
+        if h.contains("application") || h.contains("uses") || h == "use" {
+            return "What is it used for?"
+        }
+        if isBiography, h.contains("historical") || h.contains("history") {
+            return "How has \(possessive) legacy been assessed?"
+        }
+        if h.contains("history") || h.contains("discovery") {
+            return "How did its history unfold?"
+        }
+        return "What about \(h)?"
+    }
+
+    /// Prefer high-value conversational facets over article-order trivia.
+    /// This makes biographies lead with early life/career/family, battles
+    /// with combatants/casualties/aftermath, and science with sources,
+    /// effects, and detection.
+    private static func contextualPriority(
+        _ heading: String,
+        isBiography: Bool
+    ) -> Int {
+        let tiers: [([String], Int)] = [
+            (["early life", "education", "family", "career", "personal life"], 100),
+            (["combatant", "belligerent", "army", "armies", "forces", "troops", "defender", "reinforcement", "casualt", "aftermath", "outcome", "cause"], 100),
+            (["source", "formation", "production", "binar", "compact object", "detect", "observ", "effect", "application"], 100),
+            (["foreign policy", "nato"], 90),
+            (["background", "history", "historical", "legacy", "influence", "discovery"], 80),
+            (["public image", "approval", "popularity", "poll", "ranking"], 70),
+            (["politic", "foreign policy", "culture", "economy", "geography"], 60),
+        ]
+        if isBiography, heading.contains("the west") { return 90 }
+        for (needles, score) in tiers where needles.contains(where: { heading.contains($0) }) {
+            return score
+        }
+        return 20
+    }
+
+    private static func stem(_ word: String) -> String {
+        for suffix in ["ies", "es", "s", "ed", "ing"] where word.hasSuffix(suffix) {
+            let value = String(word.dropLast(suffix.count))
+            if value.count >= 4 { return value }
+        }
+        return word
     }
 
     private static func compareThreads(_ result: [String: Any]) -> [DiscoveryThread] {

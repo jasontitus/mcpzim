@@ -64,6 +64,7 @@ public final class ChatSession {
     public var messages: [ChatMessage] = []
     public var isGenerating = false
     public var lastError: String?
+    private var generationTask: Task<Void, Never>?
 
     // MARK: - Plumbing
 
@@ -141,6 +142,22 @@ public final class ChatSession {
     }
     private var discussionState: DiscussionState?
 
+    /// Exact grounded transcript retained across Wikipedia follow-ups. The
+    /// llama.cpp provider can reuse a hybrid model's recurrent/KV state only
+    /// when the next prompt is a strict append. Re-sending a freshly ranked
+    /// standalone passage bundle changes the prompt near the beginning and
+    /// forces Bonsai to prefill all ~2k tokens again. This cache instead
+    /// appends only newly selected passages + the next question, while the
+    /// provider keeps the matching prefix in RAM.
+    private struct GroundedPromptCache {
+        let topic: String
+        let modelID: String
+        let systemPreamble: String
+        var turns: [ChatTurn]
+        var passageKeys: Set<String>
+    }
+    private var groundedPromptCache: GroundedPromptCache?
+
     /// Tools whose intent means the user has LEFT a "discuss X" session
     /// (navigation/places, or a fresh discuss/compare). `article_overview`
     /// is intentionally absent: mid-discussion "tell me about its economy"
@@ -174,6 +191,10 @@ public final class ChatSession {
         else { return false }
         let title = raw.lowercased().trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty else { return false }
+        // Stateless routing can parse "Who were the combatants?" as an
+        // article named "the combatants". Inside a pinned discussion this is
+        // plainly a facet, not a request to abandon the current subject.
+        if IntentRouter.isDiscussionFacetTitle(title) { return false }
         var inHand = state.sources.map { $0.title.lowercased() }
         inHand.append(state.topic.lowercased())
         inHand.append(state.anchorTitle.lowercased())
@@ -1202,7 +1223,32 @@ public final class ChatSession {
             contextTokens: 32768,
             template: LFM25Template()
         )
+        // Phone-class Bonsai 27B operating point. The same 1-bit weights
+        // scored at near-parity with the ternary reference in our 16-scenario
+        // Mac conversational suite; deterministic Swift routing handles the
+        // one observed wrong-tool turn. Prism reports ~5.2 GB llama.cpp peak
+        // at 4K context, versus ~5.9 GB for MLX before app/UI overhead, so the
+        // GGUF runtime gives mcpzim the safer side of the iPhone 17 Pro Max's
+        // 6144 MB per-process ceiling. The pinned Prism XCFramework provides
+        // the packed Q1_0_g128 Metal kernels — weights stay packed on GPU.
+        let bonsai27b_1bit = LlamaCppProvider(
+            id: "bonsai-27b-q1-gguf",
+            displayName: "Bonsai 27B (1-bit · Metal)",
+            huggingFaceRepo: "prism-ml/Bonsai-27B-gguf",
+            ggufFilename: "Bonsai-27B-Q1_0.gguf",
+            expectedGGUFBytes: 3_803_452_480,
+            replyTokensFloor: 512,
+            approximateMemoryMB: 5500,
+            // Bonsai has only 16 attention layers and uses Q4 KV: 16K costs
+            // ~288 MB total KV, just ~144 MB more than the verified 8K build.
+            // Ordinary grounded chat still rolls at 6K for speed; the larger
+            // allocation is safety capacity for large tools and long turns.
+            contextTokens: 16384,
+            kvCacheType: .q4_0,
+            template: QwenChatMLTemplate()
+        )
         var providers: [any ModelProvider] = [
+            bonsai27b_1bit,
             lfm25_ft,
             gemma3_4b_gguf_ft,
             gemma3_4b_gguf,
@@ -1269,12 +1315,21 @@ public final class ChatSession {
         // variant (V7C, +4 vs stock on the eval grid). Same memory
         // footprint and template; pickers can repick stock to A/B.
         var resolvedId: String? = savedId
-        if crashesOnDevice.contains(savedId ?? "") {
+        // Select Bonsai once on the development phone so this build actually
+        // exercises the new runtime instead of silently reopening the prior
+        // LFM/Gemma choice. Subsequent launches and manual picker changes are
+        // preserved normally.
+        let bonsaiSelectionMigrationKey = "chat.didSelectBonsai27B1BitV2"
+        if !defaults.bool(forKey: bonsaiSelectionMigrationKey) {
+            resolvedId = bonsai27b_1bit.id
+            defaults.set(bonsai27b_1bit.id, forKey: Self.selectedModelKey)
+            defaults.set(true, forKey: bonsaiSelectionMigrationKey)
+        } else if crashesOnDevice.contains(savedId ?? "") {
             resolvedId = gemma3_4b_gguf_ft.id
         } else if savedId == gemma3_4b_gguf.id {
             resolvedId = gemma3_4b_gguf_ft.id
         }
-        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? gemma3_4b_gguf_ft
+        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? bonsai27b_1bit
         #else
         self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma3_4b_gguf_ft
         #endif
@@ -1289,6 +1344,17 @@ public final class ChatSession {
             prov.debugSink = { [weak self] msg in
                 Task { @MainActor [weak self] in
                     self?.debug(msg, category: cat)
+                }
+            }
+        }
+        // llama.cpp runs its blocking decode loop off-main. Forward its
+        // stage-level performance telemetry through ChatSession so it lands
+        // in the debug pane, OSLog, and the persistent crash-safe archive.
+        for p in providers {
+            guard let prov = p as? LlamaCppProvider else { continue }
+            prov.debugSink = { [weak self] msg in
+                Task { @MainActor [weak self] in
+                    self?.debug(msg, category: "LlamaCpp")
                 }
             }
         }
@@ -1831,6 +1897,7 @@ public final class ChatSession {
         // the new chat get suppressed as "already offered".
         readingState = nil
         discussionState = nil
+        groundedPromptCache = nil
         focus.reset()
         recentlyOfferedThreadKeys.removeAll()
         if #available(macOS 26.0, iOS 19.0, *),
@@ -1844,6 +1911,16 @@ public final class ChatSession {
             gemma.resetPromptCache()
         }
         debug("conversation reset", category: "Chat")
+    }
+
+    /// Stop the active turn at the provider's next safe boundary. We keep
+    /// `isGenerating` true until the worker actually unwinds, preventing a
+    /// new turn from racing a still-owned llama.cpp context.
+    public func stopGeneration() {
+        guard isGenerating else { return }
+        debug("user requested generation stop", category: "Chat")
+        selectedModel.cancelGeneration()
+        generationTask?.cancel()
     }
 
     /// Classification of the most recent user turn. Set in `send()`
@@ -1860,6 +1937,10 @@ public final class ChatSession {
         // the voice mic).
         if setupState != .ready {
             debug("send() ignored — setup still running (\(setupState))", category: "Chat")
+            return
+        }
+        guard !isGenerating else {
+            debug("send() ignored — a turn is still generating", category: "Chat")
             return
         }
         // Refresh GPS if our last fix is stale — the preamble built in
@@ -1888,7 +1969,7 @@ public final class ChatSession {
         // recorded this turn stamp the right recency.
         focus.beginUserTurn()
         isGenerating = true
-        Task {
+        generationTask = Task {
             // "Continue" / "keep reading" / "tell me more" — page the
             // next chunk of the article we're currently reading aloud.
             // Checked before `classify` so a bare "continue" never tries
@@ -1919,6 +2000,7 @@ public final class ChatSession {
             if let ds = discussionState, !wantsContinue {
                 if IntentRouter.isDiscussionExit(text) {
                     discussionState = nil
+                    groundedPromptCache = nil
                     updateAssistant("Okay — we can stop there. What next?")
                     isGenerating = false
                     if let i = messages.indices.last, messages[i].role == .assistant {
@@ -1930,6 +2012,7 @@ public final class ChatSession {
                     text, currentLocation: currentLocation, focus: focus)
                 if let intent = switchIntent, intentLeavesDiscussion(intent, state: ds) {
                     discussionState = nil   // topic change → normal routing below
+                    groundedPromptCache = nil
                 } else {
                     await answerWithinDiscussion(ds, question: text)
                     isGenerating = false
@@ -2215,11 +2298,46 @@ public final class ChatSession {
             // `toolsPreamble` + formatTranscript path fed them an
             // off-distribution generic format, so even with the location
             // present in the prompt they ignored it and refused "nearest X".
-            let prompt = selectedModel.template.renderTranscript(
+            var prompt = selectedModel.template.renderTranscript(
                 systemPreamble: systemMessage,
                 tools: toolDecls,
                 turns: turns
             )
+            // Exact guard after templating: the earlier character estimate
+            // cannot account precisely for tool schemas or tokenizer density
+            // (real Bonsai capture: 5,877 tokens reached a 4K provider even
+            // after the approximate history trim). Remove whole old exchanges
+            // while preserving the current one, then reserve the full reply
+            // budget so decode never walks off the end of n_ctx.
+            if let llama = selectedModel as? LlamaCppProvider {
+                let budget = max(256,
+                    llama.contextTokens - effectiveMaxReplyTokens - 32)
+                var exactTokens = llama.promptTokenCount(prompt)
+                while let count = exactTokens, count > budget {
+                    let userIdxs = turns.indices.filter {
+                        turns[$0].role == .user
+                    }
+                    guard userIdxs.count > 1 else { break }
+                    turns.removeFirst(userIdxs[1])
+                    prompt = selectedModel.template.renderTranscript(
+                        systemPreamble: systemMessage,
+                        tools: toolDecls,
+                        turns: turns)
+                    exactTokens = llama.promptTokenCount(prompt)
+                    debug("exact context guard: dropped oldest exchange; \(exactTokens ?? -1)/\(budget) prompt tokens",
+                          category: "Chat")
+                }
+                if let count = exactTokens, count > budget {
+                    let msg = "This request needs \(count) prompt tokens, but \(selectedModel.displayName) has \(budget) available after reserving its reply. Try a new conversation or a narrower request."
+                    debug("exact context guard: refusing oversized current exchange (\(count)/\(budget))",
+                          category: "Chat")
+                    lastError = msg
+                    updateAssistant(msg)
+                    return
+                }
+                debug("exact context guard: \(exactTokens ?? -1)/\(budget) prompt tokens",
+                      category: "Chat")
+            }
             // Yield to SwiftUI before iter 0 so the prior assistant's
             // `PlacesWebView` / `RouteWebView` (guarded by
             // `isLatestAssistant` in ChatView.MessageRow) has time to
@@ -2309,6 +2427,12 @@ public final class ChatSession {
                           category: "Chat")
                     toolCall = (range: rescued.range, name: rescued.name, args: rescued.arguments)
                 }
+            } catch is CancellationError {
+                debug("generation stopped by user", category: "Chat")
+                if buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    updateAssistant("Stopped.")
+                }
+                return
             } catch {
                 debug("generate threw: \(error)", category: "Chat")
                 lastError = String(describing: error)
@@ -3081,6 +3205,7 @@ public final class ChatSession {
         let topic = ArticleHeuristics.topicCore(title)
         if let ds = discussionState,
            ds.topic.caseInsensitiveCompare(topic) == .orderedSame { return }
+        groundedPromptCache = nil
         discussionState = DiscussionState(
             anchorTitle: title, topic: topic,
             zim: result["zim"] as? String, sources: [])
@@ -3112,6 +3237,7 @@ public final class ChatSession {
                 level: (d["level"] as? Int) ?? 0,
                 text: (d["text"] as? String) ?? "")
         }
+        groundedPromptCache = nil
         discussionState = DiscussionState(
             anchorTitle: title,
             topic: ArticleHeuristics.topicCore(title),
@@ -3238,8 +3364,11 @@ public final class ChatSession {
         // articles in hand. Wider budget (6) than before — llama.cpp KV is
         // cheap, and specific-fact follow-ups need the deeper section, not
         // just the lead. Each passage is capped so several fit in n_ctx.
+        let passageLimit = ArticleHeuristics.groundedPassageLimit(for: question)
+        let passageCharacterLimit = ArticleHeuristics
+            .groundedPassageCharacterLimit(for: question)
         let ranked = ArticleHeuristics.rankSectionsMultiSource(
-            question, sources: state.sources, k: 6)
+            question, sources: state.sources, k: max(4, passageLimit * 2))
         var picked: [(article: String, section: ArticleSection)] = []
         if let anchor = state.sources.first,
            let lead = anchor.sections.first(where: { $0.title.isEmpty }) {
@@ -3249,46 +3378,108 @@ public final class ChatSession {
             $0.article == r.article && $0.section.title == r.section.title
         }) {
             picked.append(r)
-            if picked.count >= 6 { break }
+            if picked.count >= passageLimit { break }
         }
-        let passages = picked.map { p -> String in
-            let head = p.section.title.isEmpty
-                ? p.article : "\(p.article) — \(p.section.title)"
-            return "## \(head)\n\(String(p.section.text.prefix(1500)))"
-        }.joined(separator: "\n\n")
         debug("discuss \(state.topic): passages = " + picked.map {
             "\($0.article)§\($0.section.title.isEmpty ? "lead" : $0.section.title)"
         }.joined(separator: " | "), category: "Chat")
 
-        let userTurn = """
-        We're discussing "\(state.topic)". Relevant passages from the offline Wikipedia:
-
-        \(passages)
-
-        Question: \(question)
-
-        Answer using ONLY the passages above — be concise and natural, and \
-        don't say "according to the passage". If the answer isn't there, say \
-        you don't see it in what you have on \(state.topic). Attribute \
-        carefully: the passages may mix statements by DIFFERENT parties \
-        (\(state.topic), other governments, critics) — never put one party's \
-        words in another's mouth; if the question asks what someone said, \
-        report only THAT person's statements. Answer in one to three \
-        sentences, keeping the key specifics (names, dates, places) when \
-        the passages give them. Give just the answer directly — no \
-        reasoning steps, no preamble, no <think> block.
+        func passageText(_ p: (article: String, section: ArticleSection)) -> String {
+            ArticleHeuristics.groundedPassageWindow(
+                p.section.text,
+                question: question,
+                maxChars: passageCharacterLimit)
+        }
+        func passageKey(_ p: (article: String, section: ArticleSection)) -> String {
+            // Include the selected sentence window, not just the section.
+            // "parents" and "school" can both live in Early life and
+            // education; deduping only by heading would prevent the later
+            // question from appending its distinct evidence window.
+            let rawTitle = p.section.title.lowercased()
+            let normalizedTitle = (rawTitle.isEmpty || rawTitle == "lead")
+                ? "lead" : rawTitle
+            let base = p.article.lowercased() + "\u{1F}" + normalizedTitle
+            // Cache the anchor lead once. Letting every question create a
+            // different lead window consumed the warm turn's one-new-passage
+            // allowance before the actually relevant Parents/Education
+            // section could be appended.
+            if normalizedTitle == "lead" {
+                return base
+            }
+            return base + "\u{1F}" + passageText(p)
+        }
+        func renderPassages(
+            _ items: [(article: String, section: ArticleSection)]
+        ) -> String {
+            items.map { p -> String in
+                let head = p.section.title.isEmpty
+                    ? p.article : "\(p.article) — \(p.section.title)"
+                return "## \(head)\n\(passageText(p))"
+            }.joined(separator: "\n\n")
+        }
+        let preamble = """
+        You are discussing "\(state.topic)" with the user using offline Wikipedia evidence supplied throughout this conversation. Answer using ONLY that evidence. Be concise and natural, and don't say "according to the passage". If the answer isn't in the evidence, say you don't see it in what you have on \(state.topic). Attribute carefully: the evidence may mix statements by DIFFERENT parties (\(state.topic), other governments, critics) — never put one party's words in another's mouth; if the question asks what someone said, report only THAT person's statements. When casualty figures conflict, label each side or source's estimate separately; never combine killed and wounded into a total death count. When asked who fought, name every opposing side supported by the evidence, not only the most recently mentioned force. Answer in one to three sentences, keeping key specifics (names, dates, places) when the evidence gives them. Give just the answer directly — no reasoning steps, no preamble, no <think> block.
         """
-        let preamble = "You are discussing a topic with the user using the "
-            + "offline Wikipedia, grounded strictly in the passages provided."
-        let turns = [ChatTurn(role: .user, text: userTurn)]
-        let prompt: String
-        if selectedModel is Gemma4Provider {
-            prompt = selectedModel.template.renderTranscript(
-                systemPreamble: preamble, tools: [], turns: turns)
+
+        var cache: GroundedPromptCache
+        if let existing = groundedPromptCache,
+           existing.modelID == selectedModel.id,
+           existing.topic.caseInsensitiveCompare(state.topic) == .orderedSame,
+           existing.systemPreamble == preamble {
+            cache = existing
         } else {
-            prompt = selectedModel.formatTranscript(
+            cache = GroundedPromptCache(
+                topic: state.topic,
+                modelID: selectedModel.id,
+                systemPreamble: preamble,
+                turns: [],
+                passageKeys: [])
+        }
+
+        let wasWarm = !cache.turns.isEmpty
+        let lowerQuestion = question.lowercased()
+        let refreshLeadForSides = [
+            "combatant", "belligerent", "who fought", "which side",
+        ].contains(where: { lowerQuestion.contains($0) })
+        var passagesForTurn = picked.filter { passage in
+            let title = passage.section.title.lowercased()
+            let isLead = title.isEmpty || title == "lead"
+            return (refreshLeadForSides && isLead)
+                || !cache.passageKeys.contains(passageKey(passage))
+        }
+        if !wasWarm {
+            passagesForTurn = picked
+        } else if passagesForTurn.count > 1 {
+            // Earlier evidence remains in the append-only transcript. Add at
+            // most the best unseen section per follow-up; appending all
+            // newly ranked sections made a simple "How are they created?"
+            // turn prefill 905 avoidable tokens even though the lead already
+            // covered the answer. A genuinely new facet/article still gets
+            // its highest-ranked 1,500-character passage; the don't-see retry
+            // can append a pulled article if that evidence is insufficient.
+            passagesForTurn = Array(passagesForTurn.prefix(1))
+        }
+
+        func makeUserTurn(
+            passages: [(article: String, section: ArticleSection)]
+        ) -> ChatTurn {
+            let evidence: String
+            if passages.isEmpty {
+                evidence = "No new evidence for this turn; use the offline Wikipedia evidence already supplied earlier in the conversation."
+            } else {
+                evidence = "New offline Wikipedia evidence:\n\n" + renderPassages(passages)
+            }
+            return ChatTurn(role: .user, text: "\(evidence)\n\nQuestion: \(question)")
+        }
+        func renderPrompt(_ turns: [ChatTurn]) -> String {
+            if selectedModel is Gemma4Provider {
+                return selectedModel.template.renderTranscript(
+                    systemPreamble: preamble, tools: [], turns: turns)
+            }
+            return selectedModel.formatTranscript(
                 systemPreamble: preamble, turns: turns)
         }
+
         // Floor the budget at 512: the FT sometimes opens a <think> on this
         // off-distribution grounded prompt, and on a low-budget device
         // profile (e.g. the Mac CLI) that burns the allowance and truncates
@@ -3296,6 +3487,42 @@ public final class ChatSession {
         // 512 leaves room for the answer even after a short reasoning preamble.
         let params = GenerationParameters(
             maxTokens: max(effectiveMaxReplyTokens, 512), temperature: 0.3, topP: 0.9)
+        var candidateTurns = cache.turns + [makeUserTurn(passages: passagesForTurn)]
+        var prompt = renderPrompt(candidateTurns)
+
+        // Keep enough room for the complete answer. Once a long discussion
+        // approaches n_ctx, start a fresh grounded window with the passages
+        // selected for THIS question. That is an intentional cache miss, but
+        // avoids either overflowing the context or silently losing evidence.
+        var promptTokens: Int?
+        if let llama = selectedModel as? LlamaCppProvider {
+            promptTokens = llama.promptTokenCount(prompt)
+            // Pure appends prefill only the new suffix. The verified 16K
+            // allocation supplies overflow headroom, while this 6K rolling
+            // ceiling still reserves reply space and bounds attention/decode
+            // cost before an intentional fresh window.
+            let budget = min(6144,
+                max(256, llama.contextTokens - params.maxTokens - 32))
+            if let count = promptTokens, count > budget, wasWarm {
+                cache.turns.removeAll()
+                cache.passageKeys.removeAll()
+                passagesForTurn = picked
+                candidateTurns = [makeUserTurn(passages: passagesForTurn)]
+                prompt = renderPrompt(candidateTurns)
+                promptTokens = llama.promptTokenCount(prompt)
+                debug("discuss cache: compacted at \(count) tokens (budget \(budget)); rebuilt current evidence",
+                      category: "Chat")
+            }
+        }
+        debug("discuss cache: \(wasWarm && !cache.turns.isEmpty ? "append" : "cold") · prior-turns=\(cache.turns.count) · new-passages=\(passagesForTurn.count) · prompt=\(promptTokens.map(String.init) ?? "?") tok",
+              category: "Chat")
+        if !passagesForTurn.isEmpty {
+            debug("discuss evidence append: " + passagesForTurn.map {
+                let name = $0.section.title.isEmpty ? "lead" : $0.section.title
+                return "\($0.article)§\(name)(\(passageText($0).count)c)"
+            }.joined(separator: " | "), category: "Chat")
+        }
+
         var buffer = ""
         var lastUIPush = Date.distantPast
         do {
@@ -3308,6 +3535,47 @@ public final class ChatSession {
             }
             let final = stripLeakedReasoning(buffer)
             updateAssistant(final)
+            // Store the exact raw emission, not the display-scrubbed answer:
+            // re-tokenising this transcript must reproduce the tokens already
+            // resident in llama.cpp so the next prompt is a strict append.
+            cache.turns = candidateTurns + [ChatTurn(role: .assistant, text: buffer)]
+            cache.passageKeys.formUnion(passagesForTurn.map(passageKey))
+            groundedPromptCache = cache
+            if let idx = messages.indices.last,
+               messages[idx].role == .assistant
+            {
+                var seenSources = Set<GroundingSource>()
+                messages[idx].groundingSources = picked.compactMap { p in
+                    guard cache.passageKeys.contains(passageKey(p)) else { return nil }
+                    let source = GroundingSource(
+                        kind: .wikipedia,
+                        title: p.article,
+                        section: p.section.title.isEmpty ? nil : p.section.title,
+                        library: state.zim)
+                    return seenSources.insert(source).inserted ? source : nil
+                }
+                debug("grounding sources: "
+                    + messages[idx].groundingSources.map { source in
+                        [source.title, source.section]
+                            .compactMap { $0 }
+                            .joined(separator: "§")
+                    }.joined(separator: " | "),
+                      category: "Chat")
+                // Suggestions should stay about the pinned subject. Pulled
+                // support articles improve evidence, but their own generic
+                // headings (for example Domestic policy › History) made chips
+                // drift away from the conversation.
+                let sections = state.sources.first?.sections
+                    ?? state.sources.flatMap(\.sections)
+                messages[idx].suggestions = ConversationThreads.contextualQuestions(
+                    topic: state.topic,
+                    sections: sections,
+                    after: question,
+                    max: 3)
+                debug("contextual suggestions: "
+                    + messages[idx].suggestions.map(\.label).joined(separator: " | "),
+                      category: "Chat")
+            }
             // Mirror the answer into the debug log — the grounded path
             // didn't, so device logs showed WHICH passages were used but
             // never WHAT the model said, making bad answers undiagnosable
@@ -3317,6 +3585,12 @@ public final class ChatSession {
                 debug(trimmed, category: "Assistant")
             }
             return final
+        } catch is CancellationError {
+            let partial = stripLeakedReasoning(buffer)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            updateAssistant(partial.isEmpty ? "Stopped." : partial)
+            debug("grounded generation stopped by user", category: "Chat")
+            return partial
         } catch {
             debug("discuss generate failed: \(error)", category: "Chat")
             let msg = "Sorry — I hit an error answering that about \(state.topic)."
@@ -3329,13 +3603,16 @@ public final class ChatSession {
     /// off-distribution grounded-discuss prompt and forgets to close it, so
     /// the template's closed-span scrubber can't strip it. When that happens
     /// the real answer is the prose AFTER the reasoning — take the last
-    /// paragraph. (Closed spans are left to `stripReasoning`.)
+    /// paragraph. Closed spans are stripped first with the active template;
+    /// returning the raw closed block here made the reactive fallback inspect
+    /// hidden chain-of-thought and retry otherwise-good answers.
     private func stripLeakedReasoning(_ s: String) -> String {
-        guard let open = s.range(of: "<think>") else { return s }
-        if s.range(of: "</think>", range: open.upperBound..<s.endIndex) != nil {
-            return s
+        let scrubbed = selectedModel.template.stripReasoning(s)
+        guard let open = scrubbed.range(of: "<think>") else { return scrubbed }
+        if scrubbed.range(of: "</think>", range: open.upperBound..<scrubbed.endIndex) != nil {
+            return scrubbed
         }
-        let after = String(s[open.upperBound...])
+        let after = String(scrubbed[open.upperBound...])
         if let lastBreak = after.range(of: "\n\n", options: .backwards) {
             let tail = String(after[lastBreak.upperBound...])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4003,6 +4280,11 @@ public final class ChatSession {
               messages[idx].role == .assistant else { return }
         let text = messages[idx].text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        // Grounded article answers install question-shaped section chips
+        // directly ("How was it first detected?"). Keep those instead of
+        // replacing them with barely contextual wikilink labels and do not
+        // append a redundant prose "Want to hear about…" line.
+        if !messages[idx].suggestions.isEmpty { return }
         // Attach the vetted threads as tappable chips regardless of whether we
         // also append a prose offer below — the chips make any offer (ours or
         // the model's own phrasing) actionable with a single tap.
@@ -4034,7 +4316,7 @@ public final class ChatSession {
         if let idx = messages.indices.last, messages[idx].role == .assistant {
             messages[idx].suggestions = []
         }
-        send("tell me about \(thread.label)")
+        send(thread.prompt ?? "tell me about \(thread.label)")
     }
 
     /// Order candidate threads by cosine similarity of each thread's label to
@@ -4199,6 +4481,47 @@ public final class ChatSession {
                 return out
             }
             return result
+        case "near_named_place", "near_places", "nearby_stories",
+             "nearby_stories_at_place", "locate", "what_is_here":
+            // The UI/map keeps the complete raw payload, but the model only
+            // needs the closest handful of rows. A 25-POI StreetZIM result
+            // pushed the Bonsai 27B 4K evaluation prompt to 4,228 tokens —
+            // just over its phone-sized context — before the user even asked
+            // the follow-up. Bound both row count and per-row prose here.
+            var out = result
+            let rowCap = 8
+            let proseCap = 240
+            func compactRows(_ rows: [[String: Any]]) -> [[String: Any]] {
+                rows.prefix(rowCap).map { row in
+                    var compact = row
+                    for key in ["description", "summary", "wiki_summary",
+                                "excerpt", "text"] {
+                        if let value = compact[key] as? String,
+                           value.count > proseCap
+                        {
+                            compact[key] = String(value.prefix(proseCap)) + "…"
+                        }
+                    }
+                    // These fields feed maps/debugging, not prose synthesis.
+                    for key in ["tags", "raw_tags", "geometry", "polyline"] {
+                        compact[key] = nil
+                    }
+                    return compact
+                }
+            }
+            for key in ["results", "stories", "nearby"] {
+                if let rows = out[key] as? [[String: Any]] {
+                    if rows.count > rowCap { out[key + "_total"] = rows.count }
+                    out[key] = compactRows(rows)
+                }
+            }
+            if let categories = out["by_category"] as? [[String: Any]],
+               categories.count > 12
+            {
+                out["by_category_total"] = categories.count
+                out["by_category"] = Array(categories.prefix(12))
+            }
+            return out
         case "get_article":
             // Gemma 4 E2B has a 32 K-token context — ~96 KB of text — so we
             // can comfortably pass a ~24 KB article (~6 K tokens) and still

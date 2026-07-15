@@ -91,6 +91,33 @@ public enum IntentRouter {
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
 
+        // A comparison establishes a TWO-topic list in ConversationFocus.
+        // Follow-ups such as "How many were killed in each?" do not name
+        // either subject, so a small model is otherwise forced to infer both
+        // the referents and the right retrieval tool. Bonsai 27B's 1-bit Mac
+        // run exposed the failure mode directly: it routed the casualty turn
+        // to a geographic nearby-stories tool. Resolve this narrow discourse
+        // shape in Swift and align both articles on the requested section.
+        // Causal/interpretive follow-ups ("what changed between the two?")
+        // deliberately fall through to the model so it synthesizes from the
+        // grounded comparison already present in the conversation.
+        if let focus,
+           let route = comparisonContinuationRoute(lower, focus: focus)
+        {
+            switch route {
+            case .retrieve(let section):
+                var args: [String: AnyJSONValue] = [
+                    "titles": .array(focus.lastList.prefix(2).map {
+                        .string($0.name)
+                    })
+                ]
+                if let section { args["section"] = .string(section) }
+                return DirectIntent(toolName: "compare_articles", args: args)
+            case .synthesizeFromContext:
+                return nil
+            }
+        }
+
         // Context-aware fast path. When the host supplies a conversation
         // focus and this turn reads as a follow-up that BINDS to a known
         // entity ("who built it", "the second one", "tell me more"), resolve
@@ -394,6 +421,60 @@ public enum IntentRouter {
         return nil
     }
 
+    private enum ComparisonContinuationRoute {
+        case retrieve(section: String?)
+        case synthesizeFromContext
+    }
+
+    /// Recognize a subject-less follow-up to the most recently displayed
+    /// two-topic comparison. The cue must explicitly refer to BOTH subjects;
+    /// ordinary list selections ("the second one") remain the resolver's job.
+    private static func comparisonContinuationRoute(
+        _ lower: String, focus: ConversationFocus
+    ) -> ComparisonContinuationRoute? {
+        let pair = Array(focus.lastList.prefix(2))
+        guard pair.count == 2,
+              pair.allSatisfy({ $0.kind == .topic })
+        else { return nil }
+
+        let pairCues = [
+            " each", "each ", "both", "between the two", "the two wars",
+            "those two", "which war", "which one", "compared with",
+            "compared to",
+        ]
+        guard pairCues.contains(where: { lower.contains($0) }) else {
+            return nil
+        }
+
+        // These are synthesis questions over the facts already fetched. A
+        // new retrieval adds latency/context but no evidence the model lacks.
+        let synthesisCues = [
+            "why", "what changed", "how did that", "made ", "make ",
+            "more deadly", "more important", "what explains",
+        ]
+        if synthesisCues.contains(where: { lower.contains($0) }) {
+            return .synthesizeFromContext
+        }
+
+        let section: String?
+        if ["casualt", "killed", "deaths", "fatalit"]
+            .contains(where: { lower.contains($0) })
+        {
+            section = "Casualties"
+        } else if ["combatant", "belligerent", "who fought", "which side"]
+            .contains(where: { lower.contains($0) })
+        {
+            section = "Belligerents"
+        } else if ["cause", "started", "origins"]
+            .contains(where: { lower.contains($0) })
+        {
+            section = "Causes"
+        } else {
+            section = nil
+        }
+        return .retrieve(section: section)
+    }
+
     /// Strip a leading correction/restatement wrapper ("I meant …", "I
     /// was actually talking about …", "no, I said …") and return the
     /// residual, or nil when the text isn't a correction. Deliberately
@@ -620,6 +701,27 @@ public enum IntentRouter {
             "talk about something else", "move on", "forget it",
         ]
         return exits.contains(t)
+    }
+
+    /// Whether a stateless article-looking title is actually a common facet
+    /// of the subject already pinned by discussion mode. For example, the
+    /// generic router can parse "Who were the combatants?" as an article
+    /// named "the combatants"; the host uses this signal to keep the current
+    /// topic and retrieve its combatant evidence instead.
+    public static func isDiscussionFacetTitle(_ raw: String) -> Bool {
+        let normalized = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(
+                of: #"^(?:the|his|her|their|its)\s+"#,
+                with: "", options: .regularExpression)
+        let facets: Set<String> = [
+            "background", "causes", "combatants", "belligerents",
+            "participants", "commanders", "casualties", "deaths",
+            "aftermath", "outcome", "parents", "family", "school",
+            "education", "career", "legacy", "effects", "sources",
+            "formation", "detection",
+        ]
+        return facets.contains(normalized)
     }
 
     /// Natural-English shared-suffix inference for `compare X and Y Z`.

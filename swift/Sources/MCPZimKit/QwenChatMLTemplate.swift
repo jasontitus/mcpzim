@@ -108,7 +108,18 @@ public struct QwenChatMLTemplate: ModelTemplate {
             case .system:     role = "system"
             case .tool:       role = "user"   // ChatML convention
             }
-            out += "<|im_start|>\(role)\n\(t.text)<|im_end|>\n"
+            // A generated Qwen assistant turn starts after the empty
+            // no-thinking block appended below. Reinsert that SAME hidden
+            // prefix when the completed assistant turn is rendered into the
+            // next transcript. Without it, turn N+1 diverges four tokens
+            // before turn N's answer; hybrid Qwen 3.5/Bonsai cannot truncate
+            // recurrent state there and must throw away the entire prompt
+            // cache. Keeping the template byte-identical makes normal chat
+            // and grounded Wikipedia follow-ups true append-only prompts.
+            let text = t.role == .assistant
+                ? "<think>\n\n</think>\n\n" + t.text
+                : t.text
+            out += "<|im_start|>\(role)\n\(text)<|im_end|>\n"
         }
         // Open the assistant turn so generation picks up in assistant mode.
         // On Qwen 3.5 (and later) the model's own chat template injects

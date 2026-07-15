@@ -17,6 +17,11 @@ Usage:
   .venv/bin/python eval.py --repo bartowski/google_gemma-3-4b-it-GGUF \\
     --file google_gemma-3-4b-it-Q4_K_M.gguf \\
     --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn
+
+  # Evaluate a model hosted by a newer/custom llama.cpp runtime. This is
+  # useful for formats that llama-cpp-python's bundled runtime cannot load.
+  .venv/bin/python eval.py --server-url http://127.0.0.1:8091 \\
+    --server-model bonsai-ternary-27b --scenario compare_musk_bezos
 """
 
 import argparse
@@ -28,11 +33,79 @@ import resource
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import psutil
 from huggingface_hub import hf_hub_download
+
+
+class ExternalServerLLM:
+    """Small compatibility adapter for llama.cpp's OpenAI-style server.
+
+    `run_scenario` intentionally uses the same message construction and
+    scoring path for embedded and server-hosted models. Only the transport
+    differs, which keeps accuracy comparisons apples-to-apples while letting
+    us test a just-released quant/kernel before llama-cpp-python catches up.
+    """
+
+    def __init__(self, base_url: str, model: str = "local-model",
+                 timeout_s: float = 300.0, seed: int = 42):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout_s = timeout_s
+        self.seed = seed
+
+    def _post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(
+            f"{self.base_url}{endpoint}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"llama-server HTTP {exc.code}: {detail[:1000]}"
+            ) from exc
+
+    def create_chat_completion(self, *, messages: list[dict[str, Any]],
+                               max_tokens: int, temperature: float,
+                               **kwargs: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "seed": self.seed,
+            "stream": False,
+        }
+        for key in ("tools", "tool_choice", "parallel_tool_calls"):
+            if kwargs.get(key) is not None:
+                payload[key] = kwargs[key]
+        return self._post("/v1/chat/completions", payload)
+
+    def create_completion(self, *, prompt: str, max_tokens: int,
+                          temperature: float, top_p: float = 1.0,
+                          repeat_penalty: float = 1.0,
+                          stop: Optional[list[str]] = None,
+                          **_: Any) -> dict[str, Any]:
+        return self._post("/v1/completions", {
+            "model": self.model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "seed": self.seed,
+            "top_p": top_p,
+            "repeat_penalty": repeat_penalty,
+            "stop": stop or [],
+            "stream": False,
+        })
 
 
 # LFM2.5's baked Jinja chat template uses HF Transformers-only
@@ -170,6 +243,33 @@ def bars_sc_fixture() -> dict[str, Any]:
     }
 
 
+def sf_restaurants_fixture() -> dict[str, Any]:
+    """Grounded fixture for the San Francisco restaurant scenario."""
+    return {
+        "radius_km": 5,
+        "total_in_radius": 3,
+        "by_category": [{"category": "restaurant", "count": 3}],
+        "results_shown": 3,
+        "results": [
+            {"name": "Zuni Café", "type": "poi",
+             "subtype": "restaurant", "location": "San Francisco",
+             "lat": 37.7736, "lon": -122.4216, "distance_m": 700},
+            {"name": "Nopa", "type": "poi",
+             "subtype": "restaurant", "location": "San Francisco",
+             "lat": 37.7748, "lon": -122.4377, "distance_m": 1800},
+            {"name": "Souvla", "type": "poi",
+             "subtype": "restaurant", "location": "San Francisco",
+             "lat": 37.7760, "lon": -122.4242, "distance_m": 900},
+        ],
+        "query": "san francisco restaurants",
+        "resolved": {
+            "name": "San Francisco", "type": "place", "subtype": "city",
+            "location": "California, USA", "lat": 37.7749,
+            "lon": -122.4194,
+        },
+    }
+
+
 # ------------------------------------------------------------------
 # Scenarios. Match EvalHarness.swift user-turn text verbatim.
 # ------------------------------------------------------------------
@@ -294,6 +394,89 @@ SCENARIOS: dict[str, dict[str, Any]] = {
                 ["san francisco", "civic center", "california"],
         }],
     },
+    "putin_biography_chain": {
+        "turns": [
+            {
+                "user": "Tell me about Vladimir Putin.",
+                "tools_called_any": ["article_overview", "search"],
+                "response_includes_groups": [
+                    ["president"],
+                    ["russia", "russian"],
+                    ["kgb", "intelligence"],
+                ],
+            },
+            {
+                "user": "What about his parents?",
+                "tools_called_any": ["get_article_section",
+                                     "article_overview", "search"],
+                "response_includes_groups": [
+                    ["vladimir spiridonovich", "spiridonovich"],
+                    ["maria ivanovna", "shelomova"],
+                    ["father", "mother", "parents"],
+                ],
+            },
+            {
+                "user": "Where did he go to school?",
+                "tools_called_any": ["get_article_section",
+                                     "article_overview", "search"],
+                "response_includes_groups": [
+                    ["school no. 193", "school 193", "school no. 281",
+                     "school 281", "high school 281"],
+                    ["leningrad state university",
+                     "saint petersburg state university"],
+                    ["law"],
+                ],
+            },
+        ],
+    },
+    "alamo_history_chain": {
+        "turns": [
+            {
+                "user": "When was the Alamo?",
+                "tools_called_any": ["article_overview", "search"],
+                "response_includes_groups": [
+                    ["february 23", "feb. 23"],
+                    ["march 6", "mar. 6"],
+                    ["1836"],
+                ],
+            },
+            {
+                "user": "How many people died there?",
+                "tools_called_any": ["get_article_section",
+                                     "article_overview", "search"],
+                "response_includes_groups": [
+                    ["189", "257"],
+                    ["mexican"],
+                    ["vary", "estimate", "uncertain", "disputed"],
+                ],
+            },
+            {
+                "user": "Who were the combatants?",
+                "tools_called_any": ["get_article_section",
+                                     "article_overview", "search"],
+                "response_includes_groups": [
+                    ["texian", "texan"],
+                    ["mexican"],
+                    ["tejano"],
+                    ["santa anna"],
+                ],
+            },
+        ],
+    },
+    "gravity_waves_creation": {
+        "turns": [{
+            "user": "How are gravity waves created?",
+            "tools_called_any": ["article_overview", "search",
+                                 "get_article_section", "narrate_article"],
+            "response_includes_groups": [
+                ["gravitational wave", "gravitational waves"],
+                ["spacetime"],
+                ["accelerat", "motion"],
+                ["black hole", "neutron star", "massive object",
+                 "compact object"],
+            ],
+        }],
+    },
     "grav_waves_chain": {
         "turns": [
             {
@@ -329,7 +512,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
             {
                 "user": "How many total casualties each?",
                 "tools_called_any": ["get_article_section", "article_overview",
-                                     "search"],
+                                     "search", "compare_articles"],
                 "response_includes_any":
                     ["million", "casualt", "civilian", "deaths"],
             },
@@ -369,7 +552,8 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "turns": [
             {
                 "user": "Explain how CRISPR-Cas9 works.",
-                "tools_called_any": ["article_overview", "search"],
+                "tools_called_any": ["article_overview", "search",
+                                     "narrate_article"],
                 "response_includes_any":
                     ["guide rna", "cas9", "cut", "dna"],
             },
@@ -399,13 +583,16 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "turns": [
             {
                 "user": "Why is the sky blue?",
-                "tools_called_any": ["article_overview", "search"],
+                "tools_called_any": ["article_overview",
+                                     "get_article_section", "search"],
                 "response_includes_any": ["rayleigh", "scatter",
                                            "wavelength", "shorter"],
             },
             {
                 "user": "So why are sunsets red then?",
-                "tools_called_any": ["article_overview", "search"],
+                "tools_called_any": ["article_overview",
+                                     "get_article_section", "search",
+                                     "narrate_article"],
                 "response_includes_any": ["longer", "wavelength",
                                            "atmosphere", "path"],
             },
@@ -706,7 +893,11 @@ def extract_tool_calls(content: str, openai_calls: Optional[list]) -> list[dict]
                 args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
             except Exception:
                 args = {}
-            calls.append({"name": fn.get("name", ""), "args": args})
+            calls.append({
+                "id": c.get("id", ""),
+                "name": fn.get("name", ""),
+                "args": args,
+            })
         if calls:
             return calls
     if not content:
@@ -753,6 +944,99 @@ def extract_tool_calls(content: str, openai_calls: Optional[list]) -> list[dict]
 # Tool dispatcher — just the fixtures we need for the bars scenario.
 # ------------------------------------------------------------------
 ARTICLE_FIXTURES: dict[str, dict[str, Any]] = {
+    "palo alto": {
+        "title": "Palo Alto, California",
+        "lead":
+            "Palo Alto is a city in Santa Clara County, California, in the "
+            "heart of Silicon Valley. It is home to Stanford University and "
+            "has been central to the region's technology industry.",
+        "available_sections": ["History", "Geography", "Economy", "Stanford"],
+        "body":
+            "Palo Alto is a city in Santa Clara County, California, at the "
+            "heart of Silicon Valley. Stanford University borders the city. "
+            "Its history includes the founding of Hewlett-Packard, and it "
+            "became an important center of the technology industry.",
+    },
+    "gravitational wave": {
+        "title": "Gravitational wave",
+        "lead":
+            "Gravitational waves are ripples in spacetime caused by "
+            "accelerating massive objects, predicted by Albert Einstein's "
+            "general theory of relativity. LIGO first directly detected "
+            "waves from a binary black-hole merger in 2015.",
+        "available_sections": ["Prediction", "Detection", "LIGO", "Sources"],
+    },
+    "vladimir putin": {
+        "title": "Vladimir Putin",
+        "lead":
+            "Vladimir Putin is a Russian politician and former intelligence "
+            "officer who has served as president of Russia. He was born in "
+            "Leningrad in 1952 and served in the KGB before entering politics.",
+        "available_sections": ["Early life", "Parents and siblings",
+                               "Education", "Intelligence career"],
+        "body":
+            "Vladimir Putin is a Russian politician and former intelligence "
+            "officer who has served as president of Russia. Born in "
+            "Leningrad in 1952, he served in the KGB before working in Saint "
+            "Petersburg politics and later joining the federal government.",
+    },
+    "battle of the alamo": {
+        "title": "Battle of the Alamo",
+        "lead":
+            "The Battle of the Alamo was a thirteen-day siege in the Texas "
+            "Revolution, from February 23 through March 6, 1836. Texian "
+            "immigrants, American volunteers, and Tejano allies defended "
+            "the fort against the Mexican Centralist army commanded by "
+            "President Antonio Lopez de Santa Anna.",
+        "available_sections": ["Siege", "Final assault", "Casualties",
+                               "Combatants"],
+    },
+    "world war i": {
+        "title": "World War I",
+        "lead":
+            "World War I began in 1914 amid competing European alliance "
+            "systems and became known for industrialized trench warfare. "
+            "Military and civilian deaths are commonly estimated at about "
+            "17 million.",
+        "available_sections": ["Causes", "Course", "Casualties"],
+    },
+    "world war ii": {
+        "title": "World War II",
+        "lead":
+            "World War II began in Europe in 1939 with Axis aggression and "
+            "expanded into a global industrial war. More than 70 million "
+            "people died, many of them civilians.",
+        "available_sections": ["Causes", "Course", "Casualties"],
+    },
+    "crispr-cas9": {
+        "title": "CRISPR-Cas9",
+        "lead":
+            "CRISPR-Cas9 is a genome-editing system in which a guide RNA "
+            "directs the Cas9 enzyme to complementary target DNA near a PAM "
+            "motif. Cas9 cuts the DNA, which cells then repair.",
+        "available_sections": ["Mechanism", "Guide RNA", "Applications",
+                               "Off-target effects"],
+    },
+    "french revolution": {
+        "title": "French Revolution",
+        "lead":
+            "The French Revolution began in 1789 with the Estates-General "
+            "and the storming of the Bastille. It overthrew Louis XVI, "
+            "established a republic, passed through the Reign of Terror, "
+            "and eventually the Directory and Napoleon's rise.",
+        "available_sections": ["1789", "Republic", "Reign of Terror",
+                               "Directory"],
+    },
+    "united states-iran relations": {
+        "title": "Iran–United States relations",
+        "lead":
+            "Relations between Iran and the United States deteriorated after "
+            "the 1979 Iranian Revolution and hostage crisis. Sanctions, the "
+            "nuclear dispute, and regional conflicts have shaped subsequent "
+            "relations.",
+        "available_sections": ["Before 1979", "Iranian Revolution",
+                               "Sanctions", "Nuclear program"],
+    },
     "rayleigh scattering": {
         "title": "Rayleigh scattering",
         "lead":
@@ -811,10 +1095,12 @@ def dispatch_tool(name: str, args: dict) -> dict:
             args = {}
     if name in ("article_overview",):
         title = (args.get("title") or "").lower().strip()
+        title_norm = " ".join(re.findall(r"[a-z0-9]+", title))
         # Loose matching — model might ask for "Rayleigh scattering",
         # "rayleigh_scattering", "Rayleigh's scattering" etc.
         for key, art in ARTICLE_FIXTURES.items():
-            if key in title or title in key:
+            key_norm = " ".join(re.findall(r"[a-z0-9]+", key))
+            if key_norm in title_norm or title_norm in key_norm:
                 return {
                     "title": art["title"],
                     "lead": art["lead"],
@@ -823,9 +1109,11 @@ def dispatch_tool(name: str, args: dict) -> dict:
         return {"error": f"no fixture for article={title!r}"}
     if name in ("search",):
         query = (args.get("query") or "").lower()
+        query_tokens = set(re.findall(r"[a-z0-9]+", query))
         hits = []
         for key, art in ARTICLE_FIXTURES.items():
-            if any(tok in key for tok in query.split()):
+            key_tokens = set(re.findall(r"[a-z0-9]+", key))
+            if query_tokens & key_tokens:
                 hits.append({"title": art["title"], "path": key.replace(" ", "_")})
         return {"query": query, "hits": hits}
     if name in ("nearby_stories", "nearby_stories_at_place"):
@@ -877,6 +1165,11 @@ def dispatch_tool(name: str, args: dict) -> dict:
                     "It's widely considered the birthplace of "
                     "Silicon Valley.",
             }
+        title_norm = " ".join(re.findall(r"[a-z0-9]+", title))
+        for key, art in ARTICLE_FIXTURES.items():
+            key_norm = " ".join(re.findall(r"[a-z0-9]+", key))
+            if key_norm in title_norm or title_norm in key_norm:
+                return {"article_body": art.get("body", art["lead"])}
         return {"article_body": f"(no narration fixture for {title!r})"}
     if name == "what_is_here":
         lat = args.get("lat") or 0
@@ -893,7 +1186,42 @@ def dispatch_tool(name: str, args: dict) -> dict:
         # each chain's scenario to let pass/fail land based on model
         # reasoning, not on fixture gap.
         title = (args.get("title") or "").lower()
+        section = (args.get("section") or "").lower()
+        if "putin" in title:
+            if any(token in section for token in
+                   ("parent", "family", "early", "sibling")):
+                return {"section_body":
+                    "Vladimir Putin's parents were Vladimir Spiridonovich "
+                    "Putin and Maria Ivanovna Putina, nee Shelomova. His "
+                    "mother was a factory worker; his father served in the "
+                    "Soviet Navy and was wounded while serving in World War II."}
+            return {"section_body":
+                "Putin began at School No. 193 in Leningrad in 1960 and later "
+                "attended High School No. 281, which emphasized German. He "
+                "studied law at Leningrad State University from 1970 and "
+                "graduated in 1975."}
+        if "alamo" in title:
+            if "combat" in section or "force" in section:
+                return {"section_body":
+                    "The defenders were Texian immigrants, American "
+                    "volunteers, and Tejano allies. They fought the Mexican "
+                    "Centralist army commanded by President Antonio Lopez de "
+                    "Santa Anna during the Texas Revolution."}
+            return {"section_body":
+                "Every Alamo fighting defender was killed. The official list "
+                "contains 189 defenders, while continuing research suggests "
+                "the count may be as high as 257. Mexican casualty accounts "
+                "vary; a commonly cited estimate is about 600 killed and "
+                "wounded combined, so the number of Mexican deaths alone is "
+                "uncertain."}
         if "gravitational" in title or "ligo" in title:
+            if "source" in section or "creation" in section:
+                return {"section_body":
+                    "Gravitational waves are oscillations in spacetime "
+                    "created when massive concentrations of matter and "
+                    "energy move with extreme acceleration. Strong sources "
+                    "include orbiting and merging black holes or neutron "
+                    "stars, while supernovae can produce burst signals."}
             return {"section_body":
                 "LIGO detected the first gravitational wave on "
                 "September 14, 2015, from a binary black hole "
@@ -987,6 +1315,8 @@ def dispatch_tool(name: str, args: dict) -> dict:
             }
             fx["query"] = "caltrain"
             return fx
+        if "san francisco" in place or place == "sf":
+            return sf_restaurants_fixture()
         # Lat/lon fallback — if the model passed only coords, still return
         # the SC bar fixture so the turn has *something* to work with.
         if args.get("lat") and args.get("lon"):
@@ -1079,7 +1409,9 @@ def _lfm2_render(messages: list[dict[str, str]],
 
 def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
                  max_turn_tokens: int = 2048,
-                 tool_format: str = "json") -> dict[str, Any]:
+                 tool_format: str = "json",
+                 native_tools: bool = False,
+                 force_expected_tools: bool = False) -> dict[str, Any]:
     """Drive the scenario through llama.cpp's chat API, round-tripping
     tool calls via the fixture. Folds system+tool messages into user
     turns to sidestep Gemma 3's strict user/assistant alternation."""
@@ -1090,7 +1422,7 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
         preamble_block += (
             f"\n\ncurrentLocation: lat={loc['lat']} lon={loc['lon']}"
         )
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     per_turn: list[dict[str, Any]] = []
     use_lfm_path = tool_format == "pythonic"
     # LFM2.5 gets tools via the dedicated `tools_schema` arg of
@@ -1100,15 +1432,36 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
     lfm_system = SYSTEM_PREAMBLE.rstrip()
     if loc := sc.get("system_location"):
         lfm_system += f"\n\ncurrentLocation: lat={loc['lat']} lon={loc['lon']}"
+    if native_tools:
+        # Qwen/Bonsai is trained on native tool messages. Keep the compact
+        # behavioral policy in the system role and let the API-provided tool
+        # schemas define call syntax; do not also teach the legacy fenced-JSON
+        # protocol in the first user turn.
+        native_system = lfm_system + (
+            "\n\nGrounding rule: For factual or place questions, you MUST "
+            "call at least one provided tool before answering unless the "
+            "answer is already fully supported by a tool result earlier in "
+            "this conversation. Never substitute model memory when a tool "
+            "can retrieve the evidence. For grounded follow-ups, reuse the "
+            "existing tool evidence instead of repeating the same call. "
+            "After a tool returns relevant non-error evidence, stop calling "
+            "tools and answer the user. Call another tool only when the "
+            "result is empty, an error, or lacks information the question "
+            "requires."
+        )
+        messages.append({"role": "system", "content": native_system})
     for turn_idx, turn in enumerate(sc["turns"]):
+        expected_tools = turn.get("tools_called_any", [])
+        synthesize_only = False
         # Fold preamble into the first user turn for Gemma (no system role).
         # LFM2.5 supports a system role natively, so it goes there instead.
         user_text = turn["user"]
-        if turn_idx == 0 and not use_lfm_path:
+        if turn_idx == 0 and not use_lfm_path and not native_tools:
             user_text = preamble_block + "\n\nUser query:\n" + user_text
         messages.append({"role": "user", "content": user_text})
         final_content = ""
         tool_calls_seen: list[str] = []
+        evidence_fetches = 0
         # 4 was the historical default; bump to 8 for exploration-heavy
         # models like Qwen 3.6 27B that often spend several tool calls
         # diagnosing fixture errors before settling on a final response.
@@ -1133,10 +1486,23 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
                 content = resp["choices"][0].get("text") or ""
                 openai_calls = None
             else:
+                chat_kwargs: dict[str, Any] = {}
+                if native_tools:
+                    tool_choice = "none" if synthesize_only else (
+                        "required"
+                        if force_expected_tools and expected_tools and iter_ == 0
+                        else "auto"
+                    )
+                    chat_kwargs.update(
+                        tools=TOOLS_SCHEMA,
+                        tool_choice=tool_choice,
+                        parallel_tool_calls=False,
+                    )
                 resp = llm.create_chat_completion(
                     messages=messages,
                     max_tokens=max_turn_tokens,
                     temperature=0.3,
+                    **chat_kwargs,
                 )
                 msg = resp["choices"][0]["message"]
                 content = msg.get("content") or ""
@@ -1147,26 +1513,62 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
                 "turn": turn_idx, "iter": iter_,
                 "t_s": round(dt, 2),
                 "tool_calls": [c["name"] for c in tcalls],
+                "tool_args": [c.get("args", {}) for c in tcalls],
                 "content_preview": content[:200],
             }
             if not tcalls:
                 final_content = content
                 per_turn.append(per_turn_iter)
                 break
-            messages.append({"role": "assistant", "content": content})
+            if native_tools and openai_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": content or None,
+                    "tool_calls": openai_calls,
+                })
+            else:
+                messages.append({"role": "assistant", "content": content})
             tool_outputs = []
+            usable_tool_result = False
+            terminal_evidence = False
             for c in tcalls:
                 tool_calls_seen.append(c["name"])
                 payload = dispatch_tool(c["name"], c["args"])
-                tool_outputs.append(
-                    f"[TOOL_RESPONSE name={c['name']}]\n{json.dumps(payload)}"
-                )
-            messages.append({
-                "role": "user",
-                "content": "\n\n".join(tool_outputs),
-            })
+                result_is_usable = _tool_result_is_usable(payload)
+                usable_tool_result = usable_tool_result or result_is_usable
+                if result_is_usable:
+                    evidence_fetches += 1
+                    terminal_evidence = (
+                        terminal_evidence or c["name"] != "article_overview"
+                    )
+                if native_tools:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": c.get("id") or f"call_{iter_}",
+                        "name": c["name"],
+                        "content": json.dumps(payload),
+                    })
+                else:
+                    tool_outputs.append(
+                        f"[TOOL_RESPONSE name={c['name']}]\n{json.dumps(payload)}"
+                    )
+            if not native_tools:
+                messages.append({
+                    "role": "user",
+                    "content": "\n\n".join(tool_outputs),
+                })
+            elif usable_tool_result and (
+                terminal_evidence or evidence_fetches >= 2
+            ):
+                # Article overviews are navigational as well as evidentiary:
+                # allow one refinement call when the model wants a specific
+                # section. A section or other terminal tool result, or a
+                # second usable overview, makes the next pass synthesis-only.
+                # Keep the native tool template active with tool_choice=none;
+                # removing schemas makes some templates emit raw textual
+                # <tool_call> markup. Empty/error results leave tools enabled.
+                synthesize_only = True
             per_turn.append(per_turn_iter)
-        expected_tools = turn.get("tools_called_any", [])
         tool_ok = (not expected_tools) or any(
             t in tool_calls_seen for t in expected_tools
         )
@@ -1177,6 +1579,12 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
         kw_any = turn.get("response_includes_any", [])
         resp_ok = (not kw_any) or any(
             kw.lower() in final_content.lower() for kw in kw_any
+        )
+        kw_groups = turn.get("response_includes_groups", [])
+        resp_ok = resp_ok and all(
+            any(keyword.lower() in final_content.lower()
+                for keyword in group)
+            for group in kw_groups
         )
         per_turn.append({
             "turn": turn_idx, "final_content": final_content[:300],
@@ -1198,6 +1606,28 @@ def run_scenario(llm, scenario_name: str, probe: MemoryProbe,
     }
 
 
+def _tool_result_is_usable(payload: Any) -> bool:
+    """Whether a tool result contains evidence worth synthesizing.
+
+    The smoke fixtures use explicit errors, empty hit/result arrays, and
+    `(no ... fixture ...)` sentinels. Treat those as recoverable misses; all
+    other non-empty payloads end the retrieval phase for the current turn.
+    """
+    if not isinstance(payload, dict) or not payload or payload.get("error"):
+        return False
+    # Search hits identify an article but do not contain answer evidence.
+    # Keep tools enabled so the model fetches an overview or section next.
+    if "hits" in payload:
+        return False
+    if "results" in payload and isinstance(payload["results"], list):
+        return bool(payload["results"])
+    for key in ("lead", "section_body", "article_body", "comparison", "place"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.lstrip().lower().startswith("(no "):
+            return False
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=None,
@@ -1206,6 +1636,17 @@ def main():
                     help="GGUF filename inside the HF repo.")
     ap.add_argument("--local-path", default=None,
                     help="Local GGUF path. When set, bypasses HF download.")
+    ap.add_argument("--server-url", default=None,
+                    help="Use an already-running llama.cpp server instead "
+                         "of loading a GGUF in llama-cpp-python.")
+    ap.add_argument("--server-model", default="local-model",
+                    help="Model id sent to the external server.")
+    ap.add_argument("--max-turn-tokens", type=int, default=2048,
+                    help="Maximum tokens for each model response. Keep the "
+                         "default for historical grids; product-like Bonsai "
+                         "runs use 512.")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="Sampling seed for an external llama.cpp server.")
     ap.add_argument("--scenario", default="bars_sc_caltrain_chain",
                     choices=list(SCENARIOS.keys()))
     ap.add_argument("--n-ctx", type=int, default=8192)
@@ -1223,11 +1664,20 @@ def main():
                     help="Format the tool block + parser expects. "
                          "'pythonic' = LFM2/LFM2.5 native "
                          "<|tool_call_start|>[fn(...)]<|tool_call_end|>.")
+    ap.add_argument("--native-tools", action="store_true",
+                    help="Use OpenAI-style tool schemas and tool-role "
+                         "round trips instead of the legacy fenced-JSON "
+                         "instruction protocol.")
+    ap.add_argument("--force-expected-tools", action="store_true",
+                    help="Diagnostic mode: require a tool on the first "
+                         "iteration of scenario turns that expect retrieval. "
+                         "Use this to separate routing from tool execution.")
     args = ap.parse_args()
 
-    from llama_cpp import Llama
-
-    if args.local_path:
+    if args.server_url:
+        gguf_path = None
+        model_label = f"{args.server_model} @ {args.server_url}"
+    elif args.local_path:
         gguf_path = args.local_path
         model_label = args.local_path
     else:
@@ -1243,43 +1693,52 @@ def main():
     probe = MemoryProbe()
     probe.start()
 
-    swa_full_arg: Optional[bool] = None
-    if args.swa_full == "true":
-        swa_full_arg = True
-    elif args.swa_full == "false":
-        swa_full_arg = False
-    # LFM2.5's baked Jinja chat template uses HF-only `{% generation %}`
-    # tags that crash the bundled Jinja at Llama() construction. We
-    # build the prompt by hand for `--tool-format pythonic` anyway,
-    # so force a benign format here to dodge the parse.
-    llama_kwargs: dict[str, Any] = {}
-    if args.tool_format == "pythonic":
-        llama_kwargs["chat_format"] = "chatml"
     t_load = time.perf_counter()
-    chat_template_kwargs = {}
-    chat_template_path = os.environ.get("CHAT_TEMPLATE")
-    if chat_template_path:
-        with open(chat_template_path) as fh:
-            chat_template_kwargs["chat_template"] = fh.read()
-        print(f"       overriding chat template from {chat_template_path}")
-    llm = Llama(
-        model_path=gguf_path,
-        n_ctx=args.n_ctx,
-        n_gpu_layers=args.n_gpu_layers,
-        type_k=_kv_type(args.cache_type_k),
-        type_v=_kv_type(args.cache_type_v),
-        flash_attn=args.flash_attn,
-        swa_full=swa_full_arg,
-        verbose=False,
-        **llama_kwargs,
-        **chat_template_kwargs,
-    )
+    if args.server_url:
+        llm = ExternalServerLLM(args.server_url, args.server_model,
+                                seed=args.seed)
+    else:
+        from llama_cpp import Llama
+
+        swa_full_arg: Optional[bool] = None
+        if args.swa_full == "true":
+            swa_full_arg = True
+        elif args.swa_full == "false":
+            swa_full_arg = False
+        # LFM2.5's baked Jinja chat template uses HF-only `{% generation %}`
+        # tags that crash the bundled Jinja at Llama() construction. We
+        # build the prompt by hand for `--tool-format pythonic` anyway,
+        # so force a benign format here to dodge the parse.
+        llama_kwargs: dict[str, Any] = {}
+        if args.tool_format == "pythonic":
+            llama_kwargs["chat_format"] = "chatml"
+        chat_template_kwargs = {}
+        chat_template_path = os.environ.get("CHAT_TEMPLATE")
+        if chat_template_path:
+            with open(chat_template_path) as fh:
+                chat_template_kwargs["chat_template"] = fh.read()
+            print(f"       overriding chat template from {chat_template_path}")
+        llm = Llama(
+            model_path=gguf_path,
+            n_ctx=args.n_ctx,
+            n_gpu_layers=args.n_gpu_layers,
+            type_k=_kv_type(args.cache_type_k),
+            type_v=_kv_type(args.cache_type_v),
+            flash_attn=args.flash_attn,
+            swa_full=swa_full_arg,
+            verbose=False,
+            **llama_kwargs,
+            **chat_template_kwargs,
+        )
     print(f"       load: {time.perf_counter()-t_load:.2f}s · "
           f"rss: {rss_mb():.0f} MB")
 
     t = time.perf_counter()
     result = run_scenario(llm, args.scenario, probe,
-                          tool_format=args.tool_format)
+                          max_turn_tokens=args.max_turn_tokens,
+                          tool_format=args.tool_format,
+                          native_tools=args.native_tools,
+                          force_expected_tools=args.force_expected_tools)
     wall_s = time.perf_counter() - t
     probe.stop.set()
 

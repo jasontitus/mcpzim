@@ -122,6 +122,7 @@ public final class VoiceChatController {
 
     public func stop() {
         log("stop() — tearing down session")
+        if session.isGenerating { session.stopGeneration() }
         sttTask?.cancel()
         sttTask = nil
         generationWatcher?.cancel()
@@ -136,6 +137,27 @@ public final class VoiceChatController {
         liveTranscript = ""
         inputLevel = 0
         state = .idle
+    }
+
+    /// Barge in while the assistant is thinking or speaking. Stop playback,
+    /// cancel model work at its next safe boundary, then re-arm the microphone
+    /// as soon as ChatSession confirms the context is free.
+    public func interruptAndListen() {
+        guard state == .thinking || state == .speaking else { return }
+        log("barge-in requested")
+        tts.stop()
+        generationWatcher?.cancel()
+        pendingAssistantIndex = nil
+        if session.isGenerating { session.stopGeneration() }
+        state = .thinking
+        generationWatcher = Task { [weak self] in
+            guard let self else { return }
+            while self.session.isGenerating, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard !Task.isCancelled, self.state != .idle else { return }
+            self.resumeListeningAfterCycle()
+        }
     }
 
     // MARK: - Listening
