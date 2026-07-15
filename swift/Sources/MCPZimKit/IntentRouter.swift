@@ -72,9 +72,21 @@ public enum IntentRouter {
         currentLocation: (lat: Double, lon: Double)? = nil,
         focus: ConversationFocus? = nil
     ) -> DirectIntent? {
-        let text = raw
+        var text = raw
+            .replacingOccurrences(of: "\u{2019}", with: "'") // iOS smart quote → ASCII, so "Putin’s" title-matches
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        // Strip a leading connective — voice turns routinely open with
+        // "And/So/Also/Ok" ("And tell me about Donald Trump"), which
+        // defeated every ^-anchored pattern below: the turn classified
+        // as nothing, discussion mode never saw the topic switch, and
+        // the model confabulated Trump answers from Putin passages
+        // (real capture 2026-07-02). Only strip when a real clause
+        // follows, so a bare "ok"/"and?" still reads as a continuation.
+        if let m = match(text.lowercased(), pattern:
+            #"^(?:and|so|also|then|ok|okay|now|next|hey|oh)[,\s]+(.{4,})$"#) {
+            text = String(text.suffix(m[0].count))
+        }
         if text.isEmpty { return nil }
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
@@ -307,8 +319,14 @@ public enum IntentRouter {
         // that don't exist in the loaded ZIMs come back as a clean
         // "no article" miss, which is still faster than a 15 s
         // prefill + possibly-malformed tool call.
+        // "how/what about X" reaches here only when the focus-aware
+        // resolver did NOT bind — i.e. the turn names its own subject
+        // ("How about Donald Trump's childhood?" mid-discussion of
+        // Putin). Subject-less "what about his parents" binds upstream
+        // and never lands on this pattern; the navPronouns bail below
+        // covers the empty-focus case.
         if let m = match(lower, pattern:
-            #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
+            #"^(?:tell\s+me\s+(?:about|more\s+about)|(?:how|what)\s+about|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
         {
             let subject = m[0].trimmingCharacters(in: .whitespaces)
             let firstWord = subject
@@ -316,15 +334,25 @@ public enum IntentRouter {
                 .first.map(String.init) ?? ""
             let navPronouns: Set<String> = [
                 "my", "our", "your", "here", "now", "next",
-                "this", "that", "these", "those", "it"
+                "this", "that", "these", "those", "it",
+                "his", "her", "their", "him", "them",
             ]
             if navPronouns.contains(firstWord) { return nil }
             // Subject must have at least one content character — "what
             // is" with nothing after would match `.+` on the trailing
             // "?!." the caller stripped. Guard against that.
             if subject.isEmpty { return nil }
+            // "Putin's early life" / "Vladimir Putin and his early life"
+            // — the ENTITY is the article title; the possessive facet is
+            // a section, not part of the title. Dispatching the raw
+            // phrase misses ("no article: putin's early life", real
+            // capture 2026-07-01) and dead-ends in a did-you-mean.
+            // `article_overview(title: entity)` succeeds and its
+            // `pickOverview` already prioritises the classic facet
+            // sections ("early life", "career", …).
+            let title = Self.stripPossessiveFacet(from: subject)
             return DirectIntent(toolName: "article_overview", args: [
-                "title": .string(subject)
+                "title": .string(title)
             ])
         }
 
@@ -378,6 +406,69 @@ public enum IntentRouter {
             return r.trimmingCharacters(in: .whitespaces)
         }
         return nil
+    }
+
+    /// Section facets people attach to a subject with a possessive
+    /// ("X's early life", "X and her career"). These are classic
+    /// Wikipedia section names, never part of the article title —
+    /// kept as an explicit whitelist because REAL titles legitimately
+    /// contain possessives ("Hitchhiker's Guide to the Galaxy").
+    private static let possessiveFacets: Set<String> = [
+        "early life", "early years", "early life and education",
+        "childhood", "youth", "education", "career", "later life",
+        "later years", "personal life", "family", "children",
+        "death", "legacy", "history", "biography", "background",
+        "rise to power", "presidency", "reign", "discography",
+        "filmography", "achievements", "accomplishments", "works",
+        "net worth", "wife", "husband", "spouse",
+    ]
+
+    /// "putin's early life" → "putin"; "vladimir putin and his early
+    /// life" → "vladimir putin". Leaves the subject untouched unless
+    /// the trailing phrase is a whitelisted facet.
+    static func stripPossessiveFacet(from subject: String) -> String {
+        let lower = subject.lowercased()
+        // "<entity>'s <facet>"
+        if let r = lower.range(of: "'s ", options: .backwards) {
+            let facet = String(lower[r.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+            if possessiveFacets.contains(facet) {
+                return String(subject[..<subject.index(
+                    subject.startIndex,
+                    offsetBy: lower.distance(from: lower.startIndex, to: r.lowerBound)
+                )]).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        // "<entity> and (his|her|its|their) <facet>"
+        if let m = match(lower, pattern:
+            #"^(.+?)\s+and\s+(?:his|her|its|their)\s+(.+)$"#),
+           m.count >= 2,
+           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces))
+        {
+            let entityLen = m[0].trimmingCharacters(in: .whitespaces).count
+            return String(subject.prefix(entityLen))
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return subject
+    }
+
+    /// Aggressive variant for the article-MISS retry: also strips the
+    /// apostrophe-less possessive voice dictation produces ("putins
+    /// childhood" → "putin"). Too greedy for first-pass routing ("paris
+    /// history" → "pari"), so it only runs after the literal title
+    /// already missed — a wrong guess there just re-misses into the
+    /// same did-you-mean the user would have seen anyway.
+    public static func stripPossessiveFacetAggressive(from subject: String) -> String {
+        let conservative = stripPossessiveFacet(from: subject)
+        if conservative != subject { return conservative }
+        if let m = match(subject.lowercased(), pattern: #"^(.+?)s\s+(.+)$"#),
+           m.count >= 2,
+           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces)),
+           m[0].count >= 4
+        {
+            return m[0].trimmingCharacters(in: .whitespaces)
+        }
+        return subject
     }
 
     /// Drop a leading "tell me about" / "what is" / "who was" / "overview
@@ -441,28 +532,65 @@ public enum IntentRouter {
         }
         let lower = raw.lowercased()
 
-        // Locational follow-up about a place we have coordinates for.
-        // Travel/distance phrasings ("how far is it", "how long to drive",
-        // "directions") → a route from the user's location (the routing
-        // reply carries the distance + duration). Proximity phrasings
-        // ("what's near it", "anything around") → near_places at its coords.
-        if entity.kind == .place, let lat = entity.lat, let lon = entity.lon {
-            let travel = ["how far", "distance", "how long", "walk", "drive",
-                          "directions", "route", "how do i get", "get to"]
-            let nearby = ["near", "around", "nearby", "close by", "close to"]
-            if travel.contains(where: { lower.contains($0) }) {
-                return DirectIntent(toolName: "route_from_places", args: [
-                    "origin":      .string("my location"),
-                    "destination": .string(entity.name),
-                ])
+        // Locational follow-up. The resolver binds pronouns to the
+        // most-recent entity of ANY kind, but "how far is it?" after
+        // "restaurants near the Ferry Building" then "tell me about
+        // Ohlone history" means the PLACE, not the topic — so when the
+        // turn is locational and the bound entity isn't a locatable
+        // place, rebind to the most recent place in focus.
+        //
+        // Phrase split:
+        //  * distance-shaped ("how far", "which way", "can I walk") →
+        //    `distance_to` — a distance + compass-direction + walk-estimate
+        //    answer, cheap, no routing-graph work;
+        //  * travel-shaped ("directions", "how do I get", "how long",
+        //    "get to") → `route_from_places` — the routed reply carries the
+        //    real driving duration;
+        //  * proximity-shaped ("near it", "around") → `near_places`.
+        let distanceWords = ["how far", "distance", "how close",
+                             "which way", "which direction",
+                             "can i walk", "walkable", "walking distance",
+                             "walk there", "can i drive", "drive there",
+                             "how long to walk", "how long to drive"]
+        let proximityWords = ["near", "around", "nearby", "close by",
+                              "close to", "what's close"]
+        let routeWords = ["directions", "route", "how do i get",
+                          "get to", "how long"]
+        let isLocational = (distanceWords + proximityWords + routeWords)
+            .contains { lower.contains($0) }
+        if isLocational {
+            let place: FocusEntity? = (entity.kind == .place)
+                ? entity
+                : focus.mostRecent(kind: .place)
+            if let place {
+                if distanceWords.contains(where: { lower.contains($0) }) {
+                    // "how far / which way is it" wants a distance +
+                    // direction answer, not a POI dump around the place.
+                    var args: [String: AnyJSONValue] = [
+                        "place": .string(place.name),
+                    ]
+                    if let lat = place.lat, let lon = place.lon {
+                        args["lat"] = .double(lat)
+                        args["lon"] = .double(lon)
+                    }
+                    return DirectIntent(toolName: "distance_to", args: args)
+                }
+                if routeWords.contains(where: { lower.contains($0) }) {
+                    return DirectIntent(toolName: "route_from_places", args: [
+                        "origin":      .string("my location"),
+                        "destination": .string(place.name),
+                    ])
+                }
+                if let lat = place.lat, let lon = place.lon {
+                    return DirectIntent(toolName: "near_places", args: [
+                        "lat":       .double(lat),
+                        "lon":       .double(lon),
+                        "radius_km": .double(1),
+                    ])
+                }
             }
-            if nearby.contains(where: { lower.contains($0) }) {
-                return DirectIntent(toolName: "near_places", args: [
-                    "lat":       .double(lat),
-                    "lon":       .double(lon),
-                    "radius_km": .double(1),
-                ])
-            }
+            // No locatable place in focus — fall through to the
+            // encyclopedic default below (better than guessing coords).
         }
 
         // Default: re-open the subject encyclopedically. `article_overview`
@@ -670,18 +798,41 @@ public enum IntentRouter {
         // "museums" → "museums"; "cafes" → "cafes".
         let kindPlural = kind.hasSuffix("s") ? kind : kind + "s"
 
+        // Lead with the CLOSEST hit by name — "the nearest coffee shop is
+        // Blue Bottle, 250 m north-east" is the conversational answer;
+        // "Found 186 coffee shops… tap a pin" reads like a UI caption and
+        // is useless spoken aloud (real capture 2026-07-02). The map/list
+        // still shows the rest.
+        var nearest = ""
+        if kind != "places",
+           let rows = fullResult["results"] as? [[String: Any]],
+           let top = rows.first,
+           let name = (top["name"] as? String) ?? (top["label"] as? String) {
+            var bits = "The nearest \(kind) is \(name)"
+            if let d = (top["distance_m"] as? NSNumber)?.doubleValue {
+                bits += d < 1000
+                    ? ", \(Int(d)) m"
+                    : String(format: ", %.1f km", d / 1000)
+                if let dir = top["direction"] as? String { bits += " \(dir)" }
+            }
+            nearest = bits + ". "
+        }
         var line: String
         if let n = count, n > 0 {
-            line = "Found \(n) \(kindPlural) near \(where_)"
+            if nearest.isEmpty {
+                line = "Found \(n) \(kindPlural) near \(where_)"
+            } else if n > 1 {
+                line = nearest + "\(n - 1) more \(kindPlural) near \(where_)"
+            } else {
+                line = nearest + "It's the only one near \(where_)"
+            }
         } else if count == 0 {
             line = "No \(kindPlural) found near \(where_)"
         } else {
-            line = "Results for \(kindPlural) near \(where_)"
+            line = nearest + "Results for \(kindPlural) near \(where_)"
         }
         if let r = radiusKm { line += " (within \(formatKm(r)))" }
-        line += ". Tap a pin on the map for details"
-        if count != 0 { line += ", or tap List for the full rundown" }
-        line += "."
+        line += " — they're on the map below."
         return line
     }
 

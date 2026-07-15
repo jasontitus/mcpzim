@@ -941,8 +941,33 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertTrue(s.contains("Found 15 bars near North Beach"),
                       "got: \(s)")
         XCTAssertTrue(s.contains("within 1.5 km"), "got: \(s)")
-        XCTAssertTrue(s.contains("Tap a pin"), "got: \(s)")
-        XCTAssertTrue(s.contains("tap List"), "got: \(s)")
+        // 2026-07-02: caption reworded for voice — "Tap a pin / tap List"
+        // read like UI chrome when spoken; the map reference stays.
+        XCTAssertTrue(s.contains("on the map below"), "got: \(s)")
+    }
+
+    func testSynthesiseNamesNearestHit() {
+        // "Where's the nearest coffee shop?" must NAME the closest hit
+        // with distance + compass direction, not just count them
+        // (real capture 2026-07-02: "Found 186 coffee shops… tap a pin").
+        let args: [String: Any] = [
+            "lat": 37.44, "lon": -122.15, "kinds": ["coffee shop"],
+        ]
+        let result: [String: Any] = [
+            "total_in_radius": 186, "radius_km": 5,
+            "results": [
+                ["name": "Blue Bottle Coffee", "distance_m": 250,
+                 "direction": "north-east", "lat": 37.44, "lon": -122.15],
+                ["name": "Peet's", "distance_m": 400, "lat": 37.44, "lon": -122.15],
+            ],
+        ]
+        let s = IntentRouter.synthesizePlacesReply(
+            toolName: "near_places", args: args, fullResult: result
+        )
+        XCTAssertTrue(
+            s.contains("The nearest coffee shop is Blue Bottle Coffee, 250 m north-east"),
+            "got: \(s)")
+        XCTAssertTrue(s.contains("185 more coffee shops"), "got: \(s)")
     }
 
     func testSynthesiseZeroResults() {

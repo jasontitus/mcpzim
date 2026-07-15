@@ -343,11 +343,13 @@ enum ProbeDiscussCLI {
 
     static func run(args inputArgs: [String]) async {
         var zim: String?
+        var streetzim: String?
         var gguf = "/Users/jasontitus/experiments/mcpzim/tools/fine-tune/"
             + "ft-out-lfm2.5-8b-v7full/lfm2.5-8b-a1b-ft.Q3_K_M.gguf"
         var turns: [String] = []
         var phoneMode = false
         var ramBudgetMB = 0.0
+        var lat = 37.441, lon = -122.155   // Palo Alto default
         var args = inputArgs[...]
         while let a = args.first {
             args = args.dropFirst()
@@ -355,6 +357,13 @@ enum ProbeDiscussCLI {
             case "--zim":
                 zim = args.first.map { String($0) }
                 if !args.isEmpty { args = args.dropFirst() }
+            case "--streetzim":
+                streetzim = args.first.map { String($0) }
+                if !args.isEmpty { args = args.dropFirst() }
+            case "--lat":
+                if let v = args.first.flatMap({ Double($0) }) { lat = v; args = args.dropFirst() }
+            case "--lon":
+                if let v = args.first.flatMap({ Double($0) }) { lon = v; args = args.dropFirst() }
             case "--gguf":
                 if let g = args.first { gguf = String(g); args = args.dropFirst() }
             case "--turn":
@@ -383,16 +392,30 @@ enum ProbeDiscussCLI {
             if ramBudgetMB == 0 { ramBudgetMB = 6144 }
         }
         let scenario = turns.isEmpty ? defaultTurns : turns
-        print("== probe-discuss ==\nzim:   \(zim)\ngguf:  \(gguf)\nturns: \(scenario.count)")
+        print("== probe-discuss ==\nzim:   \(zim)\nstreetzim: \(streetzim ?? "(none)")\ngguf:  \(gguf)\nturns: \(scenario.count)")
         print("profile: \(DeviceProfile.current.label)"
             + (ramBudgetMB > 0 ? " · RAM budget \(Int(ramBudgetMB)) MB" : "") + "\n")
 
         let url = URL(fileURLWithPath: zim)
-        let reader: ZimReader
-        do { reader = try LibzimReader(url: url) }
+        var readers: [(String, ZimReader)] = []
+        do { readers.append((url.lastPathComponent, try LibzimReader(url: url))) }
         catch { print("ZIM open failed: \(error)"); exit(3) }
-        let service = DefaultZimService(readers: [(url.lastPathComponent, reader)])
-        let adapter = await MCPToolAdapter(service: service, hasStreetzim: false)
+        if let streetzim, !streetzim.isEmpty {
+            let surl = URL(fileURLWithPath: streetzim)
+            do { readers.append((surl.lastPathComponent, try LibzimReader(url: surl))) }
+            catch { print("streetzim open failed: \(error)"); exit(3) }
+        }
+        let service = DefaultZimService(readers: readers)
+        let adapter = await MCPToolAdapter(
+            service: service, hasStreetzim: streetzim != nil)
+        // GPS host state so what_is_here / distance_to / near-me flows work
+        // exactly like on the phone (ZimfoContext there, a fixed fix here).
+        let fixLat = lat, fixLon = lon
+        await adapter.installHostStateProvider {
+            HostStateSnapshot(
+                activeRoute: nil,
+                currentLocation: LocationSnapshot(lat: fixLat, lon: fixLon))
+        }
         // Wire the SAME semantic reranker the iOS app installs, so the
         // CLI's `search` (used by discuss drift) reorders BM25 hits by
         // NLContextualEmbedding — otherwise the harness is a pessimistic
@@ -411,6 +434,11 @@ enum ProbeDiscussCLI {
             localGGUFPath: gguf,
             replyTokensFloor: 1024,
             approximateMemoryMB: 4200,
+            // Match the SHIPPING config (ChatSession registers the LFM FT
+            // with a 32k window) — at the 8192 default the harness
+            // overflowed n_ctx on turn 6 of a discuss run and reported a
+            // failure the phone wouldn't have.
+            contextTokens: 32768,
             template: LFM25Template())
         print("loading model from local path…")
         let t0 = Date()
@@ -420,7 +448,7 @@ enum ProbeDiscussCLI {
 
         let session = ChatSession.forTesting(
             providers: [provider], adapter: adapter, initialModelId: "lfm25-ft")
-        session.currentLocation = (lat: 37.441, lon: -122.155)
+        session.currentLocation = (lat: fixLat, lon: fixLon)
 
         // Sample phys_footprint (the jetsam metric) across the run.
         let peak = PeakMem()

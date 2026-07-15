@@ -159,8 +159,8 @@ public enum ArticleSections {
         // their inner text doesn't pollute prose.
         out = removeBlock(out, tag: "script")
         out = removeBlock(out, tag: "style")
-        out = removeBlock(out, tag: "table")   // infoboxes + nav tables
-        out = removeBlock(out, tag: "figure")  // pictures + captions
+        out = removeNestedBlock(out, tag: "table")   // infoboxes + nav/sidebar tables (nest!)
+        out = removeNestedBlock(out, tag: "figure")  // pictures + captions
         out = removeBlock(out, tag: "nav")
         // mdwiki embeds short instructional clips via `<video>` tags
         // with nested `<source>` / `<track>` elements. Drop the whole
@@ -201,8 +201,8 @@ public enum ArticleSections {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Remove `<tag>…</tag>` blocks (outermost pairs). Crude but
-    /// matches the HTML Kiwix emits — no deeply-nested tables.
+    /// Remove `<tag>…</tag>` blocks (outermost pairs). Crude but fine
+    /// for tags that never nest (script/style/nav/video/audio).
     private static func removeBlock(_ html: String, tag: String) -> String {
         let pattern = "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>"
         return html.replacingOccurrences(
@@ -210,6 +210,43 @@ public enum ArticleSections {
             with: " ",
             options: [.regularExpression, .caseInsensitive]
         )
+    }
+
+    /// Depth-aware `<tag>…</tag>` removal for tags that NEST. The maxi
+    /// builds nest tables three deep inside navbox/sidebar templates —
+    /// the non-greedy `removeBlock` cut at the FIRST `</table>`, leaking
+    /// the inner link farm into section prose (device capture
+    /// 2026-07-02: a "gravitational waves" answer that was 2 kB of
+    /// looping physicist names from the General-relativity sidebar).
+    private static func removeNestedBlock(_ html: String, tag: String) -> String {
+        let ns = html as NSString
+        guard let re = try? NSRegularExpression(
+            pattern: "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]
+        ) else { return html }
+        var out = ""
+        var depth = 0
+        var keptUpTo = 0
+        for m in re.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            let isClose = ns.substring(with: m.range(at: 1)) == "/"
+            if depth == 0 {
+                if isClose { continue }   // stray close — generic strip gets it
+                out += ns.substring(
+                    with: NSRange(location: keptUpTo, length: m.range.location - keptUpTo))
+                depth = 1
+            } else {
+                depth += isClose ? -1 : 1
+                if depth == 0 {
+                    out += " "
+                    keptUpTo = m.range.location + m.range.length
+                }
+            }
+        }
+        if depth == 0 {
+            out += ns.substring(from: keptUpTo)
+        }
+        // Unclosed outermost tag: everything after it was inside the
+        // block — dropping it beats leaking a truncated link farm.
+        return out
     }
 
     /// Remove `<span class="…">…</span>` blocks whose class has any token

@@ -61,6 +61,39 @@ public final class LogArchive: @unchecked Sendable {
         }
     }
 
+    // MARK: - Unclean-exit detection
+
+    /// Post-mortem breadcrumb: did the PREVIOUS session's log end in the
+    /// middle of foreground work? Two on-device llama.cpp deaths
+    /// (2026-07-02: one mid-`generate`, one mid-model-load) produced NO
+    /// system crash report of any kind — this tail is the only evidence.
+    /// Returns the last line of the previous run when it doesn't look
+    /// like a normal background/terminate, so the host can surface
+    /// "previous session died at: …" at every launch.
+    ///
+    /// Heuristic: iOS killing a BACKGROUNDED app is routine, so a tail
+    /// containing "backgrounded" (the KV-drop line) or "terminating"
+    /// counts as clean; anything else means we died while active.
+    public func previousSessionUncleanTail(maxLines: Int = 3) -> String? {
+        let files = allFiles()
+        // files[0] is the session we just opened; [1] is the previous run.
+        guard files.count >= 2 else { return nil }
+        let prev = files[1]
+        guard let content = try? String(contentsOf: prev, encoding: .utf8) else {
+            return nil
+        }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        guard let last = lines.last else {
+            return "\(prev.lastPathComponent): empty log — died before first line"
+        }
+        let l = last.lowercased()
+        if l.contains("backgrounded") || l.contains("terminating") {
+            return nil
+        }
+        let tail = lines.suffix(maxLines).joined(separator: "\n")
+        return "\(prev.lastPathComponent):\n\(tail)"
+    }
+
     // MARK: - Reading
 
     public func currentFileURL() -> URL? {

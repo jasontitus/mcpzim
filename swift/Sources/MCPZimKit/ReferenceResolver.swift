@@ -75,6 +75,15 @@ public enum ReferenceResolver {
         "those", "these",
     ]
 
+    /// The possessive subset. These routinely appear in turns that NAME
+    /// their own subject ("tell me about Vladimir Putin and HIS early
+    /// life") — binding them to the prior focus entity hijacks an
+    /// explicit fresh query (real capture 2026-07-01: turn 2
+    /// re-dispatched turn 1's failed title because "his" bound to it).
+    private static let possessivePronouns: Set<String> = [
+        "his", "her", "its", "their", "hers", "theirs",
+    ]
+
     /// Words that, leading a short turn, signal "keep going on what we were
     /// just discussing" even without an explicit pronoun.
     private static let continuationOpeners: [String] = [
@@ -158,6 +167,22 @@ public enum ReferenceResolver {
             }
         }
 
+        // ---- 1b. Name pick from the last list ------------------------------
+        // After a disambiguation / list offer, users often say the NAME,
+        // usually wrapped in an affirmative: "Yes - gravitational waves"
+        // (real capture 2026-07-02 — it fell through to the pinned
+        // discussion and re-answered from the WRONG article). A unique
+        // stemmed content-word match against an item's name binds it.
+        if !focus.lastList.isEmpty {
+            if let pick = namePick(words: words, focus: focus) {
+                return ResolvedReference(
+                    binding: pick,
+                    rewrittenQuery: "tell me about \(boundName(of: pick))",
+                    isContinuation: true
+                )
+            }
+        }
+
         // ---- 2. Descriptive selector ("the older one", "the church") ------
         // Match "the <noun>" anywhere in the turn, so "tell me about the
         // cathedral" works, not just turns that literally start with "the".
@@ -215,7 +240,12 @@ public enum ReferenceResolver {
         }
 
         // ---- 3. Pronoun → primary entity ----------------------------------
-        if hasPronoun, let primary = focus.primaryEntity {
+        // Possessives only bind when nothing content-like precedes them:
+        // "what's his name?" binds; "tell me about Vladimir Putin and his
+        // early life" names its own subject and must fall through to the
+        // stateless patterns.
+        if hasPronoun, let primary = focus.primaryEntity,
+           !possessiveWithOwnSubject(words) {
             return ResolvedReference(
                 binding: .entity(primary),
                 rewrittenQuery: rewrite(text, with: primary.name),
@@ -294,6 +324,43 @@ public enum ReferenceResolver {
         return nil
     }
 
+    /// A turn whose content words all appear (stemmed) in exactly ONE
+    /// list item's name is a pick of that item. "Yes - gravitational
+    /// waves" → item "Gravitational wave"; a turn with extra content
+    /// ("what did Einstein say about gravitational waves") does NOT
+    /// bind — "einstein"/"say" aren't in the name.
+    private static func namePick(
+        words: [String], focus: ConversationFocus
+    ) -> ResolvedReference.Binding? {
+        let functional: Set<String> = stopwords
+            .union(singularPronouns)
+            .union(["yes", "yeah", "yep", "yup", "sure", "okay", "please",
+                    "want", "hear", "tell", "about", "more", "why", "how",
+                    "when", "where", "who", "what", "does", "did", "are",
+                    "was", "were", "and", "but", "then", "mean", "meant"])
+        let content = words.filter { !functional.contains($0) && $0.count >= 3 }
+        guard !content.isEmpty else { return nil }
+        func stem(_ w: String) -> String {
+            for suffix in ["es", "s"] where w.hasSuffix(suffix) {
+                let s = String(w.dropLast(suffix.count))
+                if s.count >= 4 { return s }
+            }
+            return w
+        }
+        let contentStems = content.map(stem)
+        let matches = focus.lastList.enumerated().filter { _, item in
+            let nameToks = Set(
+                item.name.lowercased()
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 3 }
+                    .map(stem)
+            )
+            return contentStems.allSatisfy { nameToks.contains($0) }
+        }
+        guard matches.count == 1, let (idx, item) = matches.first else { return nil }
+        return .listSelection(index: idx, entity: item)
+    }
+
     // MARK: - Descriptive selection
 
     /// Match "the <descriptor> [one]" against the list by token overlap with
@@ -350,7 +417,14 @@ public enum ReferenceResolver {
         guard !content.isEmpty else { return nil }
         let matches = focus.openThreads.filter { thread in
             let hay = (thread.label + " " + (thread.note ?? "")).lowercased()
-            return content.contains { hay.contains($0) }
+            // EVERY content word must appear in the label/gloss — a
+            // single shared token must not hijack an explicit query.
+            // Real capture 2026-07-02: "Tell me about Donald Trump"
+            // bound to the offered thread "The Trump Organization" on
+            // the word "trump" alone and answered about the company.
+            // "the war" ⊆ "War of 1812" still matches; "donald trump"
+            // ⊄ "The Trump Organization" no longer does.
+            return content.allSatisfy { hay.contains($0) }
         }
         return matches.count == 1 ? matches[0] : nil
     }
@@ -422,6 +496,27 @@ public enum ReferenceResolver {
                     "was", "were", "did", "does", "do", "and", "but", "so",
                     "then", "about", "me", "tell", "more", "ok", "okay"])
         return lowerWords.contains { !functional.contains($0) && $0.count >= 4 }
+    }
+
+    /// True when the turn's only pronouns are POSSESSIVE and a content
+    /// token precedes the first one — i.e. the sentence already names
+    /// the subject the possessive refers to ("Vladimir Putin and his
+    /// early life"). Non-possessive pronouns ("who built it") and
+    /// subject-less possessives ("what's his name?") return false.
+    private static func possessiveWithOwnSubject(_ words: [String]) -> Bool {
+        let pronounIdxs = words.indices.filter { singularPronouns.contains(words[$0]) }
+        guard let firstPronoun = pronounIdxs.first,
+              pronounIdxs.allSatisfy({ possessivePronouns.contains(words[$0]) })
+        else { return false }
+        let functional: Set<String> = singularPronouns
+            .union(stopwords)
+            .union(["why", "how", "when", "where", "who", "what", "what's",
+                    "whats", "who's", "is", "are", "was", "were", "did",
+                    "does", "do", "and", "but", "so", "then", "about", "me",
+                    "tell", "more", "ok", "okay", "please", "give", "show"])
+        return words[..<firstPronoun].contains {
+            !functional.contains($0) && $0.count >= 4
+        }
     }
 
     private static func startsWithWord(_ text: String, _ phrase: String) -> Bool {

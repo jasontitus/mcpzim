@@ -156,6 +156,32 @@ public final class ChatSession {
         }
     }
 
+    /// Subject-aware exit check: navigation/compare tools always leave the
+    /// pinned discussion; article tools leave only when their title names a
+    /// DIFFERENT subject than the articles in hand. Real capture 2026-07-01:
+    /// "Tell me about Donald Trump" while discussing Putin stayed pinned and
+    /// answered from Putin's sections. "Tell me about Putin's wealth" (same
+    /// subject) still stays grounded in the discussion.
+    private func intentLeavesDiscussion(
+        _ intent: DirectIntent, state: DiscussionState
+    ) -> Bool {
+        if Self.exitsDiscussion(intent.toolName) { return true }
+        let articleTools: Set<String> = [
+            "article_overview", "narrate_article", "get_article_section",
+        ]
+        guard articleTools.contains(intent.toolName),
+              let raw = intent.anyArgs["title"] as? String
+        else { return false }
+        let title = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return false }
+        var inHand = state.sources.map { $0.title.lowercased() }
+        inHand.append(state.topic.lowercased())
+        inHand.append(state.anchorTitle.lowercased())
+        // Same subject when either name contains the other
+        // ("putin" ⊂ "vladimir putin").
+        return !inHand.contains { $0.contains(title) || title.contains($0) }
+    }
+
     /// When true, double the per-turn reply token budget over the
     /// DeviceProfile default. Trades KV-cache headroom (and ~seconds
     /// of generation time) for fuller, less-clipped answers. With
@@ -268,6 +294,11 @@ public final class ChatSession {
     /// after the user has walked into a genuinely new area (jitter/repeat-fix
     /// filter). nil until the first seed.
     @ObservationIgnored private var lastSeedLocation: (lat: Double, lon: Double)?
+    /// Thread keys offered in recent replies, most-recent-last, capped.
+    /// Stops the appended "Want to hear about X or Y?" line repeating the
+    /// SAME offer turn after turn when the user ignores it — a fresh offer
+    /// or silence both beat nagging.
+    @ObservationIgnored private var recentlyOfferedThreadKeys: [String] = []
 
     /// Local-area seed-index tuning. Re-seed only after moving this far; pull
     /// wiki-backed places within this radius; cap how many we embed per area so
@@ -1012,6 +1043,16 @@ public final class ChatSession {
     ///   don't have to press Load. Tests pass `false` so they can swap
     ///   the selected provider before any weights get downloaded.
     public init(autoLoadOnInit: Bool = true) {
+        // FIRST line of every session: did the previous run die mid-work?
+        // Two on-device llama.cpp deaths (2026-07-02) left no system crash
+        // report — the previous log's tail is the only evidence, so shout
+        // it here where the debug pane, OSLog, and the persisted archive
+        // all see it.
+        if let tail = LogArchive.shared.previousSessionUncleanTail() {
+            let msg = "⚠️ PREVIOUS SESSION ENDED UNCLEANLY (no clean background/terminate). Last lines of \(tail)"
+            print(msg)
+            LogArchive.shared.append(msg)
+        }
         let defaults = UserDefaults.standard
         let storedCap = defaults.integer(forKey: Self.articleCapKBKey)
         // Default to the device-tier cap so phones don't blow RAM on
@@ -1786,10 +1827,12 @@ public final class ChatSession {
         // it, or the next turn stays pinned to the old topic (real bug
         // 2026-05-30: a fresh "how do solar panels work?" was answered "I
         // don't see it in Lithuanian history" because discussionState
-        // survived the clear).
+        // survived the clear). Offer history too, or the first offers of
+        // the new chat get suppressed as "already offered".
         readingState = nil
         discussionState = nil
         focus.reset()
+        recentlyOfferedThreadKeys.removeAll()
         if #available(macOS 26.0, iOS 19.0, *),
            let fm = selectedModel as? FoundationModelsProvider {
             fm.resetNativeConversation()
@@ -1885,7 +1928,7 @@ public final class ChatSession {
                 }
                 let switchIntent = IntentRouter.classify(
                     text, currentLocation: currentLocation, focus: focus)
-                if let intent = switchIntent, Self.exitsDiscussion(intent.toolName) {
+                if let intent = switchIntent, intentLeavesDiscussion(intent, state: ds) {
                     discussionState = nil   // topic change → normal routing below
                 } else {
                     await answerWithinDiscussion(ds, question: text)
@@ -1895,6 +1938,34 @@ public final class ChatSession {
                     }
                     return
                 }
+            }
+
+            // Genuine ambiguity → ask, don't guess. When a descriptive
+            // selector ("the church") matches SEVERAL items from the
+            // list we just showed, the resolver flags `.ambiguous` —
+            // previously that fell through to the stateless patterns,
+            // which guessed (`article_overview(title: "the church")`).
+            // A deterministic clarifying question is faster and right;
+            // `focus.lastList` stays intact so the user's pick ("the
+            // second one" / the name) resolves next turn.
+            let reference = ReferenceResolver.resolve(text, focus: focus)
+            if case .ambiguous(let candidates) = reference.binding,
+               candidates.count > 1 {
+                let names = candidates.prefix(3).map(\.name)
+                let list = names.count == 2
+                    ? "\(names[0]) or \(names[1])"
+                    : names.dropLast().joined(separator: ", ")
+                        + ", or \(names.last!)"
+                updateAssistant("Which one do you mean — \(list)?")
+                debug("ambiguous reference (\(names.joined(separator: " / "))) — asked for clarification",
+                      category: "Router")
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].finishedAt = Date()
+                }
+                return
             }
 
             // Fast-path intent router. Match a small set of simple
@@ -2055,6 +2126,49 @@ public final class ChatSession {
             }
         }
 
+        // Bounded history window. The transcript used to be fed back
+        // in FULL every turn — on a long walking session the prompt
+        // grew without limit until the memory-headroom guard below
+        // aborted the turn ("reset the conversation"). Cap it at the
+        // last `maxExchanges` user exchanges, trimming in CHUNKS
+        // (down to `keepExchanges`) rather than sliding one turn at a
+        // time, so the prompt prefix — and with it the provider's
+        // KV-cache LCP match — stays stable for several turns between
+        // trims. Older subjects aren't lost to the conversation: the
+        // discourse state (`focus`) carries entities/threads
+        // deterministically outside the transcript.
+        let maxExchanges = 10
+        let keepExchanges = 6
+        let userTurnIdxs = turns.indices.filter { turns[$0].role == .user }
+        if userTurnIdxs.count > maxExchanges {
+            let cut = userTurnIdxs[userTurnIdxs.count - keepExchanges]
+            turns.removeFirst(cut)
+            debug("history window: \(userTurnIdxs.count) exchanges > \(maxExchanges) — dropped \(cut) oldest turns, keeping last \(keepExchanges) exchanges",
+                  category: "Chat")
+        }
+
+        // TOKEN-budget guard on top of the exchange-count window: a few
+        // article-heavy round-trips can overflow n_ctx long before 10
+        // exchanges (real capture 2026-07-02: 6 turns hit 10.3k tokens
+        // and generate() threw "exceeds n_ctx", leaving an empty reply).
+        // Drop oldest exchanges while the estimated prompt exceeds the
+        // provider's window minus the reply + preamble reservation.
+        // ~3.3 chars/token is conservative for English + JSON payloads.
+        let contextTokens = (selectedModel as? LlamaCppProvider)?.contextTokens ?? 8192
+        let promptTokenBudget = max(2048, contextTokens - effectiveMaxReplyTokens - 512)
+        let charBudget = promptTokenBudget * 3
+        func turnsChars() -> Int {
+            turns.reduce(systemMessage.count + 2048) { $0 + $1.text.count + 16 }
+        }
+        while turnsChars() > charBudget {
+            let userIdxs = turns.indices.filter { turns[$0].role == .user }
+            // Keep at least the current exchange (last user turn onward).
+            guard userIdxs.count > 1 else { break }
+            turns.removeFirst(userIdxs[1])
+            debug("history window: token budget — dropped oldest exchange (\(turnsChars()) chars vs \(charBudget) budget)",
+                  category: "Chat")
+        }
+
         // Up to 6 tool loops per user turn — enough for small models
         // that burn iterations exploring (small search → wrong zim →
         // retry) before landing on a useful answer. Still capped so
@@ -2198,6 +2312,14 @@ public final class ChatSession {
             } catch {
                 debug("generate threw: \(error)", category: "Chat")
                 lastError = String(describing: error)
+                // Never leave a silently EMPTY assistant bubble — the user
+                // has no idea the turn died (real capture 2026-07-02: an
+                // n_ctx overflow threw here and the reply was blank).
+                if buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    updateAssistant(
+                        "Sorry — I hit an error generating that reply. "
+                        + "Try asking again, or reset the conversation if it keeps happening.")
+                }
                 return
             }
 
@@ -3069,6 +3191,49 @@ public final class ChatSession {
         }
         discussionState = state   // persist any pulled-in article
 
+        let first = await generateGroundedAnswer(state: state, question: question)
+        // Reactive corpus fallback: the coverage gate is lexical, so a
+        // question whose keywords merely APPEAR in the articles in hand
+        // ("why did he invade Ukraine?" while holding the Crimea-annexation
+        // article) skips the pull, and the model rightly answers "I don't
+        // see it". Treat that answer as the coverage signal: pull the best
+        // corpus article for the question and regenerate ONCE.
+        if Self.looksLikeDontSee(first), let adapter {
+            let kwList = ArticleHeuristics.questionKeywords(question)
+            let query = (state.topic + " " + kwList.joined(separator: " "))
+                .trimmingCharacters(in: .whitespaces)
+            if let pulled = await pullArticleForDiscussion(
+                query: query, keywords: kwList, zim: state.zim, adapter: adapter),
+               !state.sources.contains(where: {
+                   $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
+               }) {
+                state.sources.append(pulled)
+                discussionState = state
+                debug("discuss: retry — pulled “\(pulled.title)” after a don't-see answer",
+                      category: "Router")
+                _ = await generateGroundedAnswer(state: state, question: question)
+            }
+        }
+    }
+
+    /// The canned honesty reply from the grounded-discuss instruction —
+    /// used as the trigger for the one-shot corpus-pull retry.
+    private static func looksLikeDontSee(_ s: String) -> Bool {
+        let t = s.lowercased()
+        return t.contains("don't see") || t.contains("do not see")
+            || t.contains("not in the passages")
+            || t.contains("don't have that")
+            || t.contains("isn't in what i have")
+    }
+
+    /// One grounded generation over the discussion's current sources:
+    /// rank sections for the question, assemble capped passages, stream
+    /// the answer into the assistant bubble, and return the final text.
+    @MainActor
+    @discardableResult
+    private func generateGroundedAnswer(
+        state: DiscussionState, question: String
+    ) async -> String {
         // Anchor lead for topic context + the top-ranked sections across all
         // articles in hand. Wider budget (6) than before — llama.cpp KV is
         // cheap, and specific-fact follow-ups need the deeper section, not
@@ -3104,8 +3269,14 @@ public final class ChatSession {
 
         Answer using ONLY the passages above — be concise and natural, and \
         don't say "according to the passage". If the answer isn't there, say \
-        you don't see it in what you have on \(state.topic). Give just the \
-        answer directly — no reasoning steps, no preamble, no <think> block.
+        you don't see it in what you have on \(state.topic). Attribute \
+        carefully: the passages may mix statements by DIFFERENT parties \
+        (\(state.topic), other governments, critics) — never put one party's \
+        words in another's mouth; if the question asks what someone said, \
+        report only THAT person's statements. Answer in one to three \
+        sentences, keeping the key specifics (names, dates, places) when \
+        the passages give them. Give just the answer directly — no \
+        reasoning steps, no preamble, no <think> block.
         """
         let preamble = "You are discussing a topic with the user using the "
             + "offline Wikipedia, grounded strictly in the passages provided."
@@ -3135,10 +3306,22 @@ public final class ChatSession {
                     updateAssistant(buffer); lastUIPush = now
                 }
             }
-            updateAssistant(stripLeakedReasoning(buffer))
+            let final = stripLeakedReasoning(buffer)
+            updateAssistant(final)
+            // Mirror the answer into the debug log — the grounded path
+            // didn't, so device logs showed WHICH passages were used but
+            // never WHAT the model said, making bad answers undiagnosable
+            // from a pasted log (2026-07-02).
+            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                debug(trimmed, category: "Assistant")
+            }
+            return final
         } catch {
             debug("discuss generate failed: \(error)", category: "Chat")
-            updateAssistant("Sorry — I hit an error answering that about \(state.topic).")
+            let msg = "Sorry — I hit an error answering that about \(state.topic)."
+            updateAssistant(msg)
+            return msg
         }
     }
 
@@ -3301,6 +3484,66 @@ public final class ChatSession {
                 // couldn't find it, offer the closest real titles, and
                 // STOP — don't fall through to the LLM.
                 if intent.toolName == "article_overview" {
+                    // Voice dictation drops possessive apostrophes
+                    // ("putins childhood" — real capture 2026-07-01).
+                    // Before dead-ending in a did-you-mean, retry ONCE
+                    // with the aggressive possessive strip; a wrong
+                    // guess just re-misses into the same reply.
+                    if let title = dictArgs["title"] as? String {
+                        let retry = IntentRouter.stripPossessiveFacetAggressive(from: title)
+                        if retry != title {
+                            var retryArgs = dictArgs
+                            retryArgs["title"] = retry
+                            if let second = try? await adapter.dispatch(
+                                tool: "article_overview", args: retryArgs),
+                               IntentRouter.articleOverviewResultIsUsable(second)
+                            {
+                                debug("article miss — possessive retry hit “\(retry)”",
+                                      category: "Router")
+                                return await executeDirectIntent(DirectIntent(
+                                    toolName: "article_overview",
+                                    args: ["title": .string(retry)]))
+                            }
+                        }
+                    }
+                    // Descriptive-phrase rescue: "the ones Einstein
+                    // predicted" is a DESCRIPTION, not a title — search
+                    // for it (folding in the prior subject when the
+                    // phrase is deictic) and open the top hit. Real
+                    // capture 2026-07-02: "gravity waves" resolved to
+                    // the fluid-dynamics article; the correction "No, I
+                    // meant the ones Einstein predicted" was dispatched
+                    // as a literal title and dead-ended.
+                    if let title = dictArgs["title"] as? String {
+                        // Content words only — deictic filler ("the ones")
+                        // dragged the search to the wrong article.
+                        let kws = ArticleHeuristics.questionKeywords(title)
+                        var query = kws.isEmpty ? title : kws.joined(separator: " ")
+                        let lower = title.lowercased()
+                        if lower.hasPrefix("the one") || lower.hasPrefix("that one")
+                            || lower.hasPrefix("those "),
+                           let prior = focus.primaryEntity?.name {
+                            query = prior + " " + query
+                        }
+                        if let search = try? await adapter.dispatch(
+                            tool: "search", args: ["query": query, "limit": 3]),
+                           let hits = search["hits"] as? [[String: Any]],
+                           let topTitle = hits.first?["title"] as? String,
+                           !topTitle.isEmpty,
+                           topTitle.lowercased() != lower
+                        {
+                            if let second = try? await adapter.dispatch(
+                                tool: "article_overview", args: ["title": topTitle]),
+                               IntentRouter.articleOverviewResultIsUsable(second)
+                            {
+                                debug("article miss — search rescue “\(query)” → “\(topTitle)”",
+                                      category: "Router")
+                                return await executeDirectIntent(DirectIntent(
+                                    toolName: "article_overview",
+                                    args: ["title": .string(topTitle)]))
+                            }
+                        }
+                    }
                     let synth = IntentRouter.synthesizeArticleMissReply(
                         args: dictArgs, fullResult: fullResult)
                     updateAssistant(synth)
@@ -3342,45 +3585,82 @@ public final class ChatSession {
                     noteDiscussionAnchor(toolName: "article_overview",
                                          result: fullResult)
                 }
-                // The fast path dispatches the tool (saving iter 0's
-                // ~13 s prefill-and-decide cost), then hands off to
-                // the LLM to generate the prose. Synthesising a
-                // caption ourselves works for simple places / routing
-                // replies — a map bubble below carries the real
-                // answer — but for compare / article_overview the
-                // reply IS the prose, and the LLM needs to see the
-                // tool result and summarise it.
-                //
-                // We inject a synthetic round-trip (assistant
-                // tool-call emission + tool response) into the
-                // transcript in the model's native wire format, then
-                // return `false` so the caller falls through to
-                // `runGenerationLoop`. That loop rebuilds the prompt,
-                // sees the round-trip already done, and the model's
-                // next emission is the summarising prose — no
-                // second-tool-call round.
-                let template = selectedModel.template
-                let assistantEmission = template.formatToolCall(
-                    name: intent.toolName, arguments: dictArgs
-                )
-                let trimmed = Self.trimForModel(
-                    toolName: intent.toolName,
-                    result: fullResult,
-                    articleCapKB: self.articleCapKB
-                )
-                let toolResponse = template.formatToolResponse(
-                    name: intent.toolName, payload: trimmed
-                )
-                recordToolRoundTrip(
-                    assistantEmission: assistantEmission,
-                    toolResponse: toolResponse
-                )
-                // Leave the assistant bubble empty — `runGenerationLoop`
-                // will stream the prose into it.
-                updateAssistant("")
-                debug("fast-path injected \(intent.toolName) round-trip → LLM will summarise",
+                // Answer as a GROUNDED SINGLE-SHOT over the fetched
+                // sections — the same machinery discuss mode uses — with
+                // NO conversation history in the prompt. The previous
+                // design injected a synthetic tool round-trip and let
+                // `runGenerationLoop` summarise with the full transcript;
+                // with unrelated prior turns in context the FT parroted
+                // a previous question verbatim instead of summarising
+                // (device + Mac captures 2026-07-02, "And tell me about
+                // Donald Trump" → reply "How about his mother?").
+                let question = messages.last(where: { $0.role == .user })?.text
+                    ?? "Tell me about this."
+                var sources: [(title: String, sections: [ArticleSection])] = []
+                func sections(from dict: [String: Any]) -> [ArticleSection] {
+                    ((dict["sections"] as? [[String: Any]]) ?? []).map {
+                        ArticleSection(
+                            title: ($0["title"] as? String) ?? "",
+                            level: ($0["level"] as? Int) ?? 0,
+                            text: ($0["text"] as? String) ?? "")
+                    }
+                }
+                if let articles = fullResult["articles"] as? [[String: Any]] {
+                    for a in articles {
+                        let t = (a["title"] as? String) ?? ""
+                        let secs = sections(from: a)
+                        if !t.isEmpty, !secs.isEmpty { sources.append((t, secs)) }
+                    }
+                } else {
+                    let t = (fullResult["title"] as? String)
+                        ?? (dictArgs["title"] as? String) ?? "the article"
+                    let secs = sections(from: fullResult)
+                    if !secs.isEmpty { sources.append((t, secs)) }
+                }
+                guard !sources.isEmpty else {
+                    updateAssistant("I found the article but couldn't read its sections.")
+                    return true
+                }
+                let anchor = sources[0].title
+                let grounded = DiscussionState(
+                    anchorTitle: anchor,
+                    topic: ArticleHeuristics.topicCore(anchor),
+                    zim: fullResult["zim"] as? String,
+                    sources: sources)
+                debug("fast-path \(intent.toolName) → grounded single-shot over \(sources.count) source(s)",
                       category: "Router")
-                return false
+                await generateGroundedAnswer(state: grounded, question: question)
+                // Official ambiguity ("gravity waves" → fluid OR Einstein):
+                // name the alternate meanings and register them as the
+                // selectable list, so "the second one" / "the Einstein one"
+                // switches without a fight (real capture 2026-07-02).
+                if let alts = fullResult["disambiguation"] as? [[String: Any]] {
+                    let names = alts.compactMap { $0["title"] as? String }.prefix(3)
+                    if !names.isEmpty,
+                       let idx = messages.indices.last,
+                       messages[idx].role == .assistant,
+                       !messages[idx].text.isEmpty
+                    {
+                        let list = names.count == 1
+                            ? names[names.startIndex]
+                            : names.dropLast().joined(separator: ", ")
+                                + " or \(names.last!)"
+                        messages[idx].text +=
+                            "\n\n(\"\(anchor)\" has other meanings too — say the word if you meant \(list).)"
+                        focus.setLastList(
+                            [FocusEntity(name: anchor, kind: .topic,
+                                         zimPath: fullResult["path"] as? String)]
+                            + alts.compactMap { a -> FocusEntity? in
+                                guard let t = a["title"] as? String else { return nil }
+                                return FocusEntity(name: t, kind: .topic,
+                                                   zimPath: a["path"] as? String)
+                            })
+                        debug("disambiguation offered: \(names.joined(separator: " | "))",
+                              category: "Router")
+                    }
+                }
+                await appendThreadOfferIfUseful()
+                return true
             } else if intent.toolName == "what_is_here" {
                 let synth = IntentRouter.synthesizeWhatIsHereReply(
                     fullResult: fullResult
@@ -3465,6 +3745,12 @@ public final class ChatSession {
             return nil
         }
 
+        // A missed fetch is not a subject. Recording it would make the
+        // phantom title the pronoun target for the next turn ("tell me
+        // more" → re-fetch of an article that doesn't exist), and its
+        // "threads" would be junk. Leave focus exactly as it was.
+        if result["error"] != nil { return }
+
         let topicTools: Set<String> = [
             "article_overview", "compare_articles",
             "get_article_section", "narrate_article",
@@ -3545,10 +3831,72 @@ public final class ChatSession {
             }
         }
 
+        // Persist chat-planned routes so `route_status` ("how much
+        // longer?") works. Previously ONLY the Siri App Intent path
+        // called `setActiveRoute` — a route planned by typing/voice in
+        // the app left `activeRoute == nil` and route_status errored.
+        if toolName == "route_from_places" || toolName == "plan_driving_route" {
+            persistActiveRoute(args: args, result: result)
+        }
+
         let threads = ConversationThreads.rank(
             ConversationThreads.extract(toolName: toolName, result: result),
             focus: focus, max: 4)
-        focus.setThreads(threads)
+        // Keep the previous turn's threads when this tool contributed
+        // none — a drill-in (`get_article_section` before it carried
+        // `related[]`, `route_status`, a thin `search`) used to WIPE the
+        // open threads, killing the "where next" offer exactly when the
+        // user engaged. Stale-but-grounded beats empty.
+        if !threads.isEmpty { focus.setThreads(threads) }
+    }
+
+    /// Build an `ActiveRoute` from a successful routing tool result and
+    /// store it in `ZimfoContext` (fire-and-forget actor hop). Mirrors
+    /// the construction in `ZimfoIntents.PlanRouteIntent.perform`.
+    private func persistActiveRoute(args: [String: Any], result: [String: Any]) {
+        func dbl(_ v: Any?) -> Double? {
+            if let d = v as? Double { return d }
+            if let i = v as? Int { return Double(i) }
+            if let n = v as? NSNumber { return n.doubleValue }
+            return nil
+        }
+        guard let polyRaw = result["polyline"] as? [[Double]],
+              polyRaw.count >= 2,
+              polyRaw.allSatisfy({ $0.count >= 2 })
+        else { return }
+        let totalDist = dbl(result["distance_m"])
+            ?? dbl(result["distance_km"]).map({ $0 * 1000 }) ?? 0
+        let totalDur = dbl(result["duration_s"])
+            ?? dbl(result["duration_min"]).map({ $0 * 60 }) ?? 0
+        guard totalDist > 0 else { return }
+        var cum: [Double] = [0]
+        cum.reserveCapacity(polyRaw.count)
+        for i in 1..<polyRaw.count {
+            let d = RouteProgress.haversineMetersApprox(
+                polyRaw[i - 1][0], polyRaw[i - 1][1],
+                polyRaw[i][0], polyRaw[i][1])
+            cum.append(cum[i - 1] + d)
+        }
+        let originName = ((result["origin_resolved"] as? [String: Any])?["name"] as? String)
+            ?? (args["origin"] as? String) ?? "here"
+        let destName = ((result["destination_resolved"] as? [String: Any])?["name"] as? String)
+            ?? (args["destination"] as? String) ?? "destination"
+        let route = ActiveRoute(
+            startedAt: Date(),
+            origin: .init(lat: polyRaw.first![0], lon: polyRaw.first![1]),
+            destination: .init(lat: polyRaw.last![0], lon: polyRaw.last![1]),
+            originName: originName,
+            destinationName: destName,
+            zim: (result["zim"] as? String) ?? "",
+            totalDurationSeconds: totalDur,
+            totalDistanceMeters: totalDist,
+            polyline: polyRaw.map { .init(lat: $0[0], lon: $0[1]) },
+            cumulativeDistanceMeters: cum,
+            turnByTurn: (result["turn_by_turn"] as? [String]) ?? []
+        )
+        debug("persisting active route \(originName) → \(destName) for route_status",
+              category: "Router")
+        Task { await ZimfoContext.shared.setActiveRoute(route) }
     }
 
     /// Pull the lead prose out of an article-shaped tool result for embedding.
@@ -3645,7 +3993,8 @@ public final class ChatSession {
     /// with its own offer, or the reply is empty.
     private func appendThreadOfferIfUseful() async {
         var offerable = focus.openThreads.filter {
-            $0.kind != .place || $0.zimPath != nil
+            ($0.kind != .place || $0.zimPath != nil)
+                && !recentlyOfferedThreadKeys.contains($0.matchKey)
         }
         guard !offerable.isEmpty else { return }
         offerable = await rerankBySimilarity(offerable)
@@ -3665,6 +4014,14 @@ public final class ChatSession {
             return
         }
         messages[idx].text = text + "\n\n" + line
+        // Remember what we offered so the next turn's line is fresh.
+        // `offer()` phrases the first 3 threads — mark exactly those.
+        recentlyOfferedThreadKeys.append(
+            contentsOf: offerable.prefix(3).map(\.matchKey))
+        if recentlyOfferedThreadKeys.count > 12 {
+            recentlyOfferedThreadKeys.removeFirst(
+                recentlyOfferedThreadKeys.count - 12)
+        }
     }
 
     /// A tapped suggestion chip. Clears the chips on the offering message (so a
@@ -3856,55 +4213,65 @@ public final class ChatSession {
             }
             return result
         case "article_overview", "compare_articles":
-            // Wikipedia leads are designed to be standalone summaries —
-            // the opening paragraphs carry the entire "what is this"
-            // answer the LLM needs for a compare / overview pass.
-            // Feeding additional sections just burns prompt budget
-            // AND memory: on-device repro showed two full articles
-            // (15–30 KB of raw text) jetsam'd the app mid-summary.
+            // The composite tools pre-chew: lead + the 1–2 most
+            // informative narrative sections (`pickOverview`) — or,
+            // for compares, the relations-article sections that
+            // mention the counterpart. Feeding whole articles is off
+            // the table (on-device repro: two full 15–30 KB articles
+            // jetsam'd the app mid-summary), but the previous
+            // lead-ONLY trim threw the picked sections away too, so
+            // "history of X" / "how have A and B gotten along" reached
+            // the model as 160 words of lead and nothing else.
             //
-            // Keep ONLY the lead section, truncated to ~160 words
-            // (≈1000 chars ≈ 200 tokens). At two articles that's
-            // ~400 extra tokens of prompt — safely under any
-            // threshold, with enough room for a second or third
-            // paragraph of the lead so the model has real
-            // comparable material. Word-based truncation (vs char-
-            // based) keeps words and trailing punctuation intact so
-            // the model doesn't see "...founded in 19" or mid-entity
-            // mangling at the boundary. The relations-article shape
-            // (top-level `sections`) gets the same treatment.
+            // Keep the lead (word-capped at 160 ≈ 200 tokens) PLUS up
+            // to two picked sections (word-capped at 120 each). Worst
+            // case per article ≈ 400 words ≈ 520 tokens; a two-article
+            // compare ≈ 1 K tokens — an order of magnitude under the
+            // raw-article payload that caused the jetsam. Word-based
+            // truncation keeps boundaries clean so the model doesn't
+            // see "...founded in 19".
             let leadWordCap = 160
-            func keepLeadOnly(_ sections: [[String: Any]]) -> [[String: Any]] {
+            let sectionWordCap = 120
+            let extraSectionCap = 2
+            func wordCapped(_ text: String, cap: Int) -> (text: String, truncated: Bool) {
+                let words = text.split(separator: " ",
+                                       omittingEmptySubsequences: false)
+                guard words.count > cap else { return (text, false) }
+                return (words.prefix(cap).joined(separator: " ") + "…", true)
+            }
+            func trimSections(_ sections: [[String: Any]]) -> [[String: Any]] {
                 guard let lead = sections.first else { return [] }
+                var out: [[String: Any]] = []
                 var trimmedLead = lead
                 if let text = lead["text"] as? String {
-                    // Run word-based cap across the whole lead — not
-                    // just the first paragraph. At 160 words we
-                    // typically land inside paragraph 2 or 3, which
-                    // for most Wikipedia leads is exactly the "enough
-                    // context to actually compare" sweet spot.
-                    let words = text.split(separator: " ",
-                                           omittingEmptySubsequences: false)
-                    let truncated = words.count > leadWordCap
-                    let out = truncated
-                        ? words.prefix(leadWordCap).joined(separator: " ") + "…"
-                        : text
-                    trimmedLead["text"] = out
-                    if truncated || sections.count > 1 {
-                        trimmedLead["truncated"] = true
-                    }
+                    let capped = wordCapped(text, cap: leadWordCap)
+                    trimmedLead["text"] = capped.text
+                    if capped.truncated { trimmedLead["truncated"] = true }
                 }
-                return [trimmedLead]
+                out.append(trimmedLead)
+                for section in sections.dropFirst().prefix(extraSectionCap) {
+                    var trimmed = section
+                    if let text = section["text"] as? String {
+                        let capped = wordCapped(text, cap: sectionWordCap)
+                        trimmed["text"] = capped.text
+                        if capped.truncated { trimmed["truncated"] = true }
+                    }
+                    out.append(trimmed)
+                }
+                if sections.count > out.count {
+                    out[out.count - 1]["sections_dropped"] = sections.count - out.count
+                }
+                return out
             }
             var out = result
             if let sections = out["sections"] as? [[String: Any]] {
-                out["sections"] = keepLeadOnly(sections)
+                out["sections"] = trimSections(sections)
             }
             if let articles = out["articles"] as? [[String: Any]] {
                 out["articles"] = articles.map { a -> [String: Any] in
                     var inner = a
                     if let sections = a["sections"] as? [[String: Any]] {
-                        inner["sections"] = keepLeadOnly(sections)
+                        inner["sections"] = trimSections(sections)
                     }
                     return inner
                 }
