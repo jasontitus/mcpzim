@@ -194,6 +194,132 @@ Revisit TurboQuant when **either**:
    standalone Swift Package with a clean `KVCache`-conforming API.
 3. We raise `articleCapKB` / `maxReplyTokens` enough that the cache routinely
    crosses 16k tokens, at which point the Incept5 speed curve starts paying.
+   This trigger is on the roadmap: the longer-term direction is letting the
+   chat session pull in larger ZIM excerpts and discuss them with the user,
+   which is exactly what pushes the cache past the break-even context.
+
+## Option 3 — SpectralQuant (further watch-list, not yet)
+
+### What it is
+
+Dynamis Labs technique (April 2026), framed explicitly as an improvement on
+TurboQuant. The paper's core observation is architecturally universal: KV
+cache **key** vectors concentrate signal in only **3–4% of the head
+dimension** across Qwen (1.5B, 7B, 14B), Llama 3.1-8B, Mistral 7B, and Gemma
+2-9B. Values are much less compressible (d_eff ≈ 40–55, 10–15× larger than
+keys). The algorithm:
+
+- **Calibrate** once per model (~15 s): sample activations from a
+  representative prompt set, do per-head PCA on the K vectors, extract the
+  top-k signal basis (k ≈ 3–4% of head_dim).
+- **Spectral rotation** into the calibrated basis (replaces TurboQuant's
+  random Hadamard rotation).
+- **Non-uniform Lloyd-Max quantization** tuned to the rotated distribution.
+- **Selective QJL residual** applied only on the signal dims; the 96–97%
+  noise dims skip error correction entirely, saving bits at equal quality.
+
+Claimed improvements over TurboQuant at iso-bits: strictly lower perplexity,
+faster at 512 / 1024 / 2048 token contexts (less error-correction work per
+step), marginally higher compression (noise dims need fewer bits).
+
+### Head-to-head with TurboQuant
+
+| Axis | TurboQuant | SpectralQuant |
+| --- | --- | --- |
+| Compression at iso-quality | ~5–6× | ~5.5–6.5× (marginal win from selectivity) |
+| Quality at iso-bits | baseline | strictly better on paper benchmarks |
+| Speed at ≤ 2 k context | baseline | faster (claimed) — less QJL work |
+| Speed at 64 k+ context | best numbers in the literature | similar (both bandwidth-bound) |
+| Calibration | none (data-oblivious) | one-time ~15 s per model, on representative data |
+| Per-checkpoint artifact | none | calibration blob — rotates with the weights |
+| Existing MLX Python port | 5 (see Option 2 table) | **zero** |
+| Existing MLX Swift port | 1 (SwiftLM, not a consumable package) | **zero** |
+| Gemma-4 validation | Incept5 benchmark numbers published | **none** — paper covers Gemma 2 9B |
+| Kernel surface area | 1 family (quantized SDPA) | 2 families (Lloyd-Max dequant + selective-QJL) |
+
+### MLX landscape (as of April 2026)
+
+Nothing. No MLX port, no Swift port, no third-party fork. The reference
+implementation `Dynamis-Labs/spectralquant` is PyTorch/CUDA (experiments ran
+on NVIDIA B200). A production path into `MCPZimChat` is a two-hop port:
+Python-PyTorch → Python-MLX → Swift-MLX + Metal shaders, with selective QJL
+and Lloyd-Max dequant as new kernels on top of whichever TurboQuant MLX base
+we fork (`arozanov/turboquant-mlx` is the closest — Apache 2.0, fused Metal
+kernels, 4.6× at 98 % FP16 speed).
+
+### Benefit analysis for mcpzim specifically
+
+**Where it overlaps with Option 2.** Same long-context speed curve — no
+benefit below 16 k tokens, which is where mcpzim lives today.
+
+**Where it *improves* on Option 2 for our workload.** The quality argument
+matters more here than the speed argument. The mcpzim-specific quality risk
+flagged under Option 1 is tool-call parse reliability: `ChatToolCallParser`
+pulls `<tool_call>{…}</tool_call>` JSON out of the raw token stream, and
+a missed delimiter or mis-escaped quote flips a tool call to a silent
+failure. SpectralQuant's selectivity preserves signal dims at near-full
+precision even at aggressive bit rates, so decision-boundary tokens (JSON
+braces, `<end_of_turn>`, tool-call delimiters) degrade more gracefully than
+under TurboQuant's global error correction. **If we ever push context high
+enough to want 3-bit KV, SpectralQuant is the more forgiving path for a
+tool-heavy workload.** At 4-bit groupwise (Option 1) this difference is
+noise.
+
+**Where it *costs more* than Option 2.**
+
+- **Calibration artifact ships with the app.** One blob for E2B, one for E4B,
+  generated from ~15 s of representative activations. Binary asset in the
+  app bundle, versioned against the model checkpoint — rotating the Gemma-4
+  weights requires re-calibrating and re-shipping. Alternative: calibrate
+  on-device at first launch (15 s visible warm-up, cached to disk).
+- **Calibration distribution has to match traffic.** Generic calibration
+  risks regressions. The set would need tool-call prompts, Wikipedia-style
+  article chunks, and routing queries — i.e., a representative corpus
+  derived from real mcpzim sessions.
+- **Two Metal kernel families** vs TurboQuant's one. More surface area to
+  write, debug, and validate against the Python reference.
+- **Gemma-4 specifics unvalidated.** The paper's 3–4% signal-dim finding is
+  *observationally* universal across the architectures tested, but Gemma 4's
+  per-layer split (sliding vs full attention, two different head_dims, KV
+  sharing, q_norm-baked scaling) isn't in the paper. We'd be the ones
+  validating it.
+
+### Trigger to revisit
+
+On top of Option 2's triggers (1-3), add:
+
+4. A third-party MLX port of SpectralQuant lands (none today). We wouldn't
+   lead the Python-PyTorch → Python-MLX → Swift-MLX chain from inside
+   mcpzim; too much engineering for too little marginal gain over
+   TurboQuant-MLX, which already exists.
+5. Published SpectralQuant numbers for Gemma 4 appear (Dynamis or
+   community). Until then, the 3–4% signal-dim claim is unverified for the
+   architecture we actually ship.
+6. Our workload pushes into **3-bit** territory, not just 4-bit. At 4-bit
+   groupwise (Option 1) we're already near-lossless, and SpectralQuant's
+   selectivity pays off most at aggressive bit rates where TurboQuant's
+   global error correction starts losing quality.
+
+### Relationship to the "larger ZIM data" roadmap
+
+The stated long-term direction — pulling larger ZIM excerpts into the chat
+and discussing them — is exactly what fires Option 2 trigger #3 (cache
+crossing 16 k). When it fires, the bake-off between Option 2 and Option 3
+is:
+
+- **TurboQuant** — data-oblivious, one Metal kernel family, zero shipped
+  artifacts, several MLX reference impls to crib from, slightly worse
+  quality. Pragmatic choice at **4-bit + 16–64 k context**.
+- **SpectralQuant** — calibration blob per model, two Metal kernel families,
+  no MLX reference impls, better quality at the same bit rate, better
+  tool-call robustness margin. Wins at **3-bit + 64 k+ context** where
+  quality headroom matters more than artifact cost.
+
+The context cap we eventually choose (16 k vs 32 k vs 128 k) and the
+bit-rate we target (4-bit vs 3-bit) together decide which option is worth
+the engineering spend. Don't pick between TurboQuant and SpectralQuant
+abstractly — pick it against the concrete cap and bit-rate the roadmap
+settles on.
 
 ## Recommendation
 
@@ -205,9 +331,18 @@ Revisit TurboQuant when **either**:
    prompt corpus, assert parse success rate. Protects against the
    mcpzim-specific quality risk.
 3. **Update `OPTIMIZATIONS.md` watch-list** to cross-reference this doc
-   and add TurboQuant as a new entry alongside "MLX dcache" and
-   "Lightning quants".
-4. **Hold off on TurboQuant** until one of the triggers above fires.
+   and add TurboQuant and SpectralQuant as new entries alongside "MLX dcache"
+   and "Lightning quants".
+4. **Hold off on TurboQuant** until one of the Option 2 triggers fires.
+   The most likely trigger is the larger-ZIM-data roadmap pushing the cache
+   past 16 k tokens.
+5. **Hold off on SpectralQuant further still** — even if a TurboQuant
+   trigger fires, SpectralQuant adds its own triggers (no MLX port exists,
+   no Gemma-4 numbers published, and 4-bit Option 1 is already near-lossless
+   so the quality win doesn't matter until we target 3-bit). When the
+   larger-ZIM-data work forces the bake-off, re-run Option 2 vs Option 3
+   against the concrete context cap and bit-rate being chosen — don't
+   default to TurboQuant by habit if we're going aggressive on bit-rate.
 
 ## Status as of 2026-04-21 (KV quant live again)
 
@@ -279,3 +414,5 @@ than FP16, not larger.
 - [Incept5/gemma4-benchmark — Gemma 4 × TurboQuant numbers on Apple Silicon](https://github.com/Incept5/gemma4-benchmark)
 - [TurboQuant — Extreme KV Cache Quantization — llama.cpp discussion #20969](https://github.com/ggml-org/llama.cpp/discussions/20969)
 - [ml-explore/mlx-swift — `QuantizedKVCache`](https://github.com/ml-explore/mlx-swift)
+- [Dynamis-Labs/spectralquant — reference PyTorch/CUDA implementation](https://github.com/Dynamis-Labs/spectralquant)
+- [SpectralQuant paper (Dynamis Labs, 2026) — "3% Is All You Need: Breaking TurboQuant's Compression Limit via Spectral Structure"](https://github.com/Dynamis-Labs/spectralquant/blob/main/paper_output/spectralquant.pdf)
