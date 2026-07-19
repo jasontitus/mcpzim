@@ -3,12 +3,19 @@
 import Foundation
 import MCPZimKit
 import SwiftUI
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
 
 struct RootView: View {
     @Environment(ChatSession.self) private var session
+    @AppStorage("onboarding.didOfferOfflineContentV1")
+    private var didOfferOfflineContent = false
+    @State private var showOfflineSetup = false
     #if DEBUG
     @State private var didRunLaunchQuestions = false
     @State private var didRunRawContextBenchmark = false
+    @State private var didRunSupertonicBenchmark = false
     #endif
 
     var body: some View {
@@ -45,15 +52,116 @@ struct RootView: View {
                     // against double-opening the library / double-warming
                     // the streetzim routing graph.
                     await session.runLaunchSequence()
+                    if session.library.isEmpty, !didOfferOfflineContent {
+                        didOfferOfflineContent = true
+                        showOfflineSetup = true
+                    }
                     #if DEBUG
+                    #if canImport(FluidAudio)
+                    await runSupertonicBenchmarkIfRequested()
+                    #endif
                     await runLaunchQuestionsIfRequested()
                     await runRawContextBenchmarkIfRequested()
                     #endif
                 }
         }
+        .sheet(isPresented: $showOfflineSetup) {
+            OfflineContentSetupView()
+                .environment(session)
+        }
+        .onOpenURL { url in
+            guard url.pathExtension.lowercased() == "zim" else { return }
+            Task {
+                // A cold document-open can arrive while the normal Documents
+                // scan is still running. Wait for that replace-style scan to
+                // finish before appending the externally opened file.
+                while !session.libraryBootstrapComplete {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                await session.addReaders(urls: [url])
+                showOfflineSetup = false
+            }
+        }
     }
 
     #if DEBUG
+    #if canImport(FluidAudio)
+    /// Cached cold-process TTS probe for physical-device lifecycle tuning.
+    /// Set `MCPZIM_BENCH_SUPERTONIC=1` through devicectl; normal launches are
+    /// unaffected. `speakChunk` returns when PCM is queued, separating model
+    /// preparation/synthesis from playback time in the persisted log.
+    @MainActor
+    private func runSupertonicBenchmarkIfRequested() async {
+        guard !didRunSupertonicBenchmark,
+              ProcessInfo.processInfo.environment["MCPZIM_BENCH_SUPERTONIC"] == "1"
+        else { return }
+        didRunSupertonicBenchmark = true
+
+        let service = Supertonic3TTSService(voice: "F1")
+        let started = ProcessInfo.processInfo.systemUptime
+        session.debug(
+            "Supertonic probe start · backend=\(service.displayName) · voice=\(service.voiceName)",
+            category: "TTSBench")
+        do {
+            #if os(iOS)
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .spokenAudio)
+            try audioSession.setActive(true)
+            #endif
+            try await service.prepareForConversation()
+            let prepared = ProcessInfo.processInfo.systemUptime
+            session.debug(String(format:
+                "Supertonic probe prepared · %.3fs · mem=%.1f MB",
+                prepared - started, MemoryStats.physFootprintMB()), category: "TTSBench")
+
+            var remaining = "George Washington (February 22, 1732 – December 14, 1799) was a Founding Father and the first president of the United States, serving from 1789 to 1797. As commander of the Continental Army, he led Patriot forces to victory in the American Revolutionary War against the British Empire."
+            var chunkNumber = 0
+            while !remaining.isEmpty {
+                guard let prefix = StreamingSpeechPolicy.takeSpeakablePrefix(
+                    remaining,
+                    generating: false,
+                    allowEarlyClause: true,
+                    minimumClause: 56,
+                    maximumClause: service.preferredStreamingChunkCharacters ?? 94)
+                else { break }
+
+                var spoken = prefix.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if prefix.boundary == .softWrap,
+                   let last = spoken.last,
+                   !",;:—–".contains(last) {
+                    spoken += ","
+                }
+                let boundary: TTSChunkBoundary
+                switch prefix.boundary {
+                case .sentence: boundary = .sentence
+                case .clause: boundary = .clause
+                case .softWrap: boundary = .softWrap
+                case .final: boundary = .final
+                }
+                chunkNumber += 1
+                session.debug(
+                    "Supertonic probe chunk \(chunkNumber) · \(prefix.boundary) · \"\(spoken)\"",
+                    category: "TTSBench")
+                try await service.speakChunk(spoken, boundary: boundary)
+                remaining = String(remaining.dropFirst(prefix.consumedCharacters))
+            }
+            let queued = ProcessInfo.processInfo.systemUptime
+            session.debug(String(format:
+                "Supertonic probe audio queued · chunks=%d · synthesis=%.3fs · total=%.3fs · mem=%.1f MB",
+                chunkNumber, queued - prepared, queued - started, MemoryStats.physFootprintMB()),
+                category: "TTSBench")
+
+            await service.awaitPlayback()
+            session.debug(String(format:
+                "Supertonic probe playback complete · total=%.3fs · mem=%.1f MB",
+                ProcessInfo.processInfo.systemUptime - started,
+                MemoryStats.physFootprintMB()), category: "TTSBench")
+        } catch {
+            session.debug("Supertonic probe failed: \(error)", category: "TTSBench")
+        }
+    }
+    #endif
+
     /// Deterministic physical-device performance hook. `devicectl` can pass
     /// `MCPZIM_AUTORUN_QUESTIONS` as a `||`-delimited environment value; after
     /// normal model/library setup, the app submits each question and waits for
@@ -166,9 +274,8 @@ struct SetupOverlayView: View {
                     Text(msg)
                         .font(.caption)
                         .multilineTextAlignment(.center)
-                    Button("Continue anyway") {
-                        // no-op — the session remains usable, just
-                        // without a pre-warmed cache.
+                    Button("Continue to settings") {
+                        session.dismissSetupFailure()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -179,9 +286,16 @@ struct SetupOverlayView: View {
                 ZStack {
                     Color.black.opacity(0.35).ignoresSafeArea()
                     VStack(spacing: 14) {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(1.3)
+                        if case .running(_, let progress) = session.setupState,
+                           let progress {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                                .frame(width: 220)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(1.3)
+                        }
                         Text("Setting things up…")
                             .font(.headline)
                         Text(stageText)

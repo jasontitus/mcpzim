@@ -9,6 +9,13 @@ import XCTest
 @testable import MCPZimKit
 
 final class DiscussionRetrievalTests: XCTestCase {
+    func testExplicitArticleInspectionUsesSeveralLocalPassages() {
+        XCTAssertEqual(
+            ArticleHeuristics.groundedPassageLimit(
+                for: "What does the article say about the 1906 earthquake?"),
+            4)
+    }
+
 
     private let sections = [
         ArticleSection(title: "", level: 0,
@@ -77,6 +84,60 @@ final class DiscussionRetrievalTests: XCTestCase {
             ArticleHeuristics.sectionsCoverQuestion(sections, "what is the population"))
         // No content keywords → covered (stay on anchor).
         XCTAssertTrue(ArticleHeuristics.sectionsCoverQuestion(sections, "tell me more"))
+    }
+
+    func testDiscoveryQuestionStaysOnAnchorHistory() {
+        let photons = [
+            ArticleSection(title: "", level: 0,
+                           text: "A photon is a quantum of the electromagnetic field."),
+            ArticleSection(title: "Historical development", level: 2,
+                           text: "Planck proposed energy quanta in 1900. Einstein introduced light quanta in 1905, and the modern name was coined in 1926."),
+            ArticleSection(title: "Wave-particle duality", level: 2,
+                           text: "Photons display interference and arrive as discrete particles."),
+        ]
+
+        XCTAssertTrue(ArticleHeuristics.sectionsCoverQuestion(
+            photons, "When were they discovered?", articleTitle: "Photons"))
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "When were they discovered?",
+            sources: [(title: "Photons", sections: photons)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "Historical development")
+    }
+
+    func testGenericLinkedExpansionRejectsSemanticallyRelatedWrongFacet() {
+        XCTAssertFalse(ArticleHeuristics.linkedExpansionTitleMatchesQuestion(
+            "Raman scattering", keywords: ["discovered"]))
+        XCTAssertTrue(ArticleHeuristics.linkedExpansionTitleMatchesQuestion(
+            "Timeline of particle discoveries", keywords: ["discovered"]))
+        XCTAssertTrue(ArticleHeuristics.linkedExpansionTitleMatchesQuestion(
+            "Perovskite solar cell", keywords: ["perovskites"]))
+    }
+
+    func testEllipticalFacetCanUseSingleMentionWithoutWeakeningCoverageGate() {
+        let lithuania = [
+            ArticleSection(title: "Religion", level: 2,
+                           text: "Lithuania adopted Christianity in 1387."),
+        ]
+        XCTAssertFalse(ArticleHeuristics.sectionsCoverQuestion(
+            lithuania, "And how about Christianity?"))
+        XCTAssertTrue(ArticleHeuristics.sectionsMentionQuestion(
+            lithuania, "And how about Christianity?"))
+    }
+
+    func testBarePeopleQuestionPrefersExactPeopleHistoryHeading() {
+        let mongolia = [
+            ArticleSection(title: "Mongolian cuisine", level: 2,
+                           text: "Mongolian people traditionally eat meat and dairy."),
+            ArticleSection(title: "Mongol empire to early 20th century", level: 2,
+                           text: "The Mongols united under Genghis Khan and built an empire."),
+            ArticleSection(title: "Ethnic groups and languages", level: 2,
+                           text: "Most citizens are ethnic Mongols."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "How about the Mongols?", sources: [("Mongolia", mongolia)], k: 3)
+        XCTAssertEqual(ranked.first?.section.title,
+                       "Mongol empire to early 20th century")
+        XCTAssertNotEqual(ranked.first?.section.title, "Mongolian cuisine")
     }
 
     func testMultiSourceRanksAcrossArticles() {

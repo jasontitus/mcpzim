@@ -38,7 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSString *)installTapOnNode:(AVAudioNode *)node
                                     bus:(AVAudioNodeBus)bus
                              bufferSize:(AVAudioFrameCount)bufferSize
-                                 format:(AVAudioFormat *)format
+                                 format:(nullable AVAudioFormat *)format
                                   block:(AVAudioNodeTapBlock)block;
 
 @end

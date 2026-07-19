@@ -46,6 +46,16 @@ enum KokoroAssets {
     /// first access.
     static var modelDirectory: URL {
         let fm = FileManager.default
+        // Headless Mac benchmarks use an isolated model directory so they do
+        // not mutate the app's normal Application Support state.
+        if let override = ProcessInfo.processInfo.environment[
+            "MCPZIM_KOKORO_MODEL_DIR"
+        ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            let dir = URL(fileURLWithPath: override, isDirectory: true)
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
         let base = (try? fm.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true

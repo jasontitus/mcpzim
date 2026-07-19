@@ -226,59 +226,119 @@ struct ChatView: View {
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...5)
-                .focused($inputFocused)
-                .submitLabel(.send)
-                .onSubmit(send)
-                // SwiftUI's `.onSubmit(send)` doesn't fire when
-                // `TextField(..., axis: .vertical)` is set — the return
-                // key on the software keyboard inserts a newline
-                // instead, even with `.submitLabel(.send)` advertising
-                // the blue send arrow. Compensate by watching for the
-                // newline ourselves: if `draft` ever ends with `\n`,
-                // treat it as the user tapping Send, drop the
-                // newline, and submit. Matches how iOS Messages +
-                // most chat apps behave. `send()` clears `draft` so
-                // we don't re-fire on the same keystroke.
-                .onChange(of: draft) { _, newValue in
-                    if newValue.hasSuffix("\n") {
-                        draft = String(newValue.dropLast())
-                        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty, !session.isGenerating else { return }
-                        send()
-                    }
-                }
-            Button {
-                showVoiceChat = true
-            } label: {
-                Image(systemName: "mic.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.tint)
+        VStack(spacing: 0) {
+            if session.promptOptimizationState.isActive {
+                promptOptimizationBanner
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
             }
-            .accessibilityLabel("Voice chat")
-            .disabled(session.isGenerating)
-            if session.isGenerating {
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Message", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...5)
+                    .focused($inputFocused)
+                    .submitLabel(.send)
+                    .onSubmit(send)
+                    // SwiftUI's `.onSubmit(send)` doesn't fire when
+                    // `TextField(..., axis: .vertical)` is set — the return
+                    // key on the software keyboard inserts a newline
+                    // instead, even with `.submitLabel(.send)` advertising
+                    // the blue send arrow. Compensate by watching for the
+                    // newline ourselves: if `draft` ever ends with `\n`,
+                    // treat it as the user tapping Send, drop the
+                    // newline, and submit. Matches how iOS Messages +
+                    // most chat apps behave. `send()` clears `draft` so
+                    // we don't re-fire on the same keystroke.
+                    .onChange(of: draft) { _, newValue in
+                        if newValue.hasSuffix("\n") {
+                            draft = String(newValue.dropLast())
+                            let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty, !session.isGenerating else { return }
+                            send()
+                        }
+                    }
+                    .onChange(of: inputFocused) { _, focused in
+                        if focused { session.prewarmSelectedModel() }
+                    }
                 Button {
-                    session.stopGeneration()
+                    showVoiceChat = true
                 } label: {
-                    Image(systemName: "stop.circle.fill")
+                    Image(systemName: "mic.circle.fill")
                         .font(.system(size: 28))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.tint)
                 }
-                .accessibilityLabel("Stop response")
-            } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 28))
+                .accessibilityLabel("Voice chat")
+                .disabled(session.isGenerating)
+                if session.isGenerating {
+                    Button {
+                        session.stopGeneration()
+                    } label: {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.red)
+                    }
+                    .accessibilityLabel("Stop response")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                    }
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(10)
+        }
+        .background(.bar)
+    }
+
+    private var promptOptimizationBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(promptOptimizationTitle)
+                        .font(.caption.weight(.semibold))
+                    Text(promptOptimizationDetail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                ProgressView()
+                    .controlSize(.small)
+            }
+            if case .building(let progress) =
+                session.promptOptimizationState
+            {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .accessibilityValue("\(Int(progress * 100)) percent")
             }
         }
-        .padding(10)
-        .background(.bar)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(
+            cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var promptOptimizationTitle: String {
+        if session.isGenerating {
+            return "Finishing model optimization for this answer"
+        }
+        switch session.promptOptimizationState {
+        case .checking: return "Checking saved model optimization"
+        case .restoring: return "Restoring faster first replies"
+        case .building: return "Optimizing first replies in the background"
+        case .idle, .ready, .failed: return "Model ready"
+        }
+    }
+
+    private var promptOptimizationDetail: String {
+        if session.isGenerating {
+            return "This one-time work will make later questions start faster."
+        }
+        return "You can keep typing and send whenever you’re ready."
     }
 
     private func send() {
@@ -511,7 +571,17 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private func bubble(fill: Color) -> some View {
-        Text(Self.displayText(message.text, role: message.role))
+        let displayed = Self.displayText(message.text, role: message.role)
+        Group {
+            if message.role == .assistant {
+                MarkdownMessageText(source: displayed)
+                    // Leave the copy affordance clear of a heading or the
+                    // first line of prose in the top-right corner.
+                    .padding(.trailing, 24)
+            } else {
+                Text(displayed)
+            }
+        }
             .textSelection(.enabled)
             .padding(10)
             .background(fill, in: RoundedRectangle(cornerRadius: 12))
@@ -539,6 +609,12 @@ private struct MessageRow: View {
         ]
         for pat in closedPatterns {
             t = t.replacingOccurrences(of: pat, with: "", options: .regularExpression)
+        }
+        // Qwen 3.x may put the opening <think> in the prompt and generate
+        // only `scratchpad</think>answer`. Do not display the scratchpad or
+        // the raw closer when that template-injected-opener shape appears.
+        if let r = t.range(of: "</think>", options: .backwards) {
+            t = String(t[r.upperBound...])
         }
         // Any stray opener — drop from there to end of string. During
         // streaming this hides the partially-arrived tool-call until

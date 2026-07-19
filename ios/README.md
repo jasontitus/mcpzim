@@ -73,6 +73,11 @@ so the app still builds — with a "not linked" model entry — before you add i
 Open the project, select the `MCPZimChat` target → *Signing & Capabilities*
 → set your Team. (Or set `DEVELOPMENT_TEAM` in `project.yml` and regenerate.)
 
+For the exact signed Mac and iPhone CLI build, verification, launch, and
+deployment commands, use [`docs/SIGNED_APP_BUILDS.md`](../docs/SIGNED_APP_BUILDS.md).
+Do not launch a Mac build or deploy an iPhone build until
+`scripts/verify-app-signature.sh` passes.
+
 ## Adding ZIM files
 
 The app enumerates `.zim` files in its own Documents folder. To get files in:
@@ -124,6 +129,21 @@ only ~80 MB.
 
 The first time you tap the mic you'll be asked for microphone and
 speech-recognition permission. Both are required.
+
+### Correcting the source by voice
+
+An explicit Wikipedia source instruction overrides the current discussion and
+all location/StreetZIM routing. The app opens the named article, prepares all
+of its sections, and answers the requested facet from that article. Useful
+forms include:
+
+- *"What does the Santa Rosa, California Wikipedia article say about the 1906 earthquake?"*
+- *"Search the Santa Rosa, California Wikipedia article for the 1906 earthquake."*
+- *"Use the Santa Rosa, California Wikipedia article as the source."*
+- *"Use Wikipedia, not StreetZIM, for that."* — reuses the current article.
+
+If no offline Wikipedia ZIM is enabled, the command fails explicitly instead
+of falling back to StreetZIM.
 
 ## Mock model for UI work
 

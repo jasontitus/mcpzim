@@ -760,6 +760,11 @@ public actor MCPToolAdapter {
             return body
         case "article_overview":
             return try await dispatchArticleOverview(args: args)
+        case "article_factoid":
+            // Host-internal deterministic route. It is intentionally absent
+            // from the model's declared registry: Swift invokes it for narrow
+            // founding-date questions so the phone avoids two LLM prefills.
+            return await dispatchArticleFactoid(args: args)
         case "discuss_article":
             return try await dispatchDiscussArticle(args: args)
         case "compare_articles":
@@ -994,6 +999,344 @@ public actor MCPToolAdapter {
         return result
     }
 
+    /// Resolve a company/organization article and select a founding-date
+    /// sentence directly from its Wikipedia lead. Exact title variants run
+    /// first (cheap path probes); full-text search is only a fallback. A
+    /// disambiguation page or a lead without both a founding verb and a year
+    /// is never accepted as evidence.
+    private func dispatchArticleFactoid(args: [String: Any]) async -> [String: Any] {
+        let requested = ((args["title"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let implicit = (args["implicit"] as? Bool) ?? false
+        let predicate = (args["predicate"] as? String) ?? "foundation"
+        guard !requested.isEmpty else {
+            return ["error": "article_factoid requires a non-empty `title`."]
+        }
+        guard predicate == "foundation" || predicate == "age" else {
+            return ["error": "unsupported article_factoid predicate: \(predicate)"]
+        }
+
+        var candidateTitles = [requested]
+        var requiredQualifierByCandidate: [String: String] = [:]
+        // Offline Wikipedia title lookup does not consistently preserve
+        // redirect aliases such as "Seattle, Washington". For age questions,
+        // retry a city name with a US-state qualifier removed before falling
+        // back to the model. Keep this list explicit so canonical comma titles
+        // such as "Washington, D.C." are not silently rebound to another page.
+        if predicate == "age", let comma = requested.firstIndex(of: ",") {
+            let base = String(requested[..<comma])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let qualifier = String(requested[requested.index(after: comma)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let usStates: Set<String> = [
+                "alabama", "alaska", "arizona", "arkansas", "california",
+                "colorado", "connecticut", "delaware", "florida", "georgia",
+                "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas",
+                "kentucky", "louisiana", "maine", "maryland", "massachusetts",
+                "michigan", "minnesota", "mississippi", "missouri", "montana",
+                "nebraska", "nevada", "new hampshire", "new jersey",
+                "new mexico", "new york", "north carolina", "north dakota",
+                "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+                "south carolina", "south dakota", "tennessee", "texas", "utah",
+                "vermont", "virginia", "washington", "west virginia",
+                "wisconsin", "wyoming",
+            ]
+            if !base.isEmpty, usStates.contains(qualifier) {
+                candidateTitles.append(base)
+                // A stripped alias is only safe when the resolved article
+                // itself confirms the qualifier. Without this gate,
+                // "Portland, Washington" could silently bind to Portland,
+                // Oregon and produce a confidently grounded wrong answer.
+                requiredQualifierByCandidate[base.lowercased()] = qualifier
+            }
+        }
+        // Company-title variants are useful for "When was Apple founded?"
+        // but are actively dangerous for place-age questions. If Seattle's
+        // history does not expose a founding sentence, a fuzzy lookup for
+        // "Seattle, Inc." can resolve to Seattle Computer Products and make
+        // the city appear 48 years old (real nopic-ZIM Mac probe, 2026-07-15).
+        if predicate == "foundation" {
+            candidateTitles += [
+                "\(requested), Inc.",
+                "\(requested) Inc.",
+                "\(requested) (company)",
+                "\(requested) (organization)",
+            ]
+        }
+        var seen = Set<String>()
+        candidateTitles = candidateTitles.filter {
+            seen.insert($0.lowercased()).inserted
+        }
+
+        func normalizedWords(_ value: String) -> [String] {
+            value.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count >= 2 && !["the", "inc", "company"].contains($0) }
+        }
+        let requestedWords = normalizedWords(requested)
+        func hasOrganizationLanguage(_ lead: String) -> Bool {
+            let lower = lead.lowercased()
+            let markers = [
+                " company", " corporation", " business", " manufacturer",
+                " automaker", " enterprise", " conglomerate", " retailer",
+                " technology firm", " technology company", " multinational",
+                " incorporated", " headquartered",
+            ]
+            return markers.contains { lower.contains($0) }
+        }
+        func plausibleSearchTitle(_ title: String) -> Bool {
+            let words = normalizedWords(title)
+            guard !requestedWords.isEmpty, !words.isEmpty else { return false }
+            if words.starts(with: requestedWords) { return true }
+            let overlap = Set(words).intersection(requestedWords).count
+            return requestedWords.count > 1 && overlap >= requestedWords.count - 1
+        }
+        func firstFoundationYear(_ text: String) -> Int? {
+            guard let range = text.range(
+                of: #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#,
+                options: .regularExpression
+            ) else { return nil }
+            return Int(text[range])
+        }
+        func containsQualifier(_ qualifier: String, in text: String) -> Bool {
+            let escaped = NSRegularExpression.escapedPattern(for: qualifier)
+            return text.range(
+                of: #"\b"# + escaped + #"\b"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }
+        func searchConfirmsQualifier(
+            candidate: String, qualifier: String,
+            resolvedTitle: String, resolvedPath: String
+        ) async -> Bool {
+            guard let hits = try? await service.search(
+                query: "\(candidate) \(qualifier)", limit: 8,
+                kind: .wikipedia
+            ) else { return false }
+            return hits.contains { hit in
+                let sameArticle = hit.path.caseInsensitiveCompare(resolvedPath)
+                        == .orderedSame
+                    || hit.title.caseInsensitiveCompare(resolvedTitle)
+                        == .orderedSame
+                let context = hit.title + " " + hit.snippet
+                return sameArticle && containsQualifier(qualifier, in: context)
+            }
+        }
+
+        var searchTitles: [String] = []
+        var ambiguityDetected = false
+        var disambiguationRows: [[String: Any]] = []
+        var rejectionNotes: [String] = []
+        func resolve(_ candidate: String, allowRedirect: Bool) async
+            -> [String: Any]? {
+            guard let hit = try? await service.articleByTitle(
+                title: candidate, zim: args["zim"] as? String, section: "lead"
+            ) else { return nil }
+            let lead = hit.section.text
+            if ArticleHeuristics.isDisambiguationArticle(
+                title: hit.title, leadText: lead
+            ) {
+                ambiguityDetected = true
+                if disambiguationRows.isEmpty,
+                   let page = try? await service.article(
+                       path: hit.path, zim: hit.zim)
+                {
+                    var rowSeen = Set<String>()
+                    for link in WikiLinks.parseAll(html: page.text, max: 20) {
+                        let key = link.title.lowercased()
+                        guard key != requested.lowercased(),
+                              !key.contains("disambiguation"),
+                              rowSeen.insert(key).inserted
+                        else { continue }
+                        disambiguationRows.append([
+                            "title": link.title,
+                            "path": link.path,
+                            "zim": hit.zim,
+                        ])
+                        if disambiguationRows.count == 6 { break }
+                    }
+                }
+                return nil
+            }
+            if let qualifier = requiredQualifierByCandidate[candidate.lowercased()],
+               !containsQualifier(qualifier, in: lead) {
+                let confirmed = await searchConfirmsQualifier(
+                    candidate: candidate, qualifier: qualifier,
+                    resolvedTitle: hit.title, resolvedPath: hit.path)
+                guard confirmed else {
+                    ambiguityDetected = true
+                    rejectionNotes.append(
+                        "rejected \(hit.title): could not confirm qualifier \(qualifier)")
+                    return nil
+                }
+            }
+            // The shortened "When was X?" interpretation is only valid for
+            // an article whose lead clearly describes an organization. This
+            // prevents a historical subject such as the Alamo from being
+            // reinterpreted as a request for a mission's establishment date.
+            guard !implicit || hasOrganizationLanguage(lead) else { return nil }
+            guard allowRedirect || plausibleSearchTitle(hit.title) else { return nil }
+            var sourceSection = hit.section
+            var evidence = predicate == "age"
+                ? IntentRouter.extractPlaceOriginFact(
+                    from: lead, title: hit.title)
+                : IntentRouter.extractFoundationFact(
+                    from: lead, title: hit.title)
+            // City/place leads often omit their foundation date while the
+            // History section states it plainly. For a tentative "How old is
+            // X?" probe, inspect a few foundation-shaped sections before
+            // yielding back to the general router. This is still grounded
+            // extraction: no date is invented and no search-result entity is
+            // substituted for the requested article.
+            if evidence == nil, predicate == "age",
+               let outline = try? await service.articleSections(
+                    path: hit.path, zim: hit.zim)
+            {
+                let preferred = outline.sections.filter { section in
+                    let heading = section.title.lowercased()
+                    return heading.contains("history")
+                        || heading.contains("found")
+                        || heading.contains("establish")
+                        || heading.contains("origin")
+                        || heading.contains("century")
+                        || heading.contains("statehood")
+                        || heading.contains("admission")
+                }
+                for section in preferred.prefix(6) {
+                    let extracted = predicate == "age"
+                        ? IntentRouter.extractPlaceOriginFact(
+                            from: section.text, title: hit.title)
+                        : IntentRouter.extractFoundationFact(
+                            from: section.text, title: hit.title)
+                    if let extracted
+                    {
+                        sourceSection = section
+                        evidence = extracted
+                        break
+                    }
+                }
+            }
+            guard let evidence else { return nil }
+
+            let fact: String
+            if predicate == "age" {
+                guard let year = firstFoundationYear(evidence) else { return nil }
+                let currentYear = Calendar.current.component(.year, from: Date())
+                guard year <= currentYear else { return nil }
+                let years = currentYear - year
+                fact = "\(evidence) That was about \(years) years ago."
+            } else {
+                fact = evidence
+            }
+
+            var result: [String: Any] = [
+                "zim": hit.zim,
+                "path": hit.path,
+                "title": hit.title,
+                "requested_title": requested,
+                "predicate": predicate,
+                "implicit": implicit,
+                "fact": fact,
+                "evidence": evidence,
+                "sections": [[
+                    "title": sourceSection.title.isEmpty ? "lead" : sourceSection.title,
+                    "level": sourceSection.level,
+                    "bytes": sourceSection.bytes,
+                    "text": sourceSection.text,
+                ]],
+            ]
+            if let related = try? await Self.relatedLinks(
+                service: service, path: hit.path, zim: hit.zim
+            ), !related.isEmpty {
+                result["related"] = related
+            }
+            return result
+        }
+
+        for candidate in candidateTitles {
+            if var result = await resolve(
+                candidate,
+                // A literal-title hit may legitimately resolve a redirect
+                // whose canonical title no longer contains the old name.
+                allowRedirect: candidate.caseInsensitiveCompare(requested) == .orderedSame
+            ) {
+                result["resolution"] = "direct"
+                return result
+            }
+        }
+
+        // A real Wikipedia disambiguation page is not a generic lookup miss.
+        // Surface grounded candidates from the offline index and let the host
+        // ask the user which entity they meant. This deliberately happens
+        // after the direct variants above: "Tesla" may disambiguate while
+        // "Tesla, Inc." is still the uniquely correct company answer.
+        if ambiguityDetected {
+            if disambiguationRows.isEmpty {
+                let hits = (try? await service.search(
+                    query: requested, limit: 12, kind: .wikipedia
+                )) ?? []
+                let titles = Self.didYouMeanTitles(
+                    requested: requested, candidates: hits, limit: 6
+                )
+                let wanted = Set(titles.map { $0.lowercased() })
+                var candidateSeen = Set<String>()
+                for hit in hits {
+                    let key = hit.title.lowercased()
+                    guard wanted.contains(key),
+                          key != requested.lowercased(),
+                          !key.contains("disambiguation"),
+                          candidateSeen.insert(key).inserted
+                    else { continue }
+                    disambiguationRows.append([
+                        "title": hit.title,
+                        "path": hit.path,
+                        "zim": hit.zim,
+                    ])
+                    if disambiguationRows.count == 4 { break }
+                }
+            }
+            return [
+                "error": "ambiguous offline Wikipedia title",
+                "ambiguous": true,
+                "requested_title": requested,
+                "predicate": predicate,
+                "suggestions": disambiguationRows.compactMap { $0["title"] as? String },
+                "disambiguation": disambiguationRows,
+                "diagnostics": rejectionNotes,
+            ]
+        }
+
+        // Search fallback is useful when the user explicitly said "founded".
+        // It is too broad for an incomplete "When was X?": "Alamo founded"
+        // could otherwise drift to Alamo Rent a Car and answer the wrong
+        // entity. Implicit questions only use exact/company-title probes.
+        if predicate == "foundation", !implicit, let hits = try? await service.search(
+            query: "\(requested) founded", limit: 8, kind: .wikipedia
+        ) {
+            searchTitles = hits.map(\.title).filter(plausibleSearchTitle)
+            // Prefer canonical titles that start with the requested words;
+            // preserve BM25 order within the same relevance tier.
+            searchTitles.sort {
+                normalizedWords($0).starts(with: requestedWords)
+                    && !normalizedWords($1).starts(with: requestedWords)
+            }
+            for title in searchTitles where seen.insert(title.lowercased()).inserted {
+                if var result = await resolve(title, allowRedirect: false) {
+                    result["resolution"] = "search"
+                    return result
+                }
+            }
+        }
+
+        return [
+            "error": "no grounded \(predicate) fact found in the offline Wikipedia article",
+            "requested_title": requested,
+            "suggestions": Array(searchTitles.prefix(3)),
+            "diagnostics": rejectionNotes,
+        ]
+    }
+
     /// Alternate meanings for a resolved article, from its HATNOTES
     /// ("For the phenomenon of general relativity, see Gravitational
     /// wave."). The "(disambiguation)"-page probe doesn't work offline —
@@ -1067,6 +1410,13 @@ public actor MCPToolAdapter {
                 "suggestions": suggestions,
             ]
         }
+        // Carry the article's real outbound links into discussion state.
+        // Follow-up retrieval can then walk the Wikipedia graph while
+        // rejecting a similarly named but unconnected search result. Keep a
+        // generous cap: this is title/path metadata only, not article text.
+        let linkedArticles = (try? await Self.relatedLinks(
+            service: service, path: resolved.path, zim: resolved.zim, max: 512
+        )) ?? []
         // Raw section titles (lead stays "") so the host's
         // rankSectionsForQuestion sees the lead as the lead.
         return [
@@ -1074,6 +1424,7 @@ public actor MCPToolAdapter {
             "title": resolved.title,
             "zim": resolved.zim,
             "path": resolved.path,
+            "linked_articles": linkedArticles,
             "section_count": resolved.sections.count,
             "sections": resolved.sections.map { s -> [String: Any] in
                 ["title": s.title, "level": s.level, "text": s.text, "bytes": s.bytes]

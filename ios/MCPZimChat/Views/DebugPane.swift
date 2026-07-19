@@ -124,6 +124,7 @@ struct DebugPaneView: View {
                 }
                 .buttonStyle(.plain)
                 .help(justCopied ? "Copied" : "Copy all debug entries")
+                #if DEBUG
                 Button {
                     // Emit the bundled messages + debug log via
                     // os.Logger so `ios/scripts/mcp-report.sh` on
@@ -151,6 +152,7 @@ struct DebugPaneView: View {
                 .buttonStyle(.plain)
                 .help("Send a debug report over syslog. Reassemble on Mac with "
                       + "ios/scripts/mcp-report.sh latest.")
+                #endif
                 Button("Clear") { session.debugEntries.removeAll() }
                     .font(.caption)
                     .buttonStyle(.plain)

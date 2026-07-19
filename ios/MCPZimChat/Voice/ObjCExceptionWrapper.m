@@ -18,7 +18,7 @@
 + (nullable NSString *)installTapOnNode:(AVAudioNode *)node
                                     bus:(AVAudioNodeBus)bus
                              bufferSize:(AVAudioFrameCount)bufferSize
-                                 format:(AVAudioFormat *)format
+                                 format:(nullable AVAudioFormat *)format
                                   block:(AVAudioNodeTapBlock)block {
     @try {
         [node installTapOnBus:bus bufferSize:bufferSize format:format block:block];

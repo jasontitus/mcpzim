@@ -12,18 +12,49 @@ public struct GenerationParameters: Sendable {
     public var maxTokens: Int
     public var temperature: Double
     public var topP: Double
+    public var topK: Int
+    /// Open-ended/model-native generation should normally use the model's
+    /// published sampler. Grounded extraction and tool-result summarization
+    /// can opt out for deterministic factual answers.
+    public var useModelSamplingProfile: Bool
     public var stopSequences: [String]
 
     public init(
         maxTokens: Int = 512,
         temperature: Double = 0.7,
         topP: Double = 0.95,
+        topK: Int = 40,
+        useModelSamplingProfile: Bool = true,
         stopSequences: [String] = []
     ) {
         self.maxTokens = maxTokens
         self.temperature = temperature
         self.topP = topP
+        self.topK = topK
+        self.useModelSamplingProfile = useModelSamplingProfile
         self.stopSequences = stopSequences
+    }
+}
+
+/// A model-specific sampling recipe. Callers can continue supplying their
+/// task-level defaults through `GenerationParameters`; providers only install
+/// this override when a publisher recommends a materially different recipe.
+public struct GenerationSamplingProfile: Sendable {
+    public var temperature: Double
+    public var topP: Double
+    public var topK: Int
+    public var presencePenalty: Double
+
+    public init(
+        temperature: Double,
+        topP: Double,
+        topK: Int,
+        presencePenalty: Double = 0
+    ) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.presencePenalty = presencePenalty
     }
 }
 

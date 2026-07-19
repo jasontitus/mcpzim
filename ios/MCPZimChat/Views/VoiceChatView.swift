@@ -79,6 +79,9 @@ struct VoiceChatView: View {
     private var isListening: Bool {
         if case .listening = state { return true } else { return false }
     }
+    private var isStarting: Bool {
+        if case .starting = state { return true } else { return false }
+    }
     private var isThinking: Bool {
         if case .thinking = state { return true } else { return false }
     }
@@ -91,6 +94,7 @@ struct VoiceChatView: View {
 
     private var iconName: String {
         switch state {
+        case .starting:  return "waveform.badge.mic"
         case .listening: return "waveform"
         case .thinking:  return "ellipsis"
         case .speaking:  return "speaker.wave.2.fill"
@@ -101,6 +105,7 @@ struct VoiceChatView: View {
 
     private var iconColor: Color {
         switch state {
+        case .starting:  return .orange
         case .listening: return .accentColor
         case .thinking:  return .yellow
         case .speaking:  return .green
@@ -112,6 +117,7 @@ struct VoiceChatView: View {
     private var statusText: String {
         switch state {
         case .idle:           return "IDLE"
+        case .starting:       return "STARTING"
         case .listening:      return "LISTENING"
         case .thinking:       return "THINKING"
         case .speaking:       return "SPEAKING"
@@ -125,8 +131,13 @@ struct VoiceChatView: View {
     private var previewText: String {
         if case .error(let msg) = state { return msg }
         let live = controller?.liveTranscript ?? ""
+        if isStarting { return "Preparing microphone…" }
         if isListening {
-            return live.isEmpty ? "Pause when you're done." : live
+            if !live.isEmpty { return live }
+            let level = controller?.inputLevel ?? 0
+            return level >= (controller?.silenceThreshold ?? 0.02)
+                ? "Hearing you…"
+                : "Listening — start speaking."
         }
         if isThinking { return live.isEmpty ? "…" : live }
         if case .speaking = state { return "Playing reply…" }

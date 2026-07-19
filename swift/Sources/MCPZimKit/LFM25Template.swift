@@ -112,16 +112,26 @@ public struct LFM25Template: ModelTemplate {
         body.formatToolResponse(name: name, payload: payload)
     }
 
-    /// LFM2.5 (and its base) can emit `<think>…</think>` reasoning. The FT
-    /// corpus has none, so the tuned model rarely does, but strip closed
-    /// spans defensively — same contract as Qwen's reasoning strip.
+    /// LFM2.5 (and its base) can emit `<think>…</think>` reasoning. Some GGUF
+    /// chat templates inject the opening marker into the generation prefix,
+    /// so llama.cpp yields only `reasoning</think>answer`; handle that
+    /// close-only shape as well as ordinary closed spans. The former caused
+    /// Bonsai to show and speak a draft answer, the closing tag, and then the
+    /// same answer again (device capture 2026-07-16).
     public func stripReasoning(_ text: String) -> String {
-        guard let open = text.range(of: "<think>"),
-              let close = text.range(of: "</think>",
-                                     range: open.upperBound..<text.endIndex)
-        else { return text }
         var out = text
-        out.removeSubrange(open.lowerBound..<close.upperBound)
+        while let open = out.range(of: "<think>"),
+              let close = out.range(
+                of: "</think>", range: open.upperBound..<out.endIndex)
+        {
+            out.removeSubrange(open.lowerBound..<close.upperBound)
+        }
+        // If the opener was part of the already-evaluated assistant prefix,
+        // only its closer appears in generated text. Everything before the
+        // last closer is scratchpad; the user-facing answer follows it.
+        if let danglingClose = out.range(of: "</think>", options: .backwards) {
+            out = String(out[danglingClose.upperBound...])
+        }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

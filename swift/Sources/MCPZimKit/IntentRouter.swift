@@ -30,6 +30,20 @@ public struct DirectIntent: Equatable, Sendable {
     }
 }
 
+/// An explicit instruction to ground the next answer in one particular
+/// Wikipedia article. This is intentionally separate from ordinary intent
+/// classification: the host can honor it before a pinned discussion or a
+/// location-shaped fast path gets a chance to reinterpret the words.
+public struct WikipediaSourceDirective: Equatable, Sendable {
+    public let title: String
+    public let question: String?
+
+    public init(title: String, question: String? = nil) {
+        self.title = title
+        self.question = question
+    }
+}
+
 /// Small, sendable JSON scalar/container shim. Swift's `[String: Any]`
 /// isn't `Sendable` or `Equatable`, which makes `DirectIntent`
 /// awkward to compare in tests. This covers everything the router
@@ -91,6 +105,26 @@ public enum IntentRouter {
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
 
+        // Reading requests are semantic actions, not questions about an
+        // article. Resolve them before ordinary continuation routing so a
+        // pinned discussion cannot swallow "read the whole article" and
+        // answer from its small evidence window instead. Explicit titles work
+        // without focus; the subject-less form binds to the current topic.
+        if let reading = readArticleIntent(text, focus: focus) {
+            return reading
+        }
+
+        // Explicit source selection outranks every stateless interpretation.
+        // Source control means "prepare this exact article", not merely open
+        // its compact overview. The app host intercepts the directive before
+        // ordinary routing, while other callers still get the same all-
+        // sections tool semantics.
+        if let directive = wikipediaSourceDirective(text, focus: focus) {
+            return DirectIntent(toolName: "discuss_article", args: [
+                "title": .string(directive.title),
+            ])
+        }
+
         // A comparison establishes a TWO-topic list in ConversationFocus.
         // Follow-ups such as "How many were killed in each?" do not name
         // either subject, so a small model is otherwise forced to infer both
@@ -116,6 +150,18 @@ public enum IntentRouter {
             case .synthesizeFromContext:
                 return nil
             }
+        }
+
+        // Deterministic Wikipedia factoid: a founding-date question should
+        // never pay for the model to first choose `article_overview` and then
+        // pay for a second model pass to quote the lead. On the phone that
+        // cost 85 s + 55 s for "When was Tesla founded?" (2026-07-15).
+        // Route the narrow, objectively extractable shape to an internal
+        // adapter operation. The adapter accepts an answer only when a real
+        // Wikipedia lead contains both a founding synonym and a year.
+        if let factoid = ageFactoidIntent(text, focus: focus)
+            ?? foundingFactoidIntent(lower, focus: focus) {
+            return factoid
         }
 
         // Context-aware fast path. When the host supplies a conversation
@@ -195,6 +241,51 @@ public enum IntentRouter {
                     "lon":       .double(here.lon),
                     "kinds":     .array([.string(kind)]),
                     "radius_km": .double(defaultRadiusKm)
+                ])
+            }
+        }
+
+        // "Where is <named place>?" → locate. The location engine answered
+        // the real HP Garage query in 0.01 s, but the phone first spent 87 s
+        // asking Bonsai to choose this tool (2026-07-15). Keep the pattern
+        // deliberately named-place-shaped: nearest-category queries already
+        // returned above, while encyclopedic forms such as "where is Apple
+        // headquartered?" and "where is the capital of France?" fall through.
+        let locateSubject: String? = {
+            if let m = match(text, pattern:
+                #"^where(?:'s|\s+is)\s+(.+?)(?:\s+located)?$"#) {
+                return m[0]
+            }
+            if let m = match(text, pattern:
+                #"^(?:locate|find\s+the\s+location\s+of)\s+(.+)$"#) {
+                return m[0]
+            }
+            if let m = match(text, pattern:
+                #"^show\s+me\s+(.+?)\s+on\s+(?:the\s+)?map$"#) {
+                return m[0]
+            }
+            return nil
+        }()
+        if var subject = locateSubject {
+            subject = subject.replacingOccurrences(
+                of: #"^the\s+"#, with: "",
+                options: [.regularExpression, .caseInsensitive]
+            ).trimmingCharacters(in: .whitespaces)
+            let lowerSubject = subject.lowercased()
+            let first = lowerSubject.split(separator: " ", maxSplits: 1)
+                .first.map(String.init) ?? ""
+            let nonNames: Set<String> = [
+                "it", "this", "that", "there", "here", "he", "she", "they",
+                "my", "our", "your", "his", "her", "their", "nearest",
+                "closest", "best", "article", "information", "answer",
+            ]
+            let encyclopedic = lowerSubject.range(
+                of: #"\b(?:capital|population|history|founder|meaning|definition|birthplace)\s+of\b|\b(?:headquartered|born|founded|created|established|happen|happened|take\s+place)\b"#,
+                options: .regularExpression
+            ) != nil
+            if !subject.isEmpty, !nonNames.contains(first), !encyclopedic {
+                return DirectIntent(toolName: "locate", args: [
+                    "place": .string(subject),
                 ])
             }
         }
@@ -336,6 +427,21 @@ public enum IntentRouter {
             }
         }
 
+        // "explain X [to me]" / "teach me about X" / "help me
+        // understand X" → article_overview(X). These broad explanatory
+        // openers used to miss every deterministic route and enter the
+        // generic 12-tool dispatcher. On Bonsai 27B that meant prefilling
+        // roughly 5,900 tokens merely to have the model choose the same
+        // `article_overview` tool, adding 80–90 seconds on iPhone before
+        // retrieval even began. Keep clause-shaped requests ("explain why
+        // …", "help me understand how …") in the synthesis loop; a phrase
+        // that names a topic can use the compact grounded overview path.
+        if let subject = explanatoryOverviewSubject(lower) {
+            return DirectIntent(toolName: "article_overview", args: [
+                "title": .string(subject)
+            ])
+        }
+
         // "tell me about X" / "what is X" / "who is/was X" /
         // "give me an overview of X" → article_overview. Runs LAST
         // so that `what_is_here`, directions, `compare`, and places
@@ -419,6 +525,185 @@ public enum IntentRouter {
         }
 
         return nil
+    }
+
+    /// Recognize a user's explicit Wikipedia source selection.
+    ///
+    /// Supported shapes include:
+    /// - "Use the Wikipedia article on Santa Rosa, California."
+    /// - "What does the Santa Rosa, California Wikipedia article say about
+    ///   the 1906 earthquake?"
+    /// - "Look up the Wikipedia article on Santa Rosa California and tell me
+    ///   what it says about the 1906 earthquake."
+    /// - "Use Wikipedia, not StreetZIM, for that." (binds to current focus)
+    ///
+    /// The returned `question` excludes the source-control wrapper so section
+    /// retrieval ranks the requested facet rather than words such as "look
+    /// up", "article", and "Wikipedia".
+    public static func wikipediaSourceDirective(
+        _ raw: String,
+        focus: ConversationFocus? = nil
+    ) -> WikipediaSourceDirective? {
+        let text = raw
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(
+                of: #"\s+"#, with: " ",
+                options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        guard !text.isEmpty else { return nil }
+        let lower = text.lowercased()
+        let namesWikipediaArticle =
+            lower.range(
+                of: #"\bwikipedia\s+(?:article|page)\b|\b(?:article|page)\s+(?:on|from)\s+wikipedia\b"#,
+                options: .regularExpression) != nil
+        let sourceOnly = lower.range(
+            of: #"\b(?:use|from|check|consult|search)\s+(?:the\s+)?(?:offline\s+)?wikipedia\b"#,
+            options: .regularExpression) != nil
+        guard namesWikipediaArticle || sourceOnly else { return nil }
+
+        func cleaned(_ value: String?) -> String? {
+            guard var value else { return nil }
+            value = value.trimmingCharacters(
+                in: CharacterSet.whitespacesAndNewlines
+                    .union(CharacterSet(charactersIn: "\"'.,;:!?")))
+            value = value.replacingOccurrences(
+                of: #"^(?:the\s+)"#, with: "",
+                options: [.regularExpression, .caseInsensitive])
+            return value.isEmpty ? nil : value
+        }
+
+        // Question-first form: "What does the Santa Rosa, California
+        // Wikipedia article say about the 1906 earthquake?"
+        if let m = match(text, pattern:
+            #"(?i)^what\s+(?:does|do)\s+(?:the\s+)?(.+?)\s+wikipedia\s+(?:article|page)\s+(?:say|says)\s+(?:about|on|regarding)\s+(.+)$"#),
+           m.count >= 2,
+           let title = cleaned(m[0]),
+           let question = cleaned(m[1])
+        {
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+
+        // Article-first question: "In the Wikipedia article on Santa Rosa,
+        // California, what does it say about the 1906 earthquake?"
+        if let m = match(text, pattern:
+            #"(?i)^(?:in|from)\s+(?:the\s+)?(?:offline\s+)?wikipedia\s+(?:article|page)\s+(?:about|on|for)\s+(.+?)[,;]?\s+what\s+(?:does\s+)?(?:it|the\s+(?:article|page))\s+(?:say|says)\s+(?:about|on|regarding)\s+(.+)$"#),
+           m.count >= 2,
+           let title = cleaned(m[0]),
+           let question = cleaned(m[1])
+        {
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+
+        // Direct source search: "Search the Santa Rosa, California
+        // Wikipedia article for the 1906 earthquake."
+        if let m = match(text, pattern:
+            #"(?i)^(?:please\s+)?(?:search|check|consult|look\s+in|read)\s+(?:the\s+)?(.+?)\s+wikipedia\s+(?:article|page)\s+(?:for|about|on|regarding)\s+(.+)$"#),
+           m.count >= 2,
+           let title = cleaned(m[0]),
+           let question = cleaned(m[1])
+        {
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+
+        // Command + question: "Look up the Wikipedia article on Santa Rosa
+        // California and tell me what it says about the 1906 earthquake."
+        if let m = match(text, pattern:
+            #"(?i)^.*?\bwikipedia\s+(?:article|page)\s+(?:about|on|for)\s+(.+?)(?:[.;]\s*|\s+)(?:(?:and|then)\s+|i\s+then\s+want\s+you\s+to\s+)?(?:please\s+)?(?:tell\s+me|read|see|find\s+out|check)\s+.*?\bwhat\s+(?:it|the\s+(?:article|page)|that\s+(?:article|page))\s+(?:say|says)\s+(?:about|on|regarding)\s+(.+)$"#),
+           m.count >= 2,
+           let title = cleaned(m[0]),
+           let question = cleaned(m[1])
+        {
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+
+        // "Use the Wikipedia article on X for information about Y."
+        if let m = match(text, pattern:
+            #"(?i)^.*?\bwikipedia\s+(?:article|page)\s+(?:about|on|for)\s+(.+?)\s+for\s+(?:information\s+)?(?:about|on|regarding)\s+(.+)$"#),
+           m.count >= 2,
+           let title = cleaned(m[0]),
+           let question = cleaned(m[1])
+        {
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+
+        // Reverse title form: "Use the Santa Rosa, California Wikipedia
+        // article as the source."
+        if let m = match(text, pattern:
+            #"(?i)^.*?\b(?:use|open|consult|check)\s+(?:only\s+)?(?:the\s+)?(.+?)\s+wikipedia\s+(?:article|page)(?:\s+as\s+(?:the\s+)?source)?$"#),
+           let captured = m.first,
+           let title = cleaned(captured)
+        {
+            return WikipediaSourceDirective(title: title)
+        }
+
+        // Source selection with an explicit article title and no facet.
+        if let m = match(text, pattern:
+            #"(?i)^.*?\bwikipedia\s+(?:article|page)\s+(?:about|on|for)\s+(.+)$"#),
+           let captured = m.first
+        {
+            var title = captured
+            // Stop a two-sentence instruction before its second command even
+            // when the speaker omitted the exact "what it says" wording.
+            title = title.replacingOccurrences(
+                of: #"[.;]\s*(?:i\s+then|then|and|please|now)\b.*$"#,
+                with: "", options: [.regularExpression, .caseInsensitive])
+            if let title = cleaned(title) {
+                return WikipediaSourceDirective(title: title)
+            }
+        }
+
+        // "Use Wikipedia, not StreetZIM, for that" keeps the current article
+        // but explicitly changes the source policy.
+        if sourceOnly, let title = focus?.primaryEntity?.name {
+            let question: String? = {
+                if let m = match(text, pattern:
+                    #"(?i)\b(?:for|about|regarding)\s+(.+)$"#),
+                   let value = cleaned(m.first),
+                   !["that", "this", "it", "the answer"].contains(
+                       value.lowercased())
+                {
+                    return value
+                }
+                return nil
+            }()
+            return WikipediaSourceDirective(title: title, question: question)
+        }
+        return nil
+    }
+
+    /// Recognize a request to narrate a complete Wikipedia article. The
+    /// returned intent deliberately omits `section_index`: that is the adapter
+    /// contract for a full pass-through read, while "continue reading" uses
+    /// the separate paged path.
+    public static func readArticleIntent(
+        _ raw: String,
+        focus: ConversationFocus? = nil
+    ) -> DirectIntent? {
+        var text = raw
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        guard !text.isEmpty else { return nil }
+
+        text = text.replacingOccurrences(
+            of: #"^(?:please\s+|(?:can|could|would)\s+you\s+|i(?:'d|\s+would)\s+like\s+you\s+to\s+)+"#,
+            with: "", options: [.regularExpression, .caseInsensitive])
+        let pattern = #"^read\s+(?:me\s+)?(?:the\s+)?(?:(?:full|whole|entire|complete)\s+)?(?:wikipedia\s+)?article(?:\s+(?:about|on|for)\s+(.+?))?(?:\s+(?:aloud|to\s+me))?$"#
+        guard let match = match(text, pattern: pattern) else { return nil }
+
+        let explicit = match.first?
+            .replacingOccurrences(
+                of: #"\s+(?:aloud|to\s+me)$"#, with: "",
+                options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = (explicit?.isEmpty == false)
+            ? explicit
+            : focus?.primaryEntity?.name
+        guard let title, !title.isEmpty else { return nil }
+        return DirectIntent(
+            toolName: "narrate_article",
+            args: ["title": .string(title)])
     }
 
     private enum ComparisonContinuationRoute {
@@ -703,14 +988,64 @@ public enum IntentRouter {
         return exits.contains(t)
     }
 
+    /// Whether the speaker explicitly presents a fresh subject, rather than
+    /// merely asking another question while a prepared discussion is pinned.
+    /// Hosts combine this with evidence coverage: an implicit article-looking
+    /// parse only leaves the topic when the current article cannot cover it.
+    public static func isExplicitDiscussionTopicChange(_ raw: String) -> Bool {
+        // Deictic words bind the requested facet back to the prepared topic.
+        // For example, "Tell me about Buddhism there" is about Buddhism in
+        // Mongolia, not a request to open an article titled "Buddhism there".
+        if isDiscussionDeicticFollowUp(raw) { return false }
+        let t = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:please\s+)?(?:tell me about|talk about|let(?:'|’)s talk about|discuss|let(?:'|’)s discuss|switch(?: the)? topic to|change(?: the)? topic to|move on to)\s+\S"#
+        return t.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Whether an utterance explicitly points back to the subject already in
+    /// discourse. Keep this deliberately narrower than a bare "it": these
+    /// forms are reliable topic pins without turning genuine hand-offs such
+    /// as "Tell me about Theravada Buddhism" into follow-ups.
+    public static func isDiscussionDeicticFollowUp(_ raw: String) -> Bool {
+        let t = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"\b(?:there|its|their)\b|\b(?:in|within|under|during|across|throughout)\s+(?:that|this)\s+(?:country|place|region|area|society|culture|government|period|era|article|topic)\b"#
+        return t.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// A conversational facet hand-off that normally inherits the prepared
+    /// subject: "How about Buddhism?", "And what about Christianity?".
+    /// This is deliberately only a SHAPE signal. The host still requires the
+    /// pinned article to mention the requested facet before resisting a new
+    /// article route, so "How about Donald Trump?" can leave an unrelated
+    /// discussion while "How about Christianity?" stays within Lithuania.
+    public static func isEllipticalDiscussionFollowUp(_ raw: String) -> Bool {
+        let t = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:(?:and|so|then)\s+)?(?:how|what)\s+about\b"#
+        return t.range(of: pattern, options: .regularExpression) != nil
+    }
+
     /// Whether a stateless article-looking title is actually a common facet
     /// of the subject already pinned by discussion mode. For example, the
     /// generic router can parse "Who were the combatants?" as an article
     /// named "the combatants"; the host uses this signal to keep the current
     /// topic and retrieve its combatant evidence instead.
     public static func isDiscussionFacetTitle(_ raw: String) -> Bool {
-        let normalized = raw.lowercased()
+        let lowered = raw.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // A possessive pronoun explicitly points back to the subject already
+        // in discourse. The remainder is open-ended ("its early history",
+        // "their economic policy"), so an exact facet allow-list cannot
+        // safely enumerate it. Treat these as pinned-topic facets before the
+        // stateless article router can reinterpret the words as a new title.
+        if ["his ", "her ", "their ", "its "].contains(where: {
+            lowered.hasPrefix($0)
+        }) {
+            return true
+        }
+        let normalized = lowered
             .replacingOccurrences(
                 of: #"^(?:the|his|her|their|its)\s+"#,
                 with: "", options: .regularExpression)
@@ -719,7 +1054,12 @@ public enum IntentRouter {
             "participants", "commanders", "casualties", "deaths",
             "aftermath", "outcome", "parents", "family", "school",
             "education", "career", "legacy", "effects", "sources",
-            "formation", "detection",
+            "formation", "detection", "history", "early history",
+            "modern history", "culture", "economy", "religion", "wealth",
+            "population", "demographics", "geography", "climate",
+            "government", "politics", "government and politics",
+            "languages", "language", "ethnic groups", "territory", "capital",
+            "sports", "festivals", "sports and festivals",
         ]
         return facets.contains(normalized)
     }
@@ -775,6 +1115,45 @@ public enum IntentRouter {
     /// patterns. Anything irregular (men, children, criteria…) is
     /// passed through — those are rare enough in POI categories
     /// that the OSM vocab's fuzzy match picks up the slack.
+    private static func explanatoryOverviewSubject(_ lower: String) -> String? {
+        let patterns = [
+            #"^(?:(?:can|could|would|will)\s+you\s+)?explain\s+(.+?)(?:\s+to\s+me)?$"#,
+            #"^(?:(?:can|could|would|will)\s+you\s+)?teach\s+me\s+about\s+(.+)$"#,
+            #"^(?:(?:can|could|would|will)\s+you\s+)?help\s+me\s+understand\s+(.+)$"#,
+        ]
+        var subject: String?
+        for pattern in patterns {
+            if let m = match(lower, pattern: pattern) {
+                subject = m[0].trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+        guard var subject, !subject.isEmpty else { return nil }
+
+        // These lead into a proposition rather than naming an article.
+        // The general synthesis loop should reason over them instead of
+        // looking up an article literally titled "why the sky is blue".
+        let clauseLeads = ["why ", "how ", "whether ", "what happens "]
+        if clauseLeads.contains(where: { subject.hasPrefix($0) }) {
+            return nil
+        }
+
+        let navPronouns: Set<String> = [
+            "it", "this", "that", "these", "those", "him", "her", "them",
+            "my", "our", "your",
+        ]
+        let firstWord = subject
+            .split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        if navPronouns.contains(firstWord) { return nil }
+
+        // A natural "explain the Standard Model to me" should search the
+        // encyclopedia title, not a literal leading article.
+        subject = subject.replacingOccurrences(
+            of: #"^(?:a|an|the)\s+"#, with: "",
+            options: [.regularExpression, .caseInsensitive])
+        return subject.trimmingCharacters(in: .whitespaces)
+    }
+
     public static func singularize(_ s: String) -> String {
         guard s.count > 3 else { return s }
         // "libraries" → "library". Must precede the generic -s rule
@@ -836,7 +1215,9 @@ public enum IntentRouter {
     /// full-match range). `NSRegularExpression` verbatim with a
     /// `nil`-to-`Substring[]` adapter.
     private static func match(_ text: String, pattern: String) -> [String]? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]
+        ) else {
             return nil
         }
         let range = NSRange(text.startIndex..., in: text)
@@ -850,6 +1231,100 @@ public enum IntentRouter {
             }
         }
         return out
+    }
+
+    /// "How old is X?" is usually a founding-age question for cities,
+    /// institutions, and companies. Route it to the same grounded fact
+    /// extractor, but mark it tentative: people and other subjects without a
+    /// foundation event must fall back to the general article path rather
+    /// than receiving a misleading "not found" terminal answer.
+    private static func ageFactoidIntent(
+        _ text: String, focus: ConversationFocus?
+    ) -> DirectIntent? {
+        guard let captures = match(text, pattern:
+            #"^(?:how\s+(?:many\s+years\s+)?old\s+(?:is|was)|what(?:'s|\s+is)\s+the\s+age\s+of)\s+(.+)$"#),
+              captures.count == 1
+        else { return nil }
+
+        var subject = captures[0].trimmingCharacters(in: .whitespaces)
+        let referential = ["it", "this", "that", "the place", "the company"]
+        if referential.contains(subject.lowercased()),
+           let focused = focus?.primaryEntity?.name,
+           !focused.isEmpty {
+            subject = focused
+        }
+        guard subject.count >= 2, !referential.contains(subject.lowercased()) else {
+            return nil
+        }
+        return DirectIntent(toolName: "article_factoid", args: [
+            "title": .string(subject),
+            "predicate": .string("age"),
+            "implicit": .bool(false),
+            "tentative": .bool(true),
+        ])
+    }
+
+    /// Reapply a pending factoid predicate after the user chooses one item
+    /// from a clarification list ("the second one", "the state", or the
+    /// exact label). Without this, the list resolver would open a generic
+    /// article overview and silently forget the original "How old...?".
+    public static func factoidSelectionIntent(
+        _ text: String, predicate: String, focus: ConversationFocus
+    ) -> DirectIntent? {
+        guard predicate == "age" || predicate == "foundation" else {
+            return nil
+        }
+        let resolved = ReferenceResolver.resolve(text, focus: focus)
+        guard case .listSelection(_, let entity) = resolved.binding else {
+            return nil
+        }
+        var args: [String: AnyJSONValue] = [
+            "title": .string(entity.name),
+            "predicate": .string(predicate),
+            "implicit": .bool(false),
+        ]
+        if predicate == "age" { args["tentative"] = .bool(true) }
+        return DirectIntent(toolName: "article_factoid", args: args)
+    }
+
+    /// Recognise only founding-date questions whose answers can be extracted
+    /// verbatim from an article lead. Broad "when" questions deliberately
+    /// remain on the normal grounded path: dates of battles, deaths, terms in
+    /// office, etc. need different evidence rules.
+    private static func foundingFactoidIntent(
+        _ lower: String, focus: ConversationFocus?
+    ) -> DirectIntent? {
+        let explicit = match(lower, pattern:
+            #"^(?:when\s+(?:was|were)|what\s+year\s+(?:was|were)|in\s+what\s+year\s+(?:was|were))\s+(.+?)\s+(?:first\s+)?(founded|established|formed|created|incorporated)$"#)
+        // Voice recognition and casual typed questions sometimes stop at
+        // "When was Apple?". Treat that as a *tentative* company-founding
+        // request. The adapter applies a second, strict organization-language
+        // gate and falls back to normal routing on "When was the Alamo?".
+        let implicit = explicit == nil
+            ? match(lower, pattern: #"^when\s+was\s+(.+)$"#)
+            : nil
+        guard let captures = explicit ?? implicit,
+              explicit != nil ? captures.count == 2 : captures.count == 1
+        else { return nil }
+
+        var subject = captures[0].trimmingCharacters(in: .whitespaces)
+        let referentialSubjects: Set<String> = [
+            "it", "they", "the company", "the organization",
+            "the organisation", "the business", "the school", "the city",
+        ]
+        if referentialSubjects.contains(subject),
+           let focused = focus?.primaryEntity?.name,
+           !focused.isEmpty {
+            subject = focused
+        }
+        guard subject.count >= 2, !referentialSubjects.contains(subject) else {
+            return nil
+        }
+        return DirectIntent(toolName: "article_factoid", args: [
+            "title": .string(subject),
+            "predicate": .string("foundation"),
+            "implicit": .bool(explicit == nil),
+        ])
     }
 
     // MARK: - Reply synthesis
@@ -1012,6 +1487,238 @@ public enum IntentRouter {
             return firstSentences(text, maxChars: 260)
         }
         return "Here's what I have on \(title)."
+    }
+
+    /// Validate the internal `article_factoid` result before the host treats
+    /// it as terminal. A title resolution alone is insufficient: the result
+    /// must carry the evidence sentence selected from the Wikipedia lead.
+    public static func articleFactoidResultIsUsable(
+        _ fullResult: [String: Any]
+    ) -> Bool {
+        if let err = fullResult["error"] as? String, !err.isEmpty { return false }
+        let fact = (fullResult["fact"] as? String) ?? ""
+        return !fact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Render the already-grounded fact without invoking the language model.
+    public static func synthesizeArticleFactoidReply(
+        args: [String: Any], fullResult: [String: Any]
+    ) -> String {
+        if (fullResult["ambiguous"] as? Bool) == true {
+            let title = (fullResult["requested_title"] as? String)
+                ?? (args["title"] as? String) ?? "that subject"
+            let suggestions = (fullResult["suggestions"] as? [String]) ?? []
+            if !suggestions.isEmpty {
+                let names = Array(suggestions.prefix(3))
+                let list: String
+                if names.count == 1 {
+                    list = names[0]
+                } else if names.count == 2 {
+                    list = "\(names[0]) or \(names[1])"
+                } else {
+                    list = names.dropLast().joined(separator: ", ")
+                        + ", or \(names.last!)"
+                }
+                return "Which “\(title)” did you mean — \(list)?"
+            }
+            return "Which “\(title)” did you mean? Please add a city, state, country, person, or other qualifier."
+        }
+        if let fact = fullResult["fact"] as? String,
+           !fact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return fact
+        }
+        let title = (fullResult["requested_title"] as? String)
+            ?? (args["title"] as? String) ?? "that subject"
+        return "I couldn't find a founding date for \(title) in the offline Wikipedia."
+    }
+
+    /// Locate a sentence (or adjacent sentence pair) containing both a
+    /// founding synonym and a four-digit year. This is intentionally strict:
+    /// no year means no deterministic answer. `title` is used only to replace
+    /// an opening "It" / "The company" with an unambiguous spoken subject.
+    public static func extractFoundationFact(
+        from rawText: String, title: String? = nil
+    ) -> String? {
+        var text = ArticleHeuristics.stripCitations(rawText)
+        text = text.replacingOccurrences(
+            of: #"\s+"#, with: " ", options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        // A deceased person's lead normally opens with a parenthesized
+        // birth–death range. This extractor is for the age of places and
+        // organizations; do not accidentally age the person from a company,
+        // government, or institution they later established.
+        let opener = String(text.prefix(500))
+        if opener.range(
+            of: #"\([^)]*\b(?:1[0-9]{3}|20[0-9]{2})\b[^)]*[–—][^)]*\b(?:1[0-9]{3}|20[0-9]{2})\b[^)]*\)"#,
+            options: .regularExpression
+        ) != nil {
+            return nil
+        }
+
+        let sentences = factoidSentences(text)
+        guard !sentences.isEmpty else { return nil }
+        func hasVerb(_ s: String) -> Bool {
+            s.range(
+                of: #"\b(?:founded|established|formed|created|incorporated)\b"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }
+        func hasYear(_ s: String) -> Bool {
+            s.range(of: #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#,
+                    options: .regularExpression) != nil
+        }
+
+        for i in sentences.indices {
+            var candidate: String?
+            if hasVerb(sentences[i]), hasYear(sentences[i]) {
+                candidate = sentences[i]
+            } else if hasVerb(sentences[i]), i + 1 < sentences.count,
+                      hasYear(sentences[i + 1]) {
+                candidate = sentences[i] + " " + sentences[i + 1]
+            } else if hasYear(sentences[i]), i + 1 < sentences.count,
+                      hasVerb(sentences[i + 1]) {
+                candidate = sentences[i] + " " + sentences[i + 1]
+            }
+            guard var fact = candidate else { continue }
+            if let title, !title.isEmpty {
+                let lower = fact.lowercased()
+                for prefix in ["the company ", "the organization ",
+                               "the organisation ", "it "] {
+                    if lower.hasPrefix(prefix) {
+                        fact = title + " " + fact.dropFirst(prefix.count)
+                        break
+                    }
+                }
+            }
+            if fact.count > 500 {
+                fact = String(fact.prefix(500))
+                    .trimmingCharacters(in: .whitespaces) + "…"
+            }
+            return fact
+        }
+        return nil
+    }
+
+    /// Ground a place's practical "age" in the start of its modern
+    /// settlement when Wikipedia states that more clearly than a formal
+    /// founding date. This deliberately requires a dated arrival/landing
+    /// immediately tied to a settlement sentence, so an explorer merely
+    /// visiting the area is not mistaken for the city's origin. Formal
+    /// founding/incorporation remains the fallback.
+    public static func extractPlaceOriginFact(
+        from rawText: String, title: String? = nil
+    ) -> String? {
+        var text = ArticleHeuristics.stripCitations(rawText)
+        text = text.replacingOccurrences(
+            of: #"\s+"#, with: " ", options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        let sentences = factoidSentences(text)
+        func hasYear(_ sentence: String) -> Bool {
+            sentence.range(
+                of: #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#,
+                options: .regularExpression
+            ) != nil
+        }
+        func matches(_ pattern: String, _ sentence: String) -> Bool {
+            sentence.range(
+                of: pattern, options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }
+
+        // Prefer an explicit founding statement in the same sentence.
+        for sentence in sentences where hasYear(sentence) {
+            if matches(#"\b(?:founded|founding\s+date)\b"#, sentence) {
+                return sentence
+            }
+        }
+
+        // For states, legal admission/statehood is the meaningful age basis;
+        // an earlier treaty may describe how the territory was acquired but
+        // not when the state came into existence.
+        for sentence in sentences where hasYear(sentence) {
+            if matches(#"\b(?:admitted\s+to\s+(?:the\s+)?union|became\s+(?:a|the)\s+state|statehood)\b"#,
+                       sentence) {
+                return sentence
+            }
+        }
+
+        // Real city leads often define the modern settlement as a dated
+        // settlers' arrival followed immediately by "The settlement ...".
+        for i in sentences.indices where hasYear(sentences[i]) {
+            guard matches(#"\b(?:arrived|landed)\b"#, sentences[i]) else {
+                continue
+            }
+            let next = i + 1 < sentences.count ? sentences[i + 1] : ""
+            let context = sentences[i] + " " + next
+            guard matches(#"\bsettlement\b"#, context),
+                  matches(#"\b(?:named|moved|established|founded)\b"#, context)
+            else { continue }
+            return context.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // If no settlement origin is stated, a formal city/town
+        // incorporation is a clear and reproducible age basis.
+        for sentence in sentences where hasYear(sentence) {
+            if matches(#"\b(?:incorporated|re-incorporated)\b"#, sentence),
+               matches(#"\b(?:city|town)\b"#, sentence) {
+                return sentence
+            }
+        }
+        return extractFoundationFact(from: text, title: title)
+    }
+
+    /// Lightweight sentence segmentation with abbreviation protection. The
+    /// generic `. ` split breaks company names at "Inc." immediately before
+    /// the founding verb, which is precisely the evidence we need to retain.
+    private static func factoidSentences(_ text: String) -> [String] {
+        let abbreviations: Set<String> = [
+            "inc", "co", "corp", "ltd", "llc", "plc", "u.s", "u.k",
+            "mr", "mrs", "ms", "dr", "prof", "st", "no", "vs",
+        ]
+        var out: [String] = []
+        var start = text.startIndex
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            guard c == "." || c == "!" || c == "?" else {
+                i = text.index(after: i)
+                continue
+            }
+            let after = text.index(after: i)
+            guard after == text.endIndex || text[after].isWhitespace else {
+                i = after
+                continue
+            }
+            let prefix = text[start..<i]
+            let token = prefix.split(whereSeparator: { $0.isWhitespace }).last
+                .map { String($0).lowercased()
+                    .trimmingCharacters(in: .punctuationCharacters) } ?? ""
+            let dottedInitialism = token.contains(".")
+            if c == ".", (abbreviations.contains(token)
+                          || token.count == 1 || dottedInitialism) {
+                i = after
+                continue
+            }
+            let end = after
+            let sentence = String(text[start..<end])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty { out.append(sentence) }
+            start = end
+            while start < text.endIndex, text[start].isWhitespace {
+                start = text.index(after: start)
+            }
+            i = start
+        }
+        if start < text.endIndex {
+            let tail = String(text[start...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty { out.append(tail) }
+        }
+        return out
     }
 
     /// Caption for an `article_overview` MISS — the title didn't resolve

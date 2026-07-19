@@ -12,6 +12,30 @@ import XCTest
 @testable import MCPZimKit
 
 final class DiscussRetrievalTests: XCTestCase {
+    func testChronologicalContinuationInheritsPreviousFacet() {
+        let resolved = ArticleHeuristics.contextualizedDiscussionQuestion(
+            "Then what happened in Soviet times",
+            previousQuestion: "Tell me about Buddhism there")
+        XCTAssertTrue(resolved.contains("Soviet times"))
+        XCTAssertTrue(resolved.hasSuffix("— buddhism"))
+        XCTAssertEqual(
+            Set(ArticleHeuristics.questionKeywords(resolved)),
+            Set(["soviet", "times", "buddhism"]))
+    }
+
+    func testExplicitTopicHandoffDoesNotInheritPreviousFacet() {
+        XCTAssertEqual(
+            ArticleHeuristics.contextualizedDiscussionQuestion(
+                "Then tell me about Donald Trump",
+                previousQuestion: "Tell me about Buddhism there"),
+            "Then tell me about Donald Trump")
+        XCTAssertEqual(
+            ArticleHeuristics.contextualizedDiscussionQuestion(
+                "What is the population?",
+                previousQuestion: "Tell me about Buddhism there"),
+            "What is the population?")
+    }
+
 
     /// Section titles from the actual Putin article (as logged on
     /// device), with condensed but realistic bodies.
@@ -189,6 +213,10 @@ final class DiscussRetrievalTests: XCTestCase {
             for: "What about his parents?"), 2)
         XCTAssertEqual(ArticleHeuristics.groundedPassageLimit(
             for: "Explain how gravitational waves are created."), 4)
+        XCTAssertEqual(ArticleHeuristics.groundedPassageCharacterLimit(
+            for: "Where did he go to school?"), 1_200)
+        XCTAssertEqual(ArticleHeuristics.groundedPassageCharacterLimit(
+            for: "How many people died there?"), 1_100)
     }
 
     func testGroundedWindowFindsParentsInMiddleInsteadOfPrefix() {
@@ -234,6 +262,114 @@ final class DiscussRetrievalTests: XCTestCase {
         XCTAssertTrue(window.contains("182"), "got: \(window)")
     }
 
+    func testDeathQuestionPrefersConsensusRangeOverOpeningClaim() {
+        let text = """
+        Santa Anna claimed that 600 Texians had been killed, with only 70 Mexican soldiers killed and 300 wounded. His secretary reported 400 killed. Other estimates of Mexican soldiers killed ranged from 60 to 200, with 250–300 wounded. Most Alamo historians place Mexican casualties at 400–600. This represented about one quarter of the assault force. Most eyewitnesses counted between 182 and 257 Texians killed. Some historians believe one Texian escaped but later died of his wounds.
+        """
+        let window = ArticleHeuristics.groundedPassageWindow(
+            text, question: "How many people died there?", maxChars: 300)
+        XCTAssertTrue(window.contains("182"), "got: \(window)")
+        XCTAssertTrue(window.contains("257"), "got: \(window)")
+        XCTAssertFalse(window.hasPrefix("Santa Anna claimed"), "got: \(window)")
+    }
+
+    func testExtractiveParentAnswerPreservesNamesAndRoles() {
+        let evidence = """
+        Vladimir Putin was the youngest of three children born to Vladimir Spiridonovich Putin and Maria Ivanovna Putina. His mother was a factory worker. His father was a conscript in the Soviet Navy who served in the submarine fleet.
+        """
+        let answer = ArticleHeuristics.groundedExtractiveAnswer(
+            question: "What about his parents?", passages: [evidence])
+        XCTAssertNotNil(answer)
+        XCTAssertTrue(answer!.contains("Vladimir Spiridonovich Putin"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("Maria Ivanovna Putina"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("factory worker"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("Soviet Navy"), "got: \(answer!)")
+        XCTAssertFalse(answer!.contains("grandfather"), "got: \(answer!)")
+    }
+
+    func testExtractiveParentAnswerPrefersCleanFamilySentenceOverDamagedLead() {
+        let damagedLead = """
+        February 11, 1731] – December 14, 1799) was a Founding Father and the first president. George Washington was the first of six children of Augustine and Mary Ball Washington.
+        """
+        let family = """
+        He was the first of six children of Augustine and Mary Ball Washington. His father was Augustine Washington. His mother was Mary Ball Washington.
+        """
+        let answer = ArticleHeuristics.groundedExtractiveAnswer(
+            question: "Who were his parents?", passages: [damagedLead, family])
+        XCTAssertNotNil(answer)
+        XCTAssertTrue(answer!.contains("Augustine"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("Mary Ball"), "got: \(answer!)")
+        XCTAssertFalse(answer!.contains("February 11"), "got: \(answer!)")
+    }
+
+    func testExtractiveDeathAnswerKeepsKilledSeparateFromCasualties() {
+        let evidence = """
+        Santa Anna claimed that 600 Texians had been killed, with only 70 Mexican soldiers killed and 300 wounded. His secretary reported 400 killed. Other estimates of Mexican soldiers killed ranged from 60 to 200, with 250–300 wounded. Most Alamo historians place Mexican casualties at 400–600. Most eyewitnesses counted between 182 and 257 Texians killed.
+        """
+        let answer = ArticleHeuristics.groundedExtractiveAnswer(
+            question: "How many people died there?", passages: [evidence])
+        XCTAssertNotNil(answer)
+        XCTAssertTrue(answer!.contains("60 to 200"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("182 and 257"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("casualties at 400–600"), "got: \(answer!)")
+        XCTAssertFalse(answer!.contains("400–600 dead"), "got: \(answer!)")
+        XCTAssertFalse(answer!.hasPrefix("Santa Anna claimed"), "got: \(answer!)")
+    }
+
+    func testExtractiveAnswerLeavesOpenEndedTurnForBonsai() {
+        XCTAssertNil(ArticleHeuristics.groundedExtractiveAnswer(
+            question: "Why was the battle important?",
+            passages: ["The battle became a symbol of resistance."]))
+    }
+
+    func testExtractivePostGraduationAnswerKeepsCareerTimeline() {
+        let evidence = """
+        Main article: Intelligence career of Vladimir Putin
+
+        In 1975, Putin joined the KGB and trained at the 401st KGB School in Okhta, Leningrad. In 1996, he moved to Moscow and joined the administration of President Boris Yeltsin.
+        """
+        let answer = ArticleHeuristics.groundedExtractiveAnswer(
+            question: "What did he do after graduating?",
+            passages: [evidence])
+        XCTAssertNotNil(answer)
+        XCTAssertTrue(answer!.contains("1975"), "got: \(answer!)")
+        XCTAssertTrue(answer!.contains("joined the KGB"), "got: \(answer!)")
+        XCTAssertFalse(answer!.contains("1996"), "got: \(answer!)")
+        XCTAssertFalse(answer!.contains("Main article"), "got: \(answer!)")
+    }
+
+    func testCollegeQuestionStaysInBiographyEarlyLife() {
+        let sections = [
+            ArticleSection(title: "", level: 0,
+                           text: "George Washington was the first president."),
+            ArticleSection(title: "Early life (1732–1752)", level: 2,
+                           text: "Washington did not have the formal education his brothers received at Appleby Grammar School in England."),
+            ArticleSection(title: "Presidency", level: 2,
+                           text: "He served two terms as president."),
+        ]
+        XCTAssertTrue(ArticleHeuristics.sectionsCoverQuestion(
+            sections, "Did he go to college?"))
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "Did he go to college?",
+            sources: [(title: "George Washington", sections: sections)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "Early life (1732–1752)")
+    }
+
+    func testAfterGraduatingPrefersCareerSection() {
+        let sections = [
+            ArticleSection(title: "", level: 0,
+                           text: "Vladimir Putin is a Russian politician."),
+            ArticleSection(title: "After the 2022 invasion of Ukraine", level: 2,
+                           text: "Events after the invasion affected Russian politics."),
+            ArticleSection(title: "Intelligence career", level: 2,
+                           text: "After graduating in 1975, Putin joined the KGB."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "What did he do after graduating?",
+            sources: [(title: "Vladimir Putin", sections: sections)], k: 2)
+        XCTAssertEqual(ranked.first?.section.title, "Intelligence career")
+    }
+
     func testCombatantsQuestionRanksArmyOrForcesHeading() {
         let sections = [
             ArticleSection(title: "", level: 0, text: "A major battle."),
@@ -260,6 +396,32 @@ final class DiscussRetrievalTests: XCTestCase {
             "How were they first detected?",
             sources: [(title: "Gravitational waves", sections: sections)], k: 2)
         XCTAssertEqual(ranked.first?.section.title, "History")
+    }
+
+    func testFounderQuestionRetrievesGoogleBrainOriginEvidence() {
+        let sections = [
+            ArticleSection(title: "", level: 0, text:
+                "Google Brain began in 2011 as a part-time research collaboration "
+                + "between Google Fellow Jeff Dean, researcher Greg Corrado, and "
+                + "Stanford professor Andrew Ng."),
+            ArticleSection(title: "Google Translate", level: 2, text:
+                "Google Brain developed neural machine translation systems."),
+            ArticleSection(title: "Controversies", level: 2, text:
+                "Google Brain co-founder Samy Bengio announced his resignation in 2021."),
+        ]
+
+        XCTAssertTrue(ArticleHeuristics.sectionsCoverQuestion(
+            sections, "Who are the founders of Google Brain?",
+            articleTitle: "Google Brain"))
+        let ranked = ArticleHeuristics.rankSectionsMultiSource(
+            "Who are the founders of Google Brain?",
+            sources: [(title: "Google Brain", sections: sections)], k: 2)
+        XCTAssertTrue(ranked.contains { item in
+            item.section.title.isEmpty || item.section.title == "Controversies"
+        }, "got: \(ranked.map { $0.section.title })")
+        XCTAssertFalse(ranked.contains {
+            $0.section.title == "Google Translate"
+        }, "irrelevant product section should not displace origin evidence")
     }
 
     func testGroundedWindowCapsLongUnpunctuatedEvidenceBlock() {

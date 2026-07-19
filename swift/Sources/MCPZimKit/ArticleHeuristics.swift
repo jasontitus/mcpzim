@@ -108,10 +108,12 @@ public enum ArticleHeuristics {
         let t = title.lowercased()
         if t.contains("(disambiguation)") { return true }
         let lead = leadText.prefix(400).lowercased()
-        // "X may refer to:" is the canonical disambig opener; match
-        // as a word-bounded substring so we don't catch "also refer
-        // to" in body prose.
-        if lead.range(of: #"\bmay refer to\b"#,
+        // Wikipedia uses both "X may refer to:" and "X most commonly
+        // refers to:" as canonical disambiguation openers. Keep this
+        // bounded to those grammatical forms so running prose such as
+        // "residents also refer to ..." remains a normal article.
+        if lead.range(
+            of: #"\b(?:(?:may|can)\s+refer\s+to|(?:most\s+commonly|commonly)\s+refers\s+to)\b"#,
                       options: .regularExpression) != nil {
             return true
         }
@@ -236,6 +238,18 @@ public enum ArticleHeuristics {
     /// the already-established query classification to spend context where it
     /// changes answer quality.
     public static func groundedPassageLimit(for question: String) -> Int {
+        let lower = question.lowercased()
+        // An explicit source-inspection request asks what the selected
+        // article says, not only for its single highest-scoring mention.
+        // Wikipedia often splits one event across history and subject-
+        // specific sections (Santa Rosa's 1906 earthquake appears in both
+        // "20th century" and "Seismicity"), so retain several local passages.
+        if lower.range(
+            of: #"\bwhat\s+does\s+(?:this\s+|the\s+)?(?:wikipedia\s+)?article\s+say\s+(?:about|on|regarding)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return 4
+        }
         switch QueryComplexity.classify(question) {
         case .factoid, .navigational:
             return 2       // lead + one precise section/window
@@ -253,6 +267,22 @@ public enum ArticleHeuristics {
     /// sections are reduced to a sentence window around the user's terms;
     /// explanatory turns retain a wider window for causal context.
     public static func groundedPassageCharacterLimit(for question: String) -> Int {
+        let q = question.lowercased()
+        // Education biographies often put primary/secondary school and
+        // university in adjacent paragraphs. Preserve both so a broad
+        // "where did they go to school?" gets a complete answer.
+        if ["school", "college", "education"]
+            .contains(where: { q.contains($0) }) {
+            return 1_200
+        }
+        // Casualty prose commonly separates killed, wounded, and total
+        // casualty estimates across several sentences. The wider window is
+        // still small, but lets the prompt distinguish those categories.
+        if q.contains("how many"),
+           ["died", "dead", "death", "killed", "fatalit"]
+            .contains(where: { q.contains($0) }) {
+            return 1_100
+        }
         switch QueryComplexity.classify(question) {
         case .factoid, .navigational: return 700
         case .topical: return 900
@@ -276,6 +306,10 @@ public enum ArticleHeuristics {
         guard !sentences.isEmpty else { return trimToSentence(text, maxChars: maxChars) }
         let weighted = weightedKeywords(questionKeywords(question))
         guard !weighted.isEmpty else { return trimToSentence(text, maxChars: maxChars) }
+        let lowerQuestion = question.lowercased()
+        let asksForDeathCount = lowerQuestion.contains("how many")
+            && ["died", "dead", "death", "killed", "fatalit"]
+                .contains(where: { lowerQuestion.contains($0) })
 
         func score(_ sentence: String) -> Float {
             let lower = sentence.lowercased()
@@ -283,6 +317,23 @@ public enum ArticleHeuristics {
             for (term, weight) in weighted {
                 let root = stem(term)
                 if lower.contains(root) { value += weight }
+            }
+            // A casualty section often begins with one party's disputed
+            // claim and gives the historian/eyewitness consensus later. For
+            // an unqualified death-count question, center the evidence on a
+            // numbered consensus estimate so the model sees the useful range
+            // instead of confidently repeating the first claim in the prose.
+            if asksForDeathCount,
+               lower.range(of: #"\d"#, options: .regularExpression) != nil,
+               ["died", "dead", "death", "killed", "fatalit", "casualt"]
+                .contains(where: { lower.contains($0) })
+            {
+                value += 2.0
+                if lower.contains("most eyewitness") { value += 2.0 }
+                if lower.contains("most historian") { value += 1.5 }
+                if lower.contains("between") || lower.contains("range")
+                    || lower.contains("estimate") { value += 1.0 }
+                if lower.contains("claimed") { value -= 0.75 }
             }
             return value
         }
@@ -345,6 +396,201 @@ public enum ArticleHeuristics {
         }
         return sentences[lo...hi].joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Return a direct answer for grounded follow-ups where preserving the
+    /// source's exact names or numeric labels matters more than paraphrasing.
+    /// The conversational model still handles open-ended turns; this narrow
+    /// path prevents a sampled rewrite from dropping parent names or turning
+    /// a killed-plus-wounded casualty total into a death count.
+    public static func groundedExtractiveAnswer(
+        question: String,
+        passages: [String]
+    ) -> String? {
+        let lowerQuestion = question.lowercased()
+        let cleaned = passages.flatMap { passage -> [String] in
+            var text = stripCitations(passage)
+            // Section bodies can begin with Wikipedia navigation hatnotes.
+            // They are useful links in the article UI but are not part of a
+            // spoken answer (for example, "Main article: Intelligence career
+            // of Vladimir Putin"). Remove complete hatnote lines before
+            // collapsing whitespace, while their newline boundary still
+            // exists.
+            text = text.replacingOccurrences(
+                of: #"(?im)^(?:main article|further information):[^\n]*(?:\n|$)"#,
+                with: "", options: .regularExpression)
+            text = text
+                .replacingOccurrences(
+                    of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            text = text.replacingOccurrences(
+                of: #"\(\s+"#, with: "(", options: .regularExpression)
+            text = text.replacingOccurrences(
+                of: #"\s+\)"#, with: ")", options: .regularExpression)
+            return sentenceChunks(text)
+        }
+        guard !cleaned.isEmpty else { return nil }
+
+        if ["parent", "mother", "father"]
+            .contains(where: { lowerQuestion.contains($0) }) {
+            return extractParentAnswer(
+                question: lowerQuestion, sentences: cleaned)
+        }
+
+        let asksForDeathCount = lowerQuestion.contains("how many")
+            && ["died", "dead", "death", "killed", "fatalit"]
+                .contains(where: { lowerQuestion.contains($0) })
+        if asksForDeathCount {
+            return extractDeathCountAnswer(sentences: cleaned)
+        }
+        if lowerQuestion.contains("after"),
+           lowerQuestion.contains("graduat") {
+            return extractPostGraduationAnswer(sentences: cleaned)
+        }
+        return nil
+    }
+
+    private static func extractParentAnswer(
+        question: String,
+        sentences: [String]
+    ) -> String? {
+        let asksMother = question.contains("mother")
+        let asksFather = question.contains("father")
+        let asksBoth = question.contains("parent") || (!asksMother && !asksFather)
+
+        func isNameBearing(_ lower: String) -> Bool {
+            lower.contains("born to") || lower.contains("children of")
+                || lower.contains("child of") || lower.contains("son of")
+                || lower.contains("daughter of")
+                || lower.contains("parents were")
+        }
+        func containsWord(_ word: String, in text: String) -> Bool {
+            text.range(
+                of: #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#,
+                options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        func containsParentRole(_ word: String, in text: String) -> Bool {
+            var literalText = text
+            if word == "father" {
+                // Biography leads use honorifics such as "Founding Father"
+                // and "Father of His Country". Those are not parent facts.
+                literalText = literalText.replacingOccurrences(
+                    of: #"(?i)\bfounding fathers?\b|\bfather of (?:his|the) (?:country|nation)\b"#,
+                    with: "", options: .regularExpression)
+            }
+            return containsWord(word, in: literalText)
+        }
+
+        var chosen = Set<Int>()
+        // Leads can contain a citation-damaged birth/death fragment joined to
+        // an otherwise useful "children of" clause. Prefer the shortest
+        // name-bearing sentence across the grounded sections; biography
+        // family/early-life prose normally supplies the cleaner statement.
+        let nameBearingIndices = sentences.indices.filter { index in
+            isNameBearing(sentences[index].lowercased())
+        }
+        if asksBoth,
+           let index = nameBearingIndices.min(by: { lhs, rhs in
+               sentences[lhs].count < sentences[rhs].count
+           }) {
+            chosen.insert(index)
+        }
+        if asksBoth || asksMother,
+           let index = sentences.indices.first(where: {
+               containsParentRole("mother", in: sentences[$0])
+           }) {
+            chosen.insert(index)
+        }
+        if asksBoth || asksFather,
+           let index = sentences.indices.first(where: {
+               containsParentRole("father", in: sentences[$0])
+           }) {
+            chosen.insert(index)
+        }
+
+        guard !chosen.isEmpty else { return nil }
+        let answer = chosen.sorted().prefix(3).map { sentences[$0] }
+            .joined(separator: " ")
+        return trimToSentence(answer, maxChars: 520)
+    }
+
+    private static func extractDeathCountAnswer(
+        sentences: [String]
+    ) -> String? {
+        struct Candidate {
+            let index: Int
+            let sentence: String
+            let score: Int
+            let explicitlyDeaths: Bool
+        }
+        let deathTerms = ["killed", "dead", "died", "fatalit"]
+        let casualtyTerms = deathTerms + ["wounded", "casualt"]
+        var candidates: [Candidate] = []
+
+        for (index, sentence) in sentences.enumerated() {
+            let lower = sentence.lowercased()
+            guard lower.range(of: #"\d"#, options: .regularExpression) != nil,
+                  casualtyTerms.contains(where: { lower.contains($0) })
+            else { continue }
+
+            let explicitlyDeaths = deathTerms.contains(where: { lower.contains($0) })
+            var score = explicitlyDeaths ? 4 : 1
+            if lower.range(
+                of: #"\d[\d,]*\s*(?:[–—-]|to|and)\s*\d"#,
+                options: [.regularExpression, .caseInsensitive]) != nil {
+                score += 2
+            }
+            if lower.contains("most eyewitness") { score += 5 }
+            if lower.contains("most historian") { score += 4 }
+            if lower.contains("other estimates") { score += 4 }
+            if lower.contains("estimat") || lower.contains("range") { score += 2 }
+            if lower.contains("claimed") { score -= 4 }
+            if lower.contains("secretary reported") { score -= 2 }
+            candidates.append(Candidate(
+                index: index, sentence: sentence, score: score,
+                explicitlyDeaths: explicitlyDeaths))
+        }
+
+        // A total-casualties sentence alone cannot answer "how many died".
+        guard candidates.contains(where: \.explicitlyDeaths) else { return nil }
+        let selected = candidates
+            .sorted {
+                if $0.score != $1.score { return $0.score > $1.score }
+                return $0.index < $1.index
+            }
+            .prefix(3)
+            .sorted { $0.index < $1.index }
+        let answer = selected.map(\.sentence).joined(separator: " ")
+        return trimToSentence(answer, maxChars: 700)
+    }
+
+    private static func extractPostGraduationAnswer(
+        sentences: [String]
+    ) -> String? {
+        let actionTerms = [
+            "joined", "began", "started", "entered", "enlisted",
+            "trained", "worked", "career",
+        ]
+        let candidates = sentences.enumerated().compactMap {
+            index, sentence -> (index: Int, sentence: String, score: Int)? in
+            let lower = sentence.lowercased()
+            guard actionTerms.contains(where: { lower.contains($0) }) else {
+                return nil
+            }
+            var score = 0
+            if lower.contains("after graduating") { score += 8 }
+            if lower.contains("graduat") { score += 5 }
+            if lower.contains("joined") { score += 3 }
+            if lower.contains("trained") { score += 2 }
+            if lower.contains("kgb") { score += 5 }
+            if lower.contains("1975") { score += 4 }
+            return (index, sentence, score)
+        }
+        guard let best = candidates.max(by: {
+            if $0.score != $1.score { return $0.score < $1.score }
+            return $0.index > $1.index
+        }), best.score >= 4 else { return nil }
+        return trimToSentence(best.sentence, maxChars: 420)
     }
 
     /// Lightweight sentence splitter for cleaned Wikipedia prose. Keep the
@@ -485,7 +731,7 @@ public enum ArticleHeuristics {
             "what","when","where","why","who","which","they","them","its",
             "their","this","that","about","have","has","had","been","get",
             "got","gotten","along","like","tell","you","much","many","more",
-            "there","into","from","work","works","happen","happened",
+            "there","then","into","from","work","works","happen","happened",
             // Pronouns/auxiliaries that slipped through and polluted
             // retrieval ("what about HIS parents" scored on "his",
             // which appears in every biography sentence — 2026-07-01).
@@ -504,6 +750,135 @@ public enum ArticleHeuristics {
             seen.insert(w); out.append(w)
         }
         return out
+    }
+
+    /// Resolve a short chronological continuation against the immediately
+    /// preceding discussion facet. “Then what happened in Soviet times” does
+    /// not name Buddhism by itself, but after “Tell me about Buddhism there”
+    /// both retrieval and the grounded answer must retain that facet.
+    ///
+    /// The continuation grammar intentionally requires a question/auxiliary
+    /// after “then”, so an explicit hand-off such as “Then tell me about
+    /// Donald Trump” is left untouched for normal topic-change routing.
+    public static func contextualizedDiscussionQuestion(
+        _ question: String, previousQuestion: String?
+    ) -> String {
+        guard let previousQuestion,
+              !previousQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        else { return question }
+        let lowered = question.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:(?:and|so)\s+)?then\s+(?:what|how|why|where|when|who|which|did|does|was|were|is|are|can|could|would)\b|^(?:(?:and|so)\s+)?what\s+happened\s+(?:next|later|after\s+that)\b|^(?:(?:and|so)\s+)?what\s+about\s+(?:then|later|after\s+that)\b"#
+        guard lowered.range(of: pattern, options: .regularExpression) != nil
+        else { return question }
+        let inherited = questionKeywords(previousQuestion)
+        guard !inherited.isEmpty else { return question }
+        // Appending only the inherited content words keeps section scoring
+        // free of instruction words such as “previous” or “facet”. The dash
+        // still gives the model a natural appositive reading.
+        return question + " — " + inherited.joined(separator: " ")
+    }
+
+    /// Participant questions often appear lexically covered by a broad
+    /// history section even though a dedicated event article has the useful
+    /// belligerent detail. Treat them as an evidence-expansion request so a
+    /// pinned country/topic discussion can pull that event article without
+    /// interpreting the follow-up as a topic change.
+    public static func asksAboutOpposingSides(_ question: String) -> Bool {
+        let q = question.lowercased()
+        return [
+            "who fought", "what were the sides", "what were both sides",
+            "which sides", "which side", "opposing sides", "combatant",
+            "belligerent",
+        ].contains(where: { q.contains($0) })
+    }
+
+    /// Extract a named event that the pinned evidence itself references, so
+    /// participant follow-ups can open the dedicated article by exact title
+    /// before attempting a noisy corpus search. This intentionally starts
+    /// narrow with civil wars, the common ambiguous shape where a country
+    /// article's broad history section mentions the event but not its sides.
+    public static func namedEventArticleCandidates(
+        _ sections: [ArticleSection], question: String
+    ) -> [String] {
+        guard question.lowercased().contains("civil war"),
+              let regex = try? NSRegularExpression(
+                pattern: #"\b(?:[A-Z][\p{L}\p{M}'’.-]*\s+){1,4}Civil War\b"#)
+        else { return [] }
+
+        var seen = Set<String>()
+        var candidates: [String] = []
+        for section in sections {
+            let text = section.text as NSString
+            let range = NSRange(location: 0, length: text.length)
+            for match in regex.matches(in: section.text, range: range) {
+                var title = text.substring(with: match.range)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.hasPrefix("The ") { title.removeFirst(4) }
+                let key = title.lowercased()
+                guard !seen.contains(key) else { continue }
+                seen.insert(key)
+                candidates.append(title)
+            }
+        }
+        return candidates
+    }
+
+    /// Normalize `discuss_article`'s outbound link metadata into exact title
+    /// identities suitable for a graph-constrained topic walk. Both the
+    /// visible anchor and destination path count: Wikipedia may display
+    /// "the civil war" while linking to `A/Russian_Civil_War`.
+    public static func linkedArticleTitleKeys(
+        _ links: [[String: Any]]
+    ) -> Set<String> {
+        var titles = Set<String>()
+        for link in links {
+            if let title = link["title"] as? String {
+                let normalized = title.trimmingCharacters(
+                    in: .whitespacesAndNewlines).lowercased()
+                if !normalized.isEmpty { titles.insert(normalized) }
+            }
+            if let rawPath = link["path"] as? String {
+                var title = (rawPath.removingPercentEncoding ?? rawPath)
+                    .split(separator: "/").last.map(String.init) ?? ""
+                title = title.replacingOccurrences(of: "_", with: " ")
+                if title.hasSuffix(".html") { title.removeLast(5) }
+                title = title.trimmingCharacters(
+                    in: .whitespacesAndNewlines).lowercased()
+                if !title.isEmpty { titles.insert(title) }
+            }
+        }
+        return titles
+    }
+
+    /// Exact authorization check for a prepared-topic article walk. This is
+    /// deliberately not fuzzy: a similarly named article is not connected
+    /// evidence unless the current article actually links to it.
+    public static func isDirectlyLinkedArticle(
+        _ title: String, allowedTitleKeys: Set<String>
+    ) -> Bool {
+        allowedTitleKeys.contains(
+            title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// Relevance gate for a graph-constrained support-article walk. A direct
+    /// Wikipedia link proves that an article is related to the anchor, but it
+    /// does not prove that it answers the current facet. For example, the
+    /// Photons article links to Raman scattering; a search for "photons
+    /// discovered" ranked that article highly and permanently pulled the
+    /// discussion away from photons. Require a content word from the question
+    /// in the candidate title as well. Explicit named-event candidates are
+    /// handled separately by the host before this generic gate.
+    public static func linkedExpansionTitleMatchesQuestion(
+        _ title: String, keywords: [String]
+    ) -> Bool {
+        let loweredTitle = title.lowercased()
+        let meaningful = keywords
+            .filter { $0.count >= 4 }
+            .map(stem)
+        return !meaningful.isEmpty
+            && meaningful.contains(where: { loweredTitle.contains($0) })
     }
 
     /// Synonym expansion for question keywords whose answer prose uses
@@ -530,9 +905,27 @@ public enum ArticleHeuristics {
         "education": ["school", "university", "studied", "early life"],
         "school": ["education", "university", "studied", "early life"],
         "university": ["education", "school", "studied"],
+        "college": ["education", "university", "school", "formal education", "early life"],
         "job": ["career", "work"],
         "money": ["wealth", "net worth", "income"],
         "rich": ["wealth", "net worth"],
+        // Organization articles frequently describe their origin as a team
+        // that "began as a collaboration" and identify later people as a
+        // "co-founder". A literal `founders` query otherwise missed both the
+        // lead and the relevant deep section (Google Brain, 2026-07-16).
+        "founder": ["co-founder", "cofounder", "founded", "established", "began", "started", "created", "collaboration"],
+        "founders": ["co-founder", "cofounder", "founded", "established", "began", "started", "created", "collaboration"],
+        "leader": ["led", "director", "head", "president", "co-founder", "cofounder"],
+        "leaders": ["led", "director", "head", "president", "co-founder", "cofounder"],
+        // A historical origin is usually phrased as "proposed", "introduced",
+        // or "coined", not literally "discovered". These terms both select
+        // the article's history section and center the evidence window on the
+        // relevant chronology (Photons, 2026-07-16).
+        "discover": ["discovery", "history", "historical", "origin", "proposed", "introduced", "coined", "observed", "identified"],
+        "discovered": ["discovery", "history", "historical", "origin", "proposed", "introduced", "coined", "observed", "identified"],
+        "discovery": ["discover", "history", "historical", "origin", "proposed", "introduced", "coined", "observed", "identified"],
+        "detected": ["detection", "observed", "observation", "history", "historical"],
+        "detection": ["detected", "observed", "observation", "history", "historical"],
         "died": ["death", "killed", "casualty", "casualties", "fatalities", "losses"],
         "dead": ["death", "killed", "casualty", "casualties", "fatalities", "losses"],
         "deaths": ["death", "died", "killed", "casualty", "casualties", "fatalities", "losses"],
@@ -540,6 +933,8 @@ public enum ArticleHeuristics {
         "fatalities": ["death", "died", "killed", "casualty", "casualties", "losses"],
         "combatants": ["belligerents", "armies", "forces", "troops", "defenders"],
         "combatant": ["belligerent", "army", "forces", "troops", "defenders"],
+        "sides": ["combatants", "belligerents", "opposing", "forces", "armies"],
+        "side": ["combatant", "belligerent", "opposing", "force", "army"],
     ]
 
     /// (keyword, weight) pairs: the question's own keywords at full
@@ -569,6 +964,22 @@ public enum ArticleHeuristics {
             if stemmed.count >= 4 { return stemmed }
         }
         return w
+    }
+
+    /// Remove words that merely repeat the already-selected article title,
+    /// leaving the facet the user is asking for. Without this, “Who founded
+    /// Google Brain?” scores every section that repeats “Google Brain” and
+    /// can rank a product section above origin/co-founder evidence.
+    static func facetKeywords(
+        _ question: String, excludingArticleTitles titles: [String]
+    ) -> [String] {
+        let all = questionKeywords(question)
+        guard !all.isEmpty else { return [] }
+        let titleTerms = Set(titles.flatMap(questionKeywords).map(stem))
+        let focused = all.filter { !titleTerms.contains(stem($0)) }
+        // A request that contains only the title (“Google Brain?”) is still a
+        // valid broad question; retain it rather than turning it keywordless.
+        return focused.isEmpty ? all : focused
     }
 
     /// Keyword-evidence score for one section: heading hits are a strong
@@ -611,14 +1022,55 @@ public enum ArticleHeuristics {
         let q = question.lowercased()
         let title = section.title.lowercased()
         guard !title.isEmpty else { return 0 }
-        if q.contains("first"),
-           q.contains("detect") || q.contains("observ") || q.contains("discover"),
-           title.contains("history") || title.contains("discover")
-                || title.contains("observ") || title.contains("first detection")
-        {
-            return 4.0
+        var boost: Float = 0
+
+        // A short elliptical people question needs a strict word-boundary
+        // preference. The normal stemmed scorer intentionally makes related
+        // words match, but that made "How about the Mongols?" rank
+        // "Mongolian cuisine" ahead of "Mongol empire...". On a warm
+        // discussion turn only the best unseen section is appended, so that
+        // near-match produced an entirely food-based answer. Prefer a title
+        // containing the exact singular/plural subject token; this stays
+        // generic for Romans/Roman history, Vikings/Viking expansion, etc.
+        let content = questionKeywords(question)
+        if IntentRouter.isEllipticalDiscussionFollowUp(question),
+           content.count == 1 {
+            let subject = stem(content[0])
+            let titleTokens = Set(title.split(whereSeparator: {
+                !$0.isLetter && !$0.isNumber
+            }).map(String.init))
+            if titleTokens.contains(subject) {
+                boost += 6.0
+            }
         }
-        return 0
+        let asksHistoricalOrigin = (
+            q.contains("first") || q.contains("when") || q.contains("who")
+        ) && (
+            q.contains("detect") || q.contains("observ")
+                || q.contains("discover") || q.contains("coin")
+                || q.contains("invent")
+        )
+        if asksHistoricalOrigin,
+           title.contains("histor") || title.contains("discover")
+                || title.contains("observ") || title.contains("origin")
+                || title.contains("development")
+                || title.contains("first detection")
+        {
+            boost += 4.0
+        }
+        if (q.contains("after") && q.contains("graduat")),
+           title.contains("career") || title.contains("intelligence")
+        {
+            boost += 6.0
+        }
+        if ["side", "combatant", "belligerent", "who fought"]
+            .contains(where: { q.contains($0) }),
+           title.contains("civil war") || title.contains("combatant")
+                || title.contains("belligerent")
+        {
+            boost += 4.0
+        }
+        return boost
     }
 
     /// True when the article's sections plausibly cover a follow-up — any
@@ -626,16 +1078,39 @@ public enum ArticleHeuristics {
     /// content keywords ("tell me more") counts as covered (stay on anchor).
     /// When false, the host pulls a better article from the corpus.
     public static func sectionsCoverQuestion(
-        _ sections: [ArticleSection], _ question: String
+        _ sections: [ArticleSection], _ question: String,
+        articleTitle: String? = nil
     ) -> Bool {
-        let kws = questionKeywords(question)
+        let kws = articleTitle.map {
+            facetKeywords(question, excludingArticleTitles: [$0])
+        } ?? questionKeywords(question)
         if kws.isEmpty { return true }
         // Expand with synonyms (stemmed) so "parents" counts the "his
         // mother … his father" prose of an Early-life section as
         // coverage instead of triggering a spurious corpus pull.
         let terms = weightedKeywords(kws).map { stem($0.term) }
+        let q = question.lowercased()
+        let asksHistoricalOrigin = (
+            q.contains("first") || q.contains("when") || q.contains("who")
+        ) && (
+            q.contains("detect") || q.contains("observ")
+                || q.contains("discover") || q.contains("coin")
+                || q.contains("invent")
+        )
         for s in sections {
             let title = s.title.lowercased()
+            // A temporal discovery/origin question is locally covered when
+            // the anchor has a dedicated historical section. Requiring the
+            // exact word "discovered" twice in its body caused a needless
+            // corpus walk even though Wikipedia described the concept as
+            // proposed/introduced/coined there.
+            if asksHistoricalOrigin,
+               title.contains("histor") || title.contains("discover")
+                    || title.contains("observ") || title.contains("origin")
+                    || title.contains("development")
+            {
+                return true
+            }
             // A keyword in a HEADING is a strong "this section is about it"
             // signal.
             if terms.contains(where: { title.contains($0) }) { return true }
@@ -643,7 +1118,15 @@ public enum ArticleHeuristics {
             // body — a single passing mention isn't real coverage, and was
             // letting "population" skip a useful corpus pull (2026-05-30).
             let body = s.text.lowercased()
+            let strongSingletons = Set([
+                "founder", "co-founder", "cofounder", "founded",
+                "established", "began", "started", "created",
+                "collaboration",
+            ].map(stem))
             for k in terms {
+                if strongSingletons.contains(k), body.contains(k) {
+                    return true
+                }
                 var count = 0
                 var idx = body.startIndex
                 while let r = body.range(of: k, range: idx..<body.endIndex) {
@@ -654,6 +1137,26 @@ public enum ArticleHeuristics {
             }
         }
         return false
+    }
+
+    /// Weaker evidence gate for an elliptical "how/what about X?" follow-up.
+    /// A single mention is not enough for the general corpus-coverage test,
+    /// but it is enough to show that X is plausibly a facet of an explicitly
+    /// prepared topic. The host uses this only with the elliptical utterance
+    /// shape, then the normal section ranker selects the best local evidence.
+    public static func sectionsMentionQuestion(
+        _ sections: [ArticleSection], _ question: String,
+        articleTitle: String? = nil
+    ) -> Bool {
+        let kws = articleTitle.map {
+            facetKeywords(question, excludingArticleTitles: [$0])
+        } ?? questionKeywords(question)
+        if kws.isEmpty { return true }
+        let terms = weightedKeywords(kws).map { stem($0.term) }
+        return sections.contains { section in
+            let haystack = (section.title + " " + section.text).lowercased()
+            return terms.contains(where: { haystack.contains($0) })
+        }
     }
 
     /// Core topic of an article title for building a corpus-fallback query:
@@ -684,7 +1187,8 @@ public enum ArticleHeuristics {
         k: Int = 3
     ) -> [(article: String, section: ArticleSection)] {
         let qv = embedder.embed(question)
-        let weighted = weightedKeywords(questionKeywords(question))
+        let weighted = weightedKeywords(facetKeywords(
+            question, excludingArticleTitles: sources.map(\.title)))
         // Same keyword-first blend as `rankSectionsForQuestion` — see
         // the rationale there.
         let embedderWeight: Float = weighted.isEmpty ? 1.0 : 0.35

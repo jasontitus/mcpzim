@@ -54,20 +54,12 @@ public struct QwenChatMLTemplate: ModelTemplate {
     ) -> String {
         var out = "<|im_start|>system\n"
         out += systemMessage
-        // `/no_think` is Qwen 3's built-in soft switch that disables
-        // the `<think>…</think>` reasoning scratchpad for this turn (and,
-        // when in the system prompt, every subsequent turn). Without it
-        // Qwen happily spends 300+ tokens deliberating "should I call
-        // nearby_places or something else… or maybe…" before emitting
-        // the actual tool call — burning KV cache (~hundreds of MB at
-        // 6k-token prompts) and adding multi-second latency per turn.
-        // We strip any CLOSED `<think>…</think>` in `stripReasoning`
-        // anyway, but the tokens still paid cache memory before the
-        // strip. Disabling at the source is cheaper than cleaning up
-        // after. Keep as the final marker before the close tag so a
-        // per-turn `/think` directive in a user message can still flip
-        // it back on if we ever need richer reasoning (e.g. math).
-        out += "\n\n/no_think"
+        // Do not add Qwen 3's `/no_think` soft switch here. Bonsai is based
+        // on Qwen 3.6, whose model card explicitly says the old soft switch
+        // is unsupported. The empty assistant reasoning block emitted by
+        // `renderTranscript` below is the family-wide hard switch equivalent
+        // of `enable_thinking=false` and is what actually prevents a hidden
+        // reasoning decode.
         if !tools.isEmpty {
             out += "\n\n# Tools\n\n"
             out += "You may call one or more functions to assist with the user query.\n\n"
@@ -126,11 +118,10 @@ public struct QwenChatMLTemplate: ModelTemplate {
         // `<think>\n\n</think>\n\n` right after the assistant open when
         // `enable_thinking=False` — an empty reasoning block that tells
         // the model "I've finished thinking, now answer". We mirror that
-        // here because Qwen 3.5 ignores Qwen 3's `/no_think` soft
-        // directive (which we still leave in the system turn as a
-        // belt-and-braces for Qwen 3). Qwen 3 accepts the empty block
-        // as well — it reads as a finished reasoning span and skips
-        // its own `<think>…</think>`. Net effect across both families:
+        // here because Qwen 3.5+ does not support Qwen 3's `/no_think`
+        // soft directive. Qwen 3 accepts the empty block as well — it
+        // reads as a finished reasoning span and skips its own
+        // `<think>…</think>`. Net effect across both families:
         // no reasoning scratchpad in the generated output, cutting
         // ~hundreds of tokens of KV per turn.
         out += "<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -318,12 +309,12 @@ public struct QwenChatMLTemplate: ModelTemplate {
         return out
     }
 
-    /// Qwen 3's reasoning mode wraps its scratchpad in `<think>…</think>`
-    /// before the user-facing answer. Strip any CLOSED span — leave
-    /// open-but-unclosed spans alone so the UI doesn't flash half a
-    /// reasoning block while streaming.
+    /// Qwen's reasoning mode wraps its scratchpad in `<think>…</think>`
+    /// before the user-facing answer. Strip any CLOSED span. Some Qwen 3.x
+    /// templates inject the opener into the prompt, so a generated completion
+    /// can contain only `scratchpad</think>answer`; handle that close-only
+    /// form too. Leave open-but-unclosed spans alone for streaming callers.
     public func stripReasoning(_ text: String) -> String {
-        guard text.contains("<think>") else { return text }
         var out = text
         // Remove every <think>…</think> span (non-greedy, spans lines).
         while let openRange = out.range(of: "<think>"),
@@ -339,6 +330,13 @@ public struct QwenChatMLTemplate: ModelTemplate {
                 after = out.index(after, offsetBy: 1)
             }
             out.removeSubrange(openRange.lowerBound..<after)
+        }
+        // The opening tag can be part of the formatted prompt rather than
+        // the generated buffer. Everything before the last unmatched closer
+        // is hidden reasoning; only the suffix is the user-facing answer.
+        if let danglingClose = out.range(of: "</think>", options: .backwards) {
+            out = String(out[danglingClose.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return out
     }

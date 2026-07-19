@@ -15,6 +15,15 @@ final class QwenClippedToolCallTests: XCTestCase {
 
     private let tpl = QwenChatMLTemplate()
 
+    func testSystemPromptUsesHardSwitchInsteadOfUnsupportedQwen36SoftSwitch() {
+        let prompt = tpl.renderTranscript(
+            systemPreamble: "Answer briefly.", tools: [],
+            turns: [ChatTurn(role: .user, text: "Hello")])
+
+        XCTAssertFalse(prompt.contains("/no_think"))
+        XCTAssertTrue(prompt.hasSuffix("<think>\n\n</think>\n\n"))
+    }
+
     func testRebuiltAssistantTurnStrictlyExtendsGenerationPrompt() {
         let system = "Answer briefly."
         let user = ChatTurn(role: .user, text: "Tell me about the Alamo.")
@@ -335,6 +344,12 @@ final class QwenClippedToolCallTests: XCTestCase {
     func testStripReasoningRemovesClosedThinkSpan() {
         let raw = "<think>Let me figure this out…</think>\n\nThe answer is 42."
         XCTAssertEqual(tpl.stripReasoning(raw), "The answer is 42.")
+    }
+
+    func testStripReasoningHandlesTemplateInjectedOpeningTag() {
+        let answer = "TensorFlow and neural machine translation were major innovations."
+        let raw = "Draft answer that must stay hidden.\n</think>\n\n\(answer)"
+        XCTAssertEqual(tpl.stripReasoning(raw), answer)
     }
 
     func testStripReasoningLeavesOpenThinkInPlace() {

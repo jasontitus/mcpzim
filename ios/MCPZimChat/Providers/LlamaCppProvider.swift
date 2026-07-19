@@ -35,6 +35,13 @@ public enum LlamaKVCacheType: String, Sendable {
     case q8_0 = "Q8_0"
 }
 
+public struct LlamaPrefixCacheResult: Sendable {
+    public let mode: String
+    public let tokens: Int
+    public let bytes: UInt64
+    public let seconds: TimeInterval
+}
+
 public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     // MARK: - ModelProvider conformance
@@ -80,6 +87,15 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// phone-class Bonsai uses Q4_0, matching Prism's recommended compact
     /// context configuration and leaving more iOS jetsam headroom.
     public let kvCacheType: LlamaKVCacheType
+    /// Optional publisher/model-specific sampler settings. Bonsai uses
+    /// Qwen 3.6's non-thinking recipe, while the older app
+    /// default was 0.3 / 0.9 / top-k 40. Keeping this on the provider avoids
+    /// accidentally applying Bonsai's higher-entropy recipe to every model.
+    public let samplingProfile: GenerationSamplingProfile?
+    /// Seed for probabilistic sampling. Production uses llama.cpp's random
+    /// default; the Mac evaluator supplies a fixed seed so paired A/B runs
+    /// compare retrieval strategies rather than different random draws.
+    public let samplingSeed: UInt32
 
     // MARK: - State + llama.cpp handles
 
@@ -129,6 +145,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         approximateMemoryMB: Int = 3200,
         contextTokens: Int = 8192,
         kvCacheType: LlamaKVCacheType = .q8_0,
+        samplingProfile: GenerationSamplingProfile? = nil,
+        samplingSeed: UInt32 = 0xFFFF_FFFF,
         template: any ModelTemplate = Gemma3Template()
     ) {
         self.id = id
@@ -141,6 +159,8 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         self.approximateMemoryMB = approximateMemoryMB
         self.contextTokens = contextTokens
         self.kvCacheType = kvCacheType
+        self.samplingProfile = samplingProfile
+        self.samplingSeed = samplingSeed
         self.template = template
         // One-time global init. Safe to call repeatedly per
         // llama.cpp docs; the backend keeps a refcount.
@@ -184,26 +204,47 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         }
     }
 
+    /// True only when the complete, byte-validated GGUF is already present.
+    /// The Mac Models menu uses this to distinguish "Download" from "Use"
+    /// instead of asking the user to infer cache state from a spinner.
+    public var hasCompleteCachedGGUF: Bool {
+        if let localGGUFPath {
+            return FileManager.default.fileExists(atPath: localGGUFPath)
+        }
+        guard let url = cachedGGUFURL else { return false }
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        return (try? cachedFileHasExpectedSize(url)) == true
+    }
+
+    private var cachedGGUFURL: URL? {
+        guard let cachesDir = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask).first
+        else { return nil }
+        let repoSlug = huggingFaceRepo.replacingOccurrences(of: "/", with: "--")
+        return cachesDir
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("hub")
+            .appendingPathComponent("models--\(repoSlug)")
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("main")
+            .appendingPathComponent(ggufFilename)
+    }
+
     /// Download the GGUF via HuggingFace's direct resolve URL if not
     /// already on disk. We store under the same
     /// `<caches>/huggingface/hub/models--<repo>/snapshots/main/<file>`
     /// layout the MLX path uses — single cache directory for both
     /// runtimes, saves duplicate downloads when switching providers.
     private func ensureGGUFDownloaded() async throws -> URL {
-        let cachesDir = FileManager.default.urls(
-            for: .cachesDirectory, in: .userDomainMask).first!
-        let repoSlug = huggingFaceRepo.replacingOccurrences(of: "/", with: "--")
-        let destDir = cachesDir
-            .appendingPathComponent("huggingface")
-            .appendingPathComponent("hub")
-            .appendingPathComponent("models--\(repoSlug)")
-            .appendingPathComponent("snapshots")
-            .appendingPathComponent("main")
+        guard let destURL = cachedGGUFURL else {
+            throw LlamaCppError.custom("could not resolve the app cache directory")
+        }
+        let destDir = destURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: destDir, withIntermediateDirectories: true)
-        let destURL = destDir.appendingPathComponent(ggufFilename)
         if FileManager.default.fileExists(atPath: destURL.path) {
             if try cachedFileHasExpectedSize(destURL) {
+                debugSink?("model cache hit · \(ggufFilename) · \(Self.byteCountDescription(try Self.fileSize(destURL)))")
                 return destURL
             }
             let bytes = try Self.fileSize(destURL)
@@ -240,6 +281,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             throw LlamaCppError.custom("bad HF URL: \(urlStr)")
         }
         log.info("GGUF download start: \(urlStr, privacy: .public)")
+        debugSink?("model download start · \(ggufFilename) · \(Self.byteCountDescription(expectedGGUFBytes))")
         // Emit "0%" immediately so the UI flips from `.loading` to
         // `.downloading(0)` before the first byte arrives.
         set(.downloading(0))
@@ -268,20 +310,30 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
         // Expected byte size via HEAD (HF serves Content-Length or
         // x-linked-size for LFS files). 0 = unknown → reporter falls back.
-        var expectedBytes: Int64 = 0
-        var headReq = URLRequest(url: url)
-        headReq.httpMethod = "HEAD"
-        if let (_, headResp) = try? await session.data(for: headReq),
-           let http = headResp as? HTTPURLResponse {
-            if http.expectedContentLength > 0 {
-                expectedBytes = http.expectedContentLength
-            } else if let linked = http.value(forHTTPHeaderField: "x-linked-size"),
-                      let n = Int64(linked) {
-                expectedBytes = n
+        // Prefer the publisher-pinned byte count. It is both more reliable
+        // than the Xet CDN's redirect headers and available before the first
+        // response byte, so a 7 GB model never gets measured against the old
+        // generic 5 GB fallback.
+        var expectedBytes: Int64 = expectedGGUFBytes ?? 0
+        if expectedBytes == 0 {
+            var headReq = URLRequest(url: url)
+            headReq.httpMethod = "HEAD"
+            if let (_, headResp) = try? await session.data(for: headReq),
+               let http = headResp as? HTTPURLResponse {
+                if http.expectedContentLength > 0 {
+                    expectedBytes = http.expectedContentLength
+                } else if let linked = http.value(forHTTPHeaderField: "x-linked-size"),
+                          let n = Int64(linked) {
+                    expectedBytes = n
+                }
             }
         }
         let progress = ProgressReporter(expectedBytes: expectedBytes) { [weak self] fraction in
             self?.set(.downloading(fraction))
+            let percent = Int((fraction * 100).rounded(.down))
+            if percent > 0, percent.isMultiple(of: 10) {
+                self?.debugSink?("model download progress · \(percent)%")
+            }
         }
 
         var resumeData: Data? = try? Data(contentsOf: resumeBlobURL)
@@ -353,6 +405,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         }
         try FileManager.default.moveItem(at: finalTmp, to: destURL)
         log.info("GGUF download complete: \(destURL.path, privacy: .public)")
+        debugSink?("model download complete · \(ggufFilename) · \(Self.byteCountDescription(try? Self.fileSize(destURL)))")
         // Transition back to .loading so the UI knows we're now doing
         // the model open + Metal warm-up, not still downloading.
         set(.loading)
@@ -370,6 +423,11 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             throw LlamaCppError.custom("could not read file size for \(url.path)")
         }
         return size.int64Value
+    }
+
+    private static func byteCountDescription(_ bytes: Int64?) -> String {
+        guard let bytes, bytes > 0 else { return "size unknown" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     /// Join a complete set of deployment parts without ever exposing a
@@ -497,6 +555,293 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         defer { modelLock.unlock() }
         guard let vocab else { return nil }
         return Self.tokenize(vocab: vocab, prompt: prompt).count
+    }
+
+    /// Ensure the context is ready to extend `fullPrompt` without paying to
+    /// prefill its large static system+tools prefix.
+    ///
+    /// Three paths are possible:
+    /// - the live context is already an exact prefix of `fullPrompt`
+    ///   (ordinary append-only conversation);
+    /// - a serialized static-prefix state is restored from SSD;
+    /// - the prefix is evaluated once, persisted, then reused in memory.
+    ///
+    /// llama.cpp state files are snapshots, not an automatic SSD cache tier.
+    /// The caller owns the cache key/path and must change it whenever the
+    /// model, runtime, template, system prompt, or tools change.
+    public func preparePromptPrefix(
+        prefixPrompt: String,
+        fullPrompt: String,
+        cacheURL: URL,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> LlamaPrefixCacheResult {
+        let worker = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { throw LlamaCppError.notLoaded }
+            return try self.preparePromptPrefixLocked(
+                prefixPrompt: prefixPrompt,
+                fullPrompt: fullPrompt,
+                cacheURL: cacheURL,
+                progress: progress)
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            // `Task.detached` does not inherit cancellation from its waiter.
+            // Propagate it explicitly so a model/library switch only waits for
+            // the current 512-token batch instead of the entire prefill.
+            worker.cancel()
+        }
+    }
+
+    private func preparePromptPrefixLocked(
+        prefixPrompt: String,
+        fullPrompt: String,
+        cacheURL: URL,
+        progress: (@Sendable (Double) -> Void)?
+    ) throws -> LlamaPrefixCacheResult {
+        let started = ProcessInfo.processInfo.systemUptime
+        modelLock.lock()
+        defer { modelLock.unlock() }
+        guard let ctx, let vocab else { throw LlamaCppError.notLoaded }
+
+        let prefixTokens = Self.tokenize(vocab: vocab, prompt: prefixPrompt)
+        let fullTokens = Self.tokenize(vocab: vocab, prompt: fullPrompt)
+        guard !prefixTokens.isEmpty,
+              prefixTokens.count < fullTokens.count,
+              fullTokens.prefix(prefixTokens.count).elementsEqual(prefixTokens)
+        else {
+            throw LlamaCppError.custom(
+                "static prompt cache is not an exact token prefix of the request")
+        }
+
+        // Best case: the previous request is itself a strict prefix of this
+        // one. Keep the richer live state; restoring only the static prefix
+        // would throw away useful conversation KV/recurrent state.
+        if !cachedTokens.isEmpty,
+           cachedTokens.count < fullTokens.count,
+           fullTokens.prefix(cachedTokens.count).elementsEqual(cachedTokens)
+        {
+            return LlamaPrefixCacheResult(
+                mode: "live-append",
+                tokens: cachedTokens.count,
+                bytes: 0,
+                seconds: ProcessInfo.processInfo.systemUptime - started)
+        }
+
+        // A prior restore/prime may already have left exactly the reusable
+        // prefix in memory.
+        if cachedTokens == prefixTokens {
+            return LlamaPrefixCacheResult(
+                mode: "memory-prefix",
+                tokens: prefixTokens.count,
+                bytes: 0,
+                seconds: ProcessInfo.processInfo.systemUptime - started)
+        }
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: cacheURL.path) {
+            var restoredTokens = [Int32](
+                repeating: 0, count: contextTokens)
+            var restoredCount = 0
+            if let mem = llama_get_memory(ctx) {
+                _ = llama_memory_seq_rm(mem, 0, 0, -1)
+            }
+            let loadStarted = ProcessInfo.processInfo.systemUptime
+            let restoredBytes = cacheURL.path.withCString { path in
+                restoredTokens.withUnsafeMutableBufferPointer { buf in
+                    guard let base = buf.baseAddress else { return 0 }
+                    return llama_state_seq_load_file(
+                        ctx, path, 0, base, buf.count, &restoredCount)
+                }
+            }
+            let loadedTokens = Array(restoredTokens.prefix(restoredCount))
+            if restoredBytes > 0, loadedTokens == prefixTokens {
+                cachedTokens = loadedTokens
+                let bytes = Self.fileSizeIfPresent(cacheURL)
+                Self.touchAndPrunePrefixCache(keeping: cacheURL)
+                let seconds = ProcessInfo.processInfo.systemUptime - loadStarted
+                debug(String(format:
+                    "prefix cache · disk restore · %d tok · %.1f MB · %.3fs",
+                    restoredCount, Double(bytes) / 1_048_576, seconds))
+                return LlamaPrefixCacheResult(
+                    mode: "disk-restore",
+                    tokens: restoredCount,
+                    bytes: bytes,
+                    seconds: ProcessInfo.processInfo.systemUptime - started)
+            }
+
+            // A state file from a different model/runtime must never be
+            // handed to generation. Clear any partially restored state and
+            // rebuild under the caller's current cache key.
+            if let mem = llama_get_memory(ctx) {
+                _ = llama_memory_seq_rm(mem, 0, 0, -1)
+            }
+            cachedTokens = []
+            try? fm.removeItem(at: cacheURL)
+            debug("prefix cache · rejected stale/incompatible state; rebuilding")
+        }
+
+        if let mem = llama_get_memory(ctx) {
+            _ = llama_memory_seq_rm(mem, 0, 0, -1)
+        }
+        cachedTokens = []
+
+        let primeStarted = ProcessInfo.processInfo.systemUptime
+        // This is background work and can be preempted by a compact grounded
+        // turn. Keep batches small so cancellation releases `modelLock` in
+        // roughly a quarter of the prior worst case instead of making the
+        // foreground request wait through another 512-token decode.
+        let nBatch = 128
+        var batch = llama_batch_init(Int32(nBatch), 0, 1)
+        defer { llama_batch_free(batch) }
+        var pos: Int32 = 0
+        var i = 0
+        progress?(0)
+        do {
+            while i < prefixTokens.count {
+                if Task.isCancelled { throw CancellationError() }
+                let end = min(i + nBatch, prefixTokens.count)
+                batch.n_tokens = 0
+                for j in i..<end {
+                    Self.batchAdd(
+                        &batch,
+                        token: prefixTokens[j],
+                        pos: pos,
+                        seqIds: [0],
+                        logits: j == prefixTokens.count - 1)
+                    pos += 1
+                }
+                let rc = llama_decode(ctx, batch)
+                guard rc == 0 else {
+                    throw LlamaCppError.custom(
+                        "llama_decode prefix prefill rc=\(rc) at \(i)..<\(end)")
+                }
+                i = end
+                progress?(Double(i) / Double(prefixTokens.count))
+            }
+            cachedTokens = prefixTokens
+        } catch {
+            if let mem = llama_get_memory(ctx) {
+                _ = llama_memory_seq_rm(mem, 0, 0, -1)
+            }
+            cachedTokens = []
+            throw error
+        }
+        let primeSeconds = ProcessInfo.processInfo.systemUptime - primeStarted
+
+        var savedBytes: UInt64 = 0
+        do {
+            let directory = cacheURL.deletingLastPathComponent()
+            try fm.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+            let staging = directory.appendingPathComponent(
+                ".\(cacheURL.lastPathComponent).\(UUID().uuidString).tmp")
+            defer { try? fm.removeItem(at: staging) }
+            let serializedBytes = staging.path.withCString { path in
+                prefixTokens.withUnsafeBufferPointer { buf in
+                    guard let base = buf.baseAddress else { return 0 }
+                    return llama_state_seq_save_file(
+                        ctx, path, 0, base, buf.count)
+                }
+            }
+            guard serializedBytes > 0 else {
+                throw LlamaCppError.custom(
+                    "llama_state_seq_save_file failed for static prefix")
+            }
+            try? fm.removeItem(at: cacheURL)
+            try fm.moveItem(at: staging, to: cacheURL)
+            #if os(iOS)
+            try? fm.setAttributes(
+                [.protectionKey:
+                    FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: cacheURL.path)
+            #endif
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var mutableURL = cacheURL
+            try? mutableURL.setResourceValues(values)
+            savedBytes = Self.fileSizeIfPresent(cacheURL)
+            Self.touchAndPrunePrefixCache(keeping: cacheURL)
+        } catch {
+            // The in-memory prefix is still valid. A full disk should not
+            // turn a model answer into an error; log and continue.
+            debug("prefix cache · SSD save skipped: \(error)")
+        }
+
+        let totalSeconds = ProcessInfo.processInfo.systemUptime - started
+        debug(String(format:
+            "prefix cache · built · %d tok · prefill %.3fs · file %.1f MB · total %.3fs",
+            prefixTokens.count, primeSeconds,
+            Double(savedBytes) / 1_048_576, totalSeconds))
+        return LlamaPrefixCacheResult(
+            mode: savedBytes > 0 ? "built-and-saved" : "built-memory-only",
+            tokens: prefixTokens.count,
+            bytes: savedBytes,
+            seconds: totalSeconds)
+    }
+
+    /// Keep SSD state useful without letting prompt variants grow without
+    /// bound. Entries can differ by model, runtime, context/KV configuration,
+    /// and tool schema; stale variants are discarded oldest first. Always
+    /// retain the state that was just saved/restored even if it alone exceeds
+    /// the soft byte budget.
+    private static func touchAndPrunePrefixCache(keeping cacheURL: URL) {
+        let fm = FileManager.default
+        try? fm.setAttributes(
+            [.modificationDate: Date()], ofItemAtPath: cacheURL.path)
+        let directory = cacheURL.deletingLastPathComponent()
+        guard let files = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [
+                .contentModificationDateKey, .fileSizeKey,
+            ],
+            options: [.skipsHiddenFiles])
+        else { return }
+
+        struct Entry {
+            let url: URL
+            let date: Date
+            let bytes: UInt64
+        }
+        let entries: [Entry] = files.compactMap { url in
+            guard url.pathExtension == "bin", url != cacheURL else {
+                return nil
+            }
+            let values = try? url.resourceValues(forKeys: [
+                .contentModificationDateKey, .fileSizeKey,
+            ])
+            return Entry(
+                url: url,
+                date: values?.contentModificationDate ?? .distantPast,
+                bytes: UInt64(max(0, values?.fileSize ?? 0)))
+        }.sorted { $0.date > $1.date }
+
+        #if os(iOS)
+        let byteBudget: UInt64 = 640 * 1_048_576
+        #else
+        let byteBudget: UInt64 = 1_536 * 1_048_576
+        #endif
+        var keptFiles = 1
+        var keptBytes = fileSizeIfPresent(cacheURL)
+        for entry in entries {
+            if keptFiles < 2, keptBytes + entry.bytes <= byteBudget {
+                keptFiles += 1
+                keptBytes += entry.bytes
+            } else {
+                try? fm.removeItem(at: entry.url)
+            }
+        }
+    }
+
+    /// Forget provider-side conversation state. The serialized static prefix
+    /// remains on SSD and can be restored on the next generic request.
+    public func resetPromptCache() {
+        modelLock.lock()
+        defer { modelLock.unlock() }
+        if let ctx, let mem = llama_get_memory(ctx) {
+            _ = llama_memory_seq_rm(mem, 0, 0, -1)
+        }
+        cachedTokens = []
     }
 
     // MARK: - Generate
@@ -712,20 +1057,35 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
         benchmarkSSDStateCacheIfRequested(ctx: ctx, tokens: tokens)
 
-        // Sampler chain. Match the MLX defaults: greedy-ish with
-        // temp + top-p. `temp=0.0` → force dist sampler to greedy.
+        // Sampler chain. Use a publisher/model-specific profile when one is
+        // installed; otherwise preserve the caller's task-level parameters.
+        // `temp=0.0` → greedy.
+        let modelProfile = parameters.useModelSamplingProfile
+            ? samplingProfile : nil
+        let temperature = modelProfile?.temperature ?? parameters.temperature
+        let topP = modelProfile?.topP ?? parameters.topP
+        let topK = modelProfile?.topK ?? parameters.topK
+        let presencePenalty = modelProfile?.presencePenalty ?? 0
+        debug(String(format: "sampler · temp=%.2f · top-p=%.2f · top-k=%d · presence=%.2f",
+                     temperature, topP, topK, presencePenalty))
         let sp = llama_sampler_chain_init(llama_sampler_chain_default_params())
         defer { llama_sampler_free(sp) }
-        if parameters.temperature <= 0 {
+        if temperature <= 0 {
             llama_sampler_chain_add(sp, llama_sampler_init_greedy())
         } else {
-            llama_sampler_chain_add(sp, llama_sampler_init_top_k(40))
+            if presencePenalty != 0 {
+                llama_sampler_chain_add(sp, llama_sampler_init_penalties(
+                    -1, 1.0, 0.0, Float(presencePenalty)))
+            }
+            if topK > 0 {
+                llama_sampler_chain_add(sp, llama_sampler_init_top_k(Int32(topK)))
+            }
             llama_sampler_chain_add(sp, llama_sampler_init_top_p(
-                Float(parameters.topP), 1))
+                Float(topP), 1))
             llama_sampler_chain_add(sp, llama_sampler_init_temp(
-                Float(parameters.temperature)))
+                Float(temperature)))
             llama_sampler_chain_add(sp, llama_sampler_init_dist(
-                LLAMA_DEFAULT_SEED))
+                samplingSeed))
         }
 
         // Decode loop. Sample → detokenise → emit → feed back.
@@ -898,6 +1258,11 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         case .critical: return "critical"
         @unknown default: return "unknown"
         }
+    }
+
+    private static func fileSizeIfPresent(_ url: URL) -> UInt64 {
+        ((try? FileManager.default.attributesOfItem(
+            atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
     }
 
     private static func tokenize(vocab: OpaquePointer, prompt: String) -> [llama_token] {

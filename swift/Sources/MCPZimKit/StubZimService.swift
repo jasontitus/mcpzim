@@ -31,6 +31,9 @@ public actor StubZimService: ZimService {
         public var routeFromPlaces: [String: RouteFromPlacesResponse] = [:]
         public var search: [String: [SearchHitResult]] = [:]
         public var articleByTitle: [String: ArticleByTitleResponse] = [:]
+        /// Raw article HTML keyed by path. Composite-tool tests use this to
+        /// exercise wikilink and hatnote extraction without a real ZIM.
+        public var articleHTML: [String: String] = [:]
         /// Keyed by article path (see `keyArticleSections`). Serves the
         /// composite tools (`article_overview`, `narrate_article`,
         /// `compare_articles`, `article_relationship`) that need the full
@@ -170,7 +173,20 @@ public actor StubZimService: ZimService {
     //                      a default value).
 
     public func article(path: String, zim: String?) async throws -> ArticleResult {
-        throw StubError.noFixture(method: "article", key: "path=\(path),zim=\(zim ?? "-")")
+        let k = Self.keyArticleSections(path: path)
+        guard let html = fixture.articleHTML[k] else {
+            throw StubError.noFixture(method: "article", key: "path=\(path),zim=\(zim ?? "-")")
+        }
+        let metadata = fixture.articleSections[k]
+        return ArticleResult(
+            zim: metadata?.zim ?? zim ?? "stub-wikipedia",
+            path: path,
+            title: metadata?.title
+                ?? path.split(separator: "/").last.map(String.init)
+                ?? path,
+            mimetype: "text/html",
+            text: html,
+            bytes: html.utf8.count)
     }
 
     public func articleSections(path: String, zim: String?) async throws -> (zim: String, title: String, sections: [ArticleSection]) {

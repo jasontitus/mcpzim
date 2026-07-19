@@ -62,6 +62,23 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(WikiLinks.parse(html: html, max: 5).count, 5)
     }
 
+    func testWikiLinksParseAllIncludesDisambiguationListChoices() {
+        let html = """
+        <p>Washington most commonly refers to:</p>
+        <ul>
+          <li><a href="George_Washington">George Washington</a></li>
+          <li><a href="Washington_(state)">Washington (state)</a></li>
+          <li><a href="Washington,_D.C.">Washington, D.C.</a></li>
+        </ul>
+        """
+        XCTAssertEqual(
+            WikiLinks.parseAll(html: html).map(\.title),
+            ["George Washington", "Washington (state)", "Washington, D.C."]
+        )
+        // Ordinary related-topic extraction intentionally remains prose-only.
+        XCTAssertTrue(WikiLinks.parse(html: html).isEmpty)
+    }
+
     // MARK: - extract
 
     func testPlacesResultBecomesNearbyThreads() {
@@ -107,7 +124,8 @@ final class ConversationThreadsTests: XCTestCase {
         let result: [String: Any] = [
             "html": "<a href=\"Stanford_White\">Stanford White</a>",
             "sections": [
-                ["title": "", "text": "lead"],            // lead skipped
+                ["title": "lead", "text": "opening passage"], // internal label skipped
+                ["title": "", "text": "empty title"],         // empty lead skipped
                 ["title": "History", "text": "..."],
                 ["title": "References", "text": "..."],     // boilerplate skipped
             ],
@@ -117,6 +135,7 @@ final class ConversationThreadsTests: XCTestCase {
         let labels = threads.map(\.label)
         XCTAssertTrue(labels.contains("Stanford White"))
         XCTAssertTrue(labels.contains("What about history?"))
+        XCTAssertFalse(labels.contains("What about lead?"))
         XCTAssertFalse(labels.contains("References"))
         XCTAssertFalse(labels.contains(""))
     }
@@ -167,6 +186,25 @@ final class ConversationThreadsTests: XCTestCase {
             DiscoveryThread(label: "L\($0)", kind: .place, source: .nearbyPlace)
         }
         XCTAssertEqual(ConversationThreads.rank(threads, focus: ConversationFocus(), max: 3).count, 3)
+    }
+
+    func testInternalLeadSectionCannotReachRankOrOffer() {
+        let internalLead = DiscoveryThread(
+            label: "What about lead?", kind: .topic, source: .section,
+            prompt: "What about lead?")
+        let realLeadArticle = DiscoveryThread(
+            label: "Lead", kind: .topic, source: .wikilink,
+            zimPath: "A/Lead")
+
+        XCTAssertFalse(ConversationThreads.isUserFacing(internalLead))
+        XCTAssertTrue(ConversationThreads.isUserFacing(realLeadArticle))
+        XCTAssertEqual(
+            ConversationThreads.rank(
+                [internalLead, realLeadArticle], focus: ConversationFocus()
+            ).map(\.label),
+            ["Lead"]
+        )
+        XCTAssertNil(ConversationThreads.offer([internalLead]))
     }
 
     // MARK: - offer
@@ -291,5 +329,50 @@ final class ConversationThreadsTests: XCTestCase {
         ])
         XCTAssertFalse(suggestions.contains { $0.label.contains("its history") })
         XCTAssertFalse(suggestions.contains { $0.label.contains("miscellaneous") })
+    }
+
+    func testContextualCountryQuestionsAreNotPhrasedAsBiographyQuestions() {
+        let suggestions = ConversationThreads.contextualQuestions(
+            topic: "Mongolia",
+            sections: [
+                ArticleSection(title: "History", level: 2, text: ""),
+                ArticleSection(title: "Education", level: 2, text: ""),
+                ArticleSection(title: "Culture", level: 2, text: ""),
+                ArticleSection(title: "Economy", level: 2, text: ""),
+                ArticleSection(title: "Geography", level: 2, text: ""),
+            ],
+            after: "What happens at Naadam?", max: 4)
+
+        XCTAssertFalse(suggestions.contains {
+            $0.label == "Where did Mongolia go to school?"
+                || $0.label.contains("legacy been assessed")
+        })
+        XCTAssertTrue(suggestions.contains {
+            $0.label == "What is education like in Mongolia?"
+        })
+        XCTAssertTrue(suggestions.contains {
+            $0.label == "How did its history unfold?"
+        })
+    }
+
+    func testReinforcementLearningSuggestionIsNeverMilitaryCombatants() {
+        let suggestions = ConversationThreads.contextualQuestions(
+            topic: "Machine Learning",
+            sections: [
+                ArticleSection(title: "Reinforcement learning", level: 2,
+                               text: "Agents learn from rewards."),
+                ArticleSection(title: "Applications", level: 2,
+                               text: "Machine learning has many uses."),
+                ArticleSection(title: "History", level: 2,
+                               text: "The field developed over decades."),
+            ],
+            after: "What is fine tuning?", max: 4)
+
+        XCTAssertFalse(suggestions.contains {
+            $0.label == "Who were the combatants?"
+        })
+        XCTAssertTrue(suggestions.contains {
+            $0.label == "What about reinforcement learning?"
+        })
     }
 }

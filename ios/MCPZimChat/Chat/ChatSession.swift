@@ -16,9 +16,37 @@ import UIKit
 
 private let chatLog = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "Chat")
 
+/// Synchronous adapter over section vectors prepared by
+/// `NLContextualEmbedding`. `ArticleHeuristics` still supplies its strong
+/// heading/keyword score; these vectors replace its hashing-only semantic
+/// tiebreak without recomputing every section on each follow-up.
+private struct PreparedDiscussionEmbedder: TextEmbedder {
+    let dimension: Int
+    let vectors: [String: [Float]]
+    private let zero: [Float]
+
+    init(vectors: [String: [Float]]) {
+        self.vectors = vectors
+        dimension = vectors.values.first?.count ?? 512
+        zero = [Float](repeating: 0, count: dimension)
+    }
+
+    func embed(_ text: String) -> [Float] {
+        vectors[Self.key(text)] ?? zero
+    }
+
+    static func key(_ text: String) -> String {
+        Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString()
+    }
+}
+
 @MainActor
 @Observable
 public final class ChatSession {
+    /// Stable id used by the macOS app menu for the laptop-class Bonsai
+    /// operating point. The provider itself is registered only on macOS.
+    public static let ternaryBonsai27BModelID = "bonsai-27b-q2-ternary-gguf"
+
     // MARK: - Library (opened ZIMs)
 
     public struct LibraryEntry: Identifiable, Sendable {
@@ -26,6 +54,17 @@ public final class ChatSession {
         public let url: URL
         public let reader: ZimReader
         public var isEnabled: Bool = true
+
+        public init(
+            url: URL,
+            reader: ZimReader,
+            isEnabled: Bool = true
+        ) {
+            self.url = url
+            self.reader = reader
+            self.isEnabled = isEnabled
+        }
+
         public var kind: ZimKind { reader.kind }
         public var displayName: String {
             reader.metadata.title.isEmpty ? url.lastPathComponent : reader.metadata.title
@@ -45,6 +84,10 @@ public final class ChatSession {
 
     public var library: [LibraryEntry] = []
     public var libraryError: String?
+    /// True once the launch-time Documents scan and bookmark restore have
+    /// completed. A cold "Open in Zimfo" event waits for this so the scan's
+    /// replace operation cannot erase the newly opened external file.
+    public private(set) var libraryBootstrapComplete = false
 
     // MARK: - Models
 
@@ -59,12 +102,25 @@ public final class ChatSession {
     /// sits at 1% for minutes on large safetensors downloads.
     public var downloadStartedAt: Date? = nil
 
+    #if os(macOS)
+    /// Drives the Mac Models menu's honest Download/Use wording. The provider
+    /// validates the pinned byte count, so a partial 7 GB transfer is never
+    /// reported as cached.
+    public var isTernaryBonsai27BCached: Bool {
+        guard let provider = models.first(where: {
+            $0.id == Self.ternaryBonsai27BModelID
+        }) as? LlamaCppProvider else { return false }
+        return provider.hasCompleteCachedGGUF
+    }
+    #endif
+
     // MARK: - Transcript
 
     public var messages: [ChatMessage] = []
     public var isGenerating = false
     public var lastError: String?
     private var generationTask: Task<Void, Never>?
+    private var activeQueryTelemetry: AppTelemetry.QueryTrace?
 
     // MARK: - Plumbing
 
@@ -125,6 +181,31 @@ public final class ChatSession {
     }
     private var readingState: ReadingState?
 
+    /// Switchable operating points for the prepared-discussion experiment.
+    /// The shipping app uses `semanticSections`; the Mac harness can select
+    /// `none` to produce a same-model, same-retrieval lexical baseline without
+    /// editing source or rebuilding the app.
+    public enum DiscussionPreparationStrategy: String, Sendable {
+        case none
+        case semanticSections = "semantic-sections"
+    }
+
+    public struct DiscussionPreparationStats: Sendable {
+        public let strategy: DiscussionPreparationStrategy
+        public let title: String
+        public let sectionCount: Int
+        public let vectorCount: Int
+        public let vectorBytes: Int
+        public let elapsedSeconds: Double
+    }
+
+    @ObservationIgnored
+    public var discussionPreparationStrategy: DiscussionPreparationStrategy =
+        .semanticSections
+    @ObservationIgnored
+    public private(set) var lastDiscussionPreparationStats:
+        DiscussionPreparationStats?
+
     /// Pinned topic for "let's discuss X" — grounded MULTI-article RAG.
     /// `sources[0]` is the anchor article; when a follow-up isn't covered by
     /// the articles in hand, the host searches the corpus and appends the
@@ -139,6 +220,17 @@ public final class ChatSession {
         let topic: String
         let zim: String?
         var sources: [(title: String, sections: [ArticleSection])]
+        /// Normalized titles of articles directly linked from any source
+        /// currently in hand. Corpus expansion must follow one of these
+        /// Wikipedia edges; lexical similarity alone is not enough.
+        var linkedArticleTitles: Set<String>
+        /// Exact-text hash → prepared semantic vector for section headings,
+        /// bodies, and (per turn) the current question.
+        var sectionEmbeddings: [String: [Float]]
+        /// Raw prior user question. A chronological continuation such as
+        /// “Then what happened in Soviet times?” inherits its facet for
+        /// retrieval and answer framing without changing the visible text.
+        var lastQuestion: String?
     }
     private var discussionState: DiscussionState?
 
@@ -180,11 +272,12 @@ public final class ChatSession {
     /// answered from Putin's sections. "Tell me about Putin's wealth" (same
     /// subject) still stays grounded in the discussion.
     private func intentLeavesDiscussion(
-        _ intent: DirectIntent, state: DiscussionState
+        _ intent: DirectIntent, state: DiscussionState, userText: String
     ) -> Bool {
         if Self.exitsDiscussion(intent.toolName) { return true }
         let articleTools: Set<String> = [
-            "article_overview", "narrate_article", "get_article_section",
+            "article_overview", "article_factoid", "narrate_article",
+            "get_article_section",
         ]
         guard articleTools.contains(intent.toolName),
               let raw = intent.anyArgs["title"] as? String
@@ -200,7 +293,42 @@ public final class ChatSession {
         inHand.append(state.anchorTitle.lowercased())
         // Same subject when either name contains the other
         // ("putin" ⊂ "vladimir putin").
-        return !inHand.contains { $0.contains(title) || title.contains($0) }
+        if inHand.contains(where: { $0.contains(title) || title.contains($0) }) {
+            return false
+        }
+        // Explicit deictics are stronger than the stateless article parse:
+        // "Buddhism there" must remain a Mongolia facet even when the router
+        // happens to emit article_overview(title: "buddhism there").
+        if IntentRouter.isDiscussionDeicticFollowUp(userText) {
+            return false
+        }
+        // "Tell me about Y" is an explicit hand-off. Otherwise give the
+        // prepared topic resistance: stateless routing often invents a fresh
+        // article title for an ordinary facet question, but if the pinned
+        // evidence covers the user's words we should keep the discussion.
+        if IntentRouter.isExplicitDiscussionTopicChange(userText) {
+            return true
+        }
+        if state.sources.contains(where: {
+            ArticleHeuristics.sectionsCoverQuestion(
+                $0.sections, userText, articleTitle: $0.title)
+        }) {
+            return false
+        }
+        // Elliptical "How/what about X?" phrasing inherits the prepared
+        // subject when X is at least mentioned in that article. The stricter
+        // coverage gate above requires repeated body evidence and therefore
+        // let "And how about Christianity?" escape Lithuania to the global
+        // Christianity article even though Lithuania's religion/history
+        // sections contain the requested facet.
+        if IntentRouter.isEllipticalDiscussionFollowUp(userText),
+           state.sources.contains(where: {
+               ArticleHeuristics.sectionsMentionQuestion(
+                   $0.sections, userText, articleTitle: $0.title)
+           }) {
+            return false
+        }
+        return true
     }
 
     /// When true, double the per-turn reply token budget over the
@@ -303,6 +431,9 @@ public final class ChatSession {
     /// relying on the small model's coreference. Mutated only on the main
     /// actor; `@ObservationIgnored` so updating it doesn't churn the view.
     @ObservationIgnored var focus = ConversationFocus()
+    /// Predicate to reapply when the previous fast path asked the user to
+    /// choose among ambiguous Wikipedia entities.
+    @ObservationIgnored private var pendingFactoidPredicate: String?
 
     /// Incremental on-device semantic recall — embeds the lead of every
     /// article we open (via `SemanticReranker`'s `NLContextualEmbedding`) so
@@ -340,6 +471,31 @@ public final class ChatSession {
     }
     public var setupState: SetupState = .pending
 
+    /// Non-blocking preparation of llama.cpp's invariant system + tool-schema
+    /// prefix. The model is already usable while this runs: the composer stays
+    /// live, deterministic/direct routes can answer immediately, and a turn
+    /// that needs this same model serializes behind the worker safely.
+    public enum PromptOptimizationState: Equatable, Sendable {
+        case idle
+        case checking
+        case restoring
+        case building(progress: Double)
+        case ready
+        case failed
+
+        public var isActive: Bool {
+            switch self {
+            case .checking, .restoring, .building: return true
+            case .idle, .ready, .failed: return false
+            }
+        }
+    }
+    public private(set) var promptOptimizationState:
+        PromptOptimizationState = .idle
+    @ObservationIgnored private var llamaPromptOptimizationTask:
+        Task<Void, Never>?
+    @ObservationIgnored private var llamaPromptOptimizationGeneration = UUID()
+
     /// Guards `runLaunchSequence()` so SwiftUI's `.task` firing twice
     /// (common with NavigationStack view re-identification) doesn't
     /// double-open the library, double-rebuild the ZIM service, or
@@ -362,6 +518,7 @@ public final class ChatSession {
         launchSequenceRan = true
         await scanDocumentsFolder()
         await restoreExternalBookmarks()
+        libraryBootstrapComplete = true
         // Route LocationFetcher's auth-state events into the
         // in-app debug pane + the gist report so "why does it keep
         // prompting me" is answerable from the log rather than by
@@ -371,66 +528,74 @@ public final class ChatSession {
                 self?.debug(msg, category: "Location")
             }
         }
-        LocationFetcher.requestAuthorizationIfNeeded()
+        // Do not put a CoreLocation permission sheet over first launch. On a
+        // fresh install it can race the first Speech recognizer/audio-engine
+        // start and leave voice chat "listening" without recording until the
+        // process is restarted. Authorized installs still start updates now;
+        // undetermined installs prompt after the first navigational request
+        // has already been transcribed and submitted.
         LocationFetcher.start()
         refreshLocationIfStale()
         prewarmBackgroundCaches()
         await runSetupIfNeeded()
-        // Launch-time KV prewarm DISABLED 2026-04-23 after the race
-        // crash on Jazzman 17: prewarm kicks off at t+1s after model
-        // load, encodes the 5,665-token system turn + tool decls, and
-        // spends ~15s prefilling Metal activation buffers (+500 MB
-        // transient, peaking around 3.6 GB). If the user voice-chats
-        // a query within that window (like "Bars in SF") the fast-
-        // path tool dispatch + voice TTS + ZIM search all compound
-        // on top of the in-flight prefill and jetsam fires. The
-        // compose-focus handler (`prewarmSelectedModel`, called from
-        // ChatView's `.onAppear`-style hooks) still triggers prewarm
-        // lazily when the user taps the input — so text-chat keeps
-        // the warm-cache win, and voice-chat pays one full prefill
-        // on the first query (~15s) instead of crashing. Steady-state
-        // peak is unchanged; only the WHEN it spikes moves.
+        // `runSetupIfNeeded` now starts llama.cpp's static-prefix work here,
+        // after the model becomes usable, without blocking the composer.
+        // Direct routes can still answer immediately; a generic LLM turn
+        // waits for this one coalesced worker instead of racing it. Unlike the
+        // older launch-only KV prime, the resulting sequence state is saved
+        // to Application Support and normally restores in milliseconds.
     }
 
     /// Warm the expensive start-up caches off the user's hot path.
     /// Called from `RootView` at launch. Intentionally concurrent —
     /// streetzim graph parse, reranker asset load, and location fix
     /// are all independent, so there's no point serialising them.
-    /// Run the one-time setup that warms the KV cache with the static
-    /// system prompt + tool declarations. Gates the chat UI so the
-    /// user can't send a query until the cache is populated — that
-    /// closes the race that hung the first build of this. Subsequent
-    /// launches load the cache from disk and this returns quickly.
+    /// Finish blocking model setup, then start the static system + tool-schema
+    /// prefix as a separate background phase. The chat UI becomes available
+    /// as soon as the model is ready; the persistent prefix is an optimization,
+    /// not a launch gate.
     @MainActor
     public func runSetupIfNeeded() async {
         guard setupState == .pending else { return }
         setupState = .running(stage: "Loading model…", progress: nil)
-        // Wait for Gemma weights to be in memory. The download/load
-        // itself fires from `loadSelectedModel()` which is kicked off
-        // at init time.
-        if case .ready = modelState {
-            // already loaded
-        } else {
-            for _ in 0..<120 { // ~60 s
-                if case .ready = modelState { break }
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
-            guard case .ready = modelState else {
-                setupState = .failed("Model failed to load within 60 s.")
+        // Wait for the model download/load kicked off during init. A fresh
+        // Bonsai install is several gigabytes and legitimately takes longer
+        // than the old 60-second deadline; timing it out made a healthy first
+        // download look broken. Stay here for as long as bytes are flowing,
+        // expose honest progress, and stop only on a provider failure.
+        modelWait: while true {
+            switch modelState {
+            case .ready:
+                break modelWait
+            case .downloading(let fraction):
+                setupState = .running(
+                    stage: "Downloading \(selectedModel.displayName) — \(Int(fraction * 100))%\nOne-time download; keep Zimfo open.",
+                    progress: fraction
+                )
+            case .loading:
+                setupState = .running(
+                    stage: "Opening \(selectedModel.displayName)…",
+                    progress: nil
+                )
+            case .notLoaded:
+                setupState = .running(
+                    stage: "Preparing \(selectedModel.displayName)…",
+                    progress: nil
+                )
+            case .failed(let message):
+                setupState = .failed(message)
                 return
             }
+            try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        // primeCache disabled: pre-filling ~4500 tokens of KV state
-        // at launch left ~500-700 MB of extra resident memory
-        // permanently allocated. On an iPhone 17 Pro Max already
-        // carrying Gemma 4 weights (~2.6 GB) + Kokoro TTS (~400 MB)
-        // + ZIMs + WebKit, that pushed peak into iOS jetsam territory
-        // and the app got killed mid-reply repeatedly. First user
-        // turn now pays ~3 s of full prefill instead, which is cheap
-        // vs. getting terminated. Disk cache code below left intact
-        // for when we resurrect a memory-safe variant (e.g.,
-        // load-from-disk on first send, then evict).
+        // The blocking setup ends as soon as the model can accept work. For
+        // llama.cpp, build/restore the expensive invariant system+tools state
+        // behind the composer: a user can type immediately, and the resulting
+        // SSD snapshot survives future launches. This is materially different
+        // from the old Gemma/MLX launch prime below, whose Metal allocation
+        // compounded with TTS and caused jetsam on phones.
         setupState = .ready
+        startLlamaPromptOptimizationIfNeeded()
         return
         #if PRIMECACHE_ENABLED
         guard let gemma = selectedModel as? Gemma4Provider else {
@@ -482,14 +647,32 @@ public final class ChatSession {
     @MainActor
     public func invalidateSetupCache() {
         setupState = .pending
-        // Best-effort — we don't know the old cache key, so nuke all
-        // files under our prompt-cache dir. Cheap: they're < 1 GB.
+        cancelLlamaPromptOptimization()
+        // Keep llama.cpp states. Their key includes the runtime, model,
+        // context/KV configuration, exact system prompt, and exact generated
+        // tool schemas; a mismatched state is therefore unreachable and is
+        // pruned by LRU later. Deleting every `.bin` here made harmless model
+        // or library toggles throw away a 70-second cache build.
         let dir = promptCacheDirectory()
-        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-            for f in files where f.pathExtension == "safetensors" || f.pathExtension == "json" {
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)
+        {
+            for f in files where
+                f.pathExtension == "safetensors"
+                || f.pathExtension == "json"
+            {
                 try? FileManager.default.removeItem(at: f)
             }
         }
+    }
+
+    /// Let the user reach Settings after a model download/load failure. The
+    /// chat header still shows the failed model and its Load retry button;
+    /// unlike the old no-op "Continue anyway" control, this actually removes
+    /// the blocking launch overlay.
+    public func dismissSetupFailure() {
+        guard case .failed = setupState else { return }
+        setupState = .ready
     }
 
     private func warmPromptCacheOnce(gemma: Gemma4Provider) async throws {
@@ -558,7 +741,75 @@ public final class ChatSession {
             .appendingPathComponent("gemma-\(key.prefix(16)).safetensors")
     }
 
+    private func llamaPromptCacheDirectory() -> URL {
+        let fm = FileManager.default
+        // This state takes roughly a minute to rebuild on the phone. Store it
+        // in Application Support so iOS does not purge it as disposable cache
+        // data; each file is separately excluded from iCloud backup by the
+        // provider after its atomic save.
+        let base = (try? fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true))
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent(
+            "LlamaPromptCache", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // One-time, best-effort migration from builds that stored the exact
+        // same keyed snapshots in Library/Caches. Preserve an already-migrated
+        // destination and let the normal LRU remove obsolete variants.
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let legacy = caches.appendingPathComponent(
+                "LlamaPromptCache", isDirectory: true)
+            if legacy != dir,
+               let files = try? fm.contentsOfDirectory(
+                   at: legacy, includingPropertiesForKeys: nil)
+            {
+                for source in files where source.pathExtension == "bin" {
+                    let destination = dir.appendingPathComponent(
+                        source.lastPathComponent)
+                    if !fm.fileExists(atPath: destination.path) {
+                        try? fm.moveItem(at: source, to: destination)
+                    }
+                }
+            }
+        }
+        return dir
+    }
+
+    private func llamaPromptCacheURL(
+        provider: LlamaCppProvider,
+        prefixPrompt: String
+    ) -> URL {
+        // Manual format/runtime tag is intentional. llama.cpp state files
+        // are not a stable interchange format; changing the bundled Prism
+        // runtime must produce a fresh file even when the prompt/model did
+        // not change.
+        let raw = [
+            // v2 stores only sequence 0 (KV + recurrent state), omitting
+            // unrelated whole-context state such as logits and RNG.
+            "mcpzim-llama-prefix-sequence-state-v2-prism-b9591",
+            provider.id,
+            provider.ggufFilename,
+            String(provider.expectedGGUFBytes ?? -1),
+            String(provider.contextTokens),
+            provider.kvCacheType.rawValue,
+            prefixPrompt,
+        ].joined(separator: "\n")
+        let key = Self.sha256Hex(raw)
+        return llamaPromptCacheDirectory()
+            .appendingPathComponent("llama-\(key.prefix(24)).bin")
+    }
+
     public func prewarmBackgroundCaches() {
+        #if !MCPZIM_EVAL
+        if SpeechRecognizerFactory.prewarmIfAuthorized() {
+            debug("prewarmed on-device speech recognizer (no microphone access)",
+                  category: "Voice")
+        }
+        #endif
         Task { [weak self] in
             guard let self else { return }
             let started = Date()
@@ -657,8 +908,33 @@ public final class ChatSession {
     /// dropped it. The `_` argument is kept for call-site
     /// compatibility.
     fileprivate func systemMessageText(for _: QueryComplexity) -> String {
-        let locationLine = self.locationLineText()
-        return Self.composeSystemMessage(categoryHint: "", locationLine: locationLine)
+        // Location is deliberately NOT part of this system turn. It changes
+        // with GPS drift and used to invalidate Bonsai's hybrid recurrent
+        // cache before the tool declarations. Generic navigational fallbacks
+        // capture it on the user message instead; ordinary knowledge turns
+        // no longer carry ~1,000 tokens of irrelevant routing recipes. Reply
+        // length is also per-user-turn context below, keeping this one prefix
+        // byte-identical across the Longer Replies toggle.
+        return Self.composeSystemMessage(categoryHint: "", locationLine: "")
+    }
+
+    private func modelContextForCurrentTurn() -> String? {
+        var blocks: [String] = []
+        if longerReplies {
+            blocks.append("""
+            === Reply length preference ===
+            The user enabled Longer replies. For broad, explanatory, or
+            biographical questions, give a substantially fuller answer:
+            usually four to eight sentences covering the main context,
+            chronology, and consequences supported by retrieved evidence.
+            Short factoids and routing answers should remain short. Do not pad
+            or repeat yourself.
+            """)
+        }
+        if lastQueryComplexity == .navigational {
+            blocks.append(locationLineText())
+        }
+        return blocks.isEmpty ? nil : blocks.joined(separator: "\n\n")
     }
 
     /// Static assembly of the preamble body. Mirrors exactly the
@@ -1136,8 +1412,8 @@ public final class ChatSession {
         // (via our vendored mlx-swift-lm's `Qwen35TextModel`). Scored
         // 9/9 on the evaluator matrix matching Qwen 3 4B's perfect
         // score, with slightly smaller per-turn KV growth thanks to
-        // the mostly-linear layers. Same `QwenChatMLTemplate` +
-        // `/no_think` directive — our tool-call parser accepts all
+        // the mostly-linear layers. Same `QwenChatMLTemplate` hard
+        // non-thinking prefill — our tool-call parser accepts all
         // four JSON shapes Qwen 3.5 emits.
         let qwen35_4b = Gemma4Provider(
             id: "qwen35-4b-4bit",
@@ -1245,6 +1521,14 @@ public final class ChatSession {
             // allocation is safety capacity for large tools and long turns.
             contextTokens: 16384,
             kvCacheType: .q4_0,
+            // Qwen 3.6's official instruct/non-thinking recipe. The former
+            // 1.0 / 0.95 setting is Qwen's thinking-mode recipe; it scored
+            // one extra turn in an early 22-turn A/B, but the July 16 device
+            // capture also showed reasoning bleed and a duplicated answer.
+            // Use the mode-matched recipe for direct, grounded conversation.
+            samplingProfile: GenerationSamplingProfile(
+                temperature: 0.7, topP: 0.8, topK: 20,
+                presencePenalty: 1.5),
             template: QwenChatMLTemplate()
         )
         var providers: [any ModelProvider] = [
@@ -1255,6 +1539,35 @@ public final class ChatSession {
             gemma, gemmaText, gemma3_4b, qwen3_4b, qwen35_4b, qwen3_1_7b,
         ]
         #if os(macOS)
+        // Quality-oriented Bonsai operating point for Macs. This is the
+        // publisher's native packed ternary Q2_0_g128 build, not a generic
+        // low-bit requant: our pinned Prism llama.cpp XCFramework contains
+        // the matching Q2_0 Metal kernels and Qwen 3.5 hybrid architecture.
+        // The exact 7,165,121,600-byte size is pinned so an interrupted
+        // multi-GB download can never be mistaken for a loadable GGUF.
+        // Prism measures ~8.4 GB peak at 4K with uncompressed KV; Q4 KV and
+        // a 32K allocation keep this comfortable on the development Mac but
+        // far beyond iOS's per-process memory budget.
+        let ternaryBonsai27b = LlamaCppProvider(
+            id: Self.ternaryBonsai27BModelID,
+            displayName: "Bonsai 27B Ternary (2-bit · Metal · Mac)",
+            huggingFaceRepo: "prism-ml/Ternary-Bonsai-27B-gguf",
+            ggufFilename: "Ternary-Bonsai-27B-Q2_0.gguf",
+            expectedGGUFBytes: 7_165_121_600,
+            replyTokensFloor: 1024,
+            approximateMemoryMB: 9000,
+            contextTokens: 32768,
+            kvCacheType: .q4_0,
+            samplingProfile: GenerationSamplingProfile(
+                temperature: 0.7, topP: 0.8, topK: 20,
+                presencePenalty: 1.5),
+            template: QwenChatMLTemplate()
+        )
+        // Keep the two Bonsai operating points adjacent at the top of every
+        // model menu. Selecting this entry invokes the provider's resumable
+        // Hugging Face download and switches to it once loading completes.
+        providers.insert(ternaryBonsai27b, at: 1)
+
         // Gemma 3 12B IT QAT-4bit — mac-only reference model. Benched 9/9
         // on the mac-only eval scorecard (perfect tool-calling across
         // every scenario), but peak memory scales from 9.2 GB @ 7k to
@@ -1331,7 +1644,18 @@ public final class ChatSession {
         }
         self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? bonsai27b_1bit
         #else
-        self.selectedModel = providers.first(where: { $0.id == savedId }) ?? gemma3_4b_gguf_ft
+        // Give the Mac app the same initial Bonsai operating point as the
+        // phone. This one-time migration also moves existing development
+        // installs off an older saved Gemma choice, while subsequent manual
+        // picker changes remain persistent.
+        var resolvedId: String? = savedId
+        let macBonsaiSelectionMigrationKey = "chat.didSelectBonsai27B1BitMacV1"
+        if !defaults.bool(forKey: macBonsaiSelectionMigrationKey) {
+            resolvedId = bonsai27b_1bit.id
+            defaults.set(bonsai27b_1bit.id, forKey: Self.selectedModelKey)
+            defaults.set(true, forKey: macBonsaiSelectionMigrationKey)
+        }
+        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? bonsai27b_1bit
         #endif
         startObservingSelectedModel()
         // Wire every Gemma4Provider instance (which includes Qwen
@@ -1480,7 +1804,9 @@ public final class ChatSession {
     public static func forTesting(
         providers: [any ModelProvider],
         adapter: MCPToolAdapter,
-        initialModelId: String? = nil
+        initialModelId: String? = nil,
+        discussionPreparationStrategy: DiscussionPreparationStrategy =
+            .semanticSections
     ) -> ChatSession {
         let session = ChatSession(autoLoadOnInit: false)
         session.models = providers
@@ -1492,6 +1818,7 @@ public final class ChatSession {
             session.selectedModel = first
         }
         session.adapter = adapter
+        session.discussionPreparationStrategy = discussionPreparationStrategy
         // `send(...)` early-returns when `setupState != .ready` —
         // tests bypass the real setup flow and inject their own
         // adapter, so mark the session ready straight away.
@@ -1550,6 +1877,13 @@ public final class ChatSession {
     /// Also persists each picked URL as a bookmark so next launch reopens
     /// it without another pick.
     public func addReaders(urls: [URL]) async {
+        await addReaders(urls: urls, invalidatePromptCache: true)
+    }
+
+    private func addReaders(
+        urls: [URL],
+        invalidatePromptCache: Bool
+    ) async {
         let opened = await openEach(urls: urls, useSecurityScope: true)
         // Skip duplicates — the user picking the same file again shouldn't
         // create a second entry.
@@ -1560,8 +1894,12 @@ public final class ChatSession {
         await rebuildService()
         // New ZIM changes the tool preamble (per-ZIM guidance) so the
         // saved prompt cache no longer matches. Force a rebuild on
-        // next launch.
-        if !fresh.isEmpty {
+        // next launch. Bookmark restoration is different: it reconstructs
+        // the same persisted library on every process launch, so deleting
+        // the keyed llama.cpp state here would make SSD restoration
+        // impossible. Explicit library edits still take this path with
+        // invalidation enabled.
+        if !fresh.isEmpty, invalidatePromptCache {
             invalidateSetupCache()
             Task { await runSetupIfNeeded() }
         }
@@ -1666,7 +2004,9 @@ public final class ChatSession {
             }
         }
         if !urls.isEmpty {
-            await addReaders(urls: urls)
+            await addReaders(
+                urls: urls,
+                invalidatePromptCache: false)
         }
     }
 
@@ -1763,8 +2103,9 @@ public final class ChatSession {
         guard library[idx].isEnabled != enabled else { return }
         library[idx].isEnabled = enabled
         await rebuildService()
-        // Enabled-set feeds into the cache key via filenames, so a
-        // toggle changes the static prefix. Invalidate + rewarm.
+        // A toggle can change the available tool registry (for example when
+        // the last StreetZIM is disabled), so recompute the exact static
+        // prefix key and restore/build its matching state.
         invalidateSetupCache()
         Task { await runSetupIfNeeded() }
     }
@@ -1773,8 +2114,24 @@ public final class ChatSession {
 
     public func select(modelId: String) async {
         guard let found = models.first(where: { $0.id == modelId }) else { return }
-        guard found.id != selectedModel.id else { return }
+        if found.id == selectedModel.id {
+            // A menu selection is also the user's retry gesture. Previously
+            // this returned unconditionally, leaving a failed/not-loaded
+            // model stuck while the menu appeared to do nothing.
+            guard !modelState.isReady else {
+                debug("\(found.displayName) is already selected and ready", category: "Load")
+                return
+            }
+            debug("Retrying \(found.displayName)…", category: "Load")
+            await loadSelectedModel()
+            if modelState.isReady {
+                invalidateSetupCache()
+                await runSetupIfNeeded()
+            }
+            return
+        }
         // Unload the previous model — iOS memory budget is tight.
+        cancelLlamaPromptOptimization()
         await selectedModel.unload()
         selectedModel = found
         UserDefaults.standard.set(found.id, forKey: Self.selectedModelKey)
@@ -1814,9 +2171,155 @@ public final class ChatSession {
         // needs ~400 MB and the combined footprint crossed iOS
         // jetsam threshold when both lived in memory simultaneously.
         prewarmGemmaKVCacheIfIdle()
+        startLlamaPromptOptimizationIfNeeded()
     }
 
     @ObservationIgnored private var kvPrewarmTask: Task<Void, Never>?
+
+    /// Start the persistent llama.cpp static-prefix preparation without
+    /// making it part of blocking app setup. Repeated calls coalesce; if the
+    /// model/library changed while an older worker is unwinding, one fresh
+    /// worker is scheduled as soon as the old lock is released.
+    @MainActor
+    private func startLlamaPromptOptimizationIfNeeded() {
+        guard setupState == .ready,
+              modelState.isReady,
+              !isGenerating,
+              groundedPromptCache == nil,
+              !messages.contains(where: { $0.role == .user }),
+              let llama = selectedModel as? LlamaCppProvider,
+              let adapter
+        else { return }
+        if llamaPromptOptimizationTask != nil {
+            llamaPromptOptimizationRestartRequested = true
+            return
+        }
+
+        llamaPromptOptimizationRestartRequested = false
+        let generation = UUID()
+        llamaPromptOptimizationGeneration = generation
+        let modelID = selectedModel.id
+        promptOptimizationState = .checking
+        llamaPromptOptimizationTask = Task { @MainActor [weak self, weak llama] in
+            guard let self, let llama else { return }
+            defer {
+                self.llamaPromptOptimizationTask = nil
+                if self.llamaPromptOptimizationRestartRequested,
+                   self.setupState == .ready
+                {
+                    self.llamaPromptOptimizationRestartRequested = false
+                    self.startLlamaPromptOptimizationIfNeeded()
+                }
+            }
+
+            let registry = await adapter.registry
+            guard !Task.isCancelled,
+                  generation == self.llamaPromptOptimizationGeneration,
+                  modelID == self.selectedModel.id
+            else { return }
+
+            let toolDecls = self.toolDeclarations(registry: registry)
+            let template = self.selectedModel.template
+            let systemMessage = self.systemMessageText(for: .topical)
+            let prefix = template.bos + template.formatSystemTurn(
+                systemMessage: systemMessage, tools: toolDecls)
+            let cacheURL = self.llamaPromptCacheURL(
+                provider: llama, prefixPrompt: prefix)
+            // The provider only evaluates `prefix`; this throwaway turn proves
+            // at the tokenizer level that it is an exact prefix of a real
+            // request before any state is restored or saved.
+            let validationPrompt = template.renderTranscript(
+                systemPreamble: systemMessage,
+                tools: toolDecls,
+                turns: [ChatTurn(
+                    role: .user,
+                    text: "__zimfo_static_prefix_validation__")])
+            let hasDiskState = FileManager.default.fileExists(
+                atPath: cacheURL.path)
+            self.promptOptimizationState = hasDiskState
+                ? .restoring
+                : .building(progress: 0)
+            self.debug(
+                hasDiskState
+                    ? "background prefix optimization: restoring persisted state…"
+                    : "background prefix optimization: building persisted state…",
+                category: "LlamaCpp")
+
+            do {
+                let result = try await llama.preparePromptPrefix(
+                    prefixPrompt: prefix,
+                    fullPrompt: validationPrompt,
+                    cacheURL: cacheURL,
+                    progress: { [weak self] fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self,
+                                  generation == self.llamaPromptOptimizationGeneration
+                            else { return }
+                            self.promptOptimizationState = .building(
+                                progress: min(1, max(0, fraction)))
+                        }
+                    })
+                guard generation == self.llamaPromptOptimizationGeneration,
+                      modelID == self.selectedModel.id
+                else { return }
+                self.promptOptimizationState = .ready
+                self.debug(String(format:
+                    "background prefix optimization ready: %@ · %d tok · %.1f MB · %.3fs",
+                    result.mode, result.tokens,
+                    Double(result.bytes) / 1_048_576,
+                    result.seconds),
+                    category: "LlamaCpp")
+            } catch is CancellationError {
+                self.debug("background prefix optimization cancelled",
+                           category: "LlamaCpp")
+            } catch {
+                guard generation == self.llamaPromptOptimizationGeneration
+                else { return }
+                self.promptOptimizationState = .failed
+                self.debug("background prefix optimization unavailable: \(error)",
+                           category: "LlamaCpp")
+            }
+        }
+    }
+
+    @ObservationIgnored private var llamaPromptOptimizationRestartRequested = false
+
+    @MainActor
+    private func cancelLlamaPromptOptimization() {
+        llamaPromptOptimizationGeneration = UUID()
+        llamaPromptOptimizationRestartRequested = false
+        llamaPromptOptimizationTask?.cancel()
+        promptOptimizationState = .idle
+    }
+
+    /// A compact grounded discussion prompt cannot use the generic
+    /// system+12-tools prefix. If that background build still owns llama.cpp,
+    /// waiting for it adds tens of seconds without helping this answer. Stop
+    /// it at the next prefix batch; a later fresh conversation can prepare
+    /// the persisted generic prefix again.
+    @MainActor
+    private func preemptLlamaPromptOptimizationForGroundedTurn() {
+        guard llamaPromptOptimizationTask != nil else { return }
+        debug("grounded turn preempting background prefix optimization",
+              category: "LlamaCpp")
+        cancelLlamaPromptOptimization()
+    }
+
+    /// A generic tool-dispatch turn uses this exact prefix. Wait for an
+    /// already-running build instead of racing a second restore/build against
+    /// the same llama.cpp context. Direct routes remain free to complete while
+    /// the worker runs.
+    @MainActor
+    private func awaitLlamaPromptOptimizationIfNeeded() async {
+        guard selectedModel is LlamaCppProvider,
+              let task = llamaPromptOptimizationTask
+        else { return }
+        debug("question waiting for background prefix optimization",
+              category: "LlamaCpp")
+        await task.value
+        debug("question continuing after prefix optimization",
+              category: "LlamaCpp")
+    }
 
     /// Build the Gemma prompt KV cache in the background if we don't
     /// already have one. Safe to call repeatedly — it noops if a
@@ -1897,8 +2400,10 @@ public final class ChatSession {
         // the new chat get suppressed as "already offered".
         readingState = nil
         discussionState = nil
+        lastDiscussionPreparationStats = nil
         groundedPromptCache = nil
         focus.reset()
+        pendingFactoidPredicate = nil
         recentlyOfferedThreadKeys.removeAll()
         if #available(macOS 26.0, iOS 19.0, *),
            let fm = selectedModel as? FoundationModelsProvider {
@@ -1909,6 +2414,9 @@ public final class ChatSession {
         // previous conversation is garbage.
         if let gemma = selectedModel as? Gemma4Provider {
             gemma.resetPromptCache()
+        }
+        if let llama = selectedModel as? LlamaCppProvider {
+            llama.resetPromptCache()
         }
         debug("conversation reset", category: "Chat")
     }
@@ -1962,6 +2470,14 @@ public final class ChatSession {
         lastQueryComplexity = complexity
         debug("query complexity: \(complexity.rawValue)", category: "Router")
         debug("model=\(selectedModel.displayName), state=\(modelState)", category: "Chat")
+        let enabledLibraries = library.filter(\.isEnabled)
+        let queryTelemetry = AppTelemetry.startQuery(
+            type: complexity.rawValue,
+            modelID: selectedModel.id,
+            library: AppTelemetry.LibraryProfile(
+                kinds: enabledLibraries.map { $0.kind.rawValue },
+                filenames: enabledLibraries.map { $0.url.lastPathComponent }))
+        activeQueryTelemetry = queryTelemetry
         let user = ChatMessage(role: .user, text: text)
         messages.append(user)
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
@@ -1970,6 +2486,68 @@ public final class ChatSession {
         focus.beginUserTurn()
         isGenerating = true
         generationTask = Task {
+            defer {
+                let responseCharacters = messages.last?.role == .assistant
+                    ? (messages.last?.text.count ?? 0)
+                    : 0
+                queryTelemetry.finish(
+                    cancelled: Task.isCancelled,
+                    responseCharacters: responseCharacters)
+                if activeQueryTelemetry === queryTelemetry {
+                    activeQueryTelemetry = nil
+                }
+            }
+            // Request location lazily, after voice recognition has finished
+            // submitting the turn. General Wikipedia questions never need to
+            // see a location sheet; nearest-place/directions questions do.
+            // Waiting here also lets the deterministic near_places router see
+            // the newly granted coordinate instead of falling into the LLM.
+            if complexity == .navigational, currentLocation == nil {
+                debug("location needed — requesting permission/fix after transcription",
+                      category: "Location")
+                LocationFetcher.requestAuthorizationIfNeeded()
+                LocationFetcher.start()
+                await awaitLocationIfAny(maxWait: 4)
+                if let here = currentLocation {
+                    debug(String(format: "location ready: (%.5f, %.5f)",
+                                 here.lat, here.lon), category: "Location")
+                } else {
+                    debug("location unavailable after 4s — continuing without it",
+                          category: "Location")
+                }
+            }
+            let pendingFactoidIntent: DirectIntent? = {
+                guard let predicate = pendingFactoidPredicate else {
+                    return nil
+                }
+                // A pending clarification applies to one turn only. If this
+                // isn't a list pick, ordinary routing handles the fresh query.
+                pendingFactoidPredicate = nil
+                return IntentRouter.factoidSelectionIntent(
+                    text, predicate: predicate, focus: focus)
+            }()
+            // A tentative factoid may be tried while deciding whether a turn
+            // leaves a pinned discussion. If that probe misses and the turn
+            // then falls through to normal routing, do not dispatch the exact
+            // same intent a second time before invoking the general model.
+            var failedDiscussionIntent: DirectIntent?
+            // "Read the whole article" is an action on the focused
+            // Wikipedia subject, not a question for discussion mode. Handle
+            // it before the pinned-discussion branch so the full article goes
+            // straight to the narration pass-through instead of asking the
+            // model to answer from its compact evidence window.
+            if let readingIntent = IntentRouter.readArticleIntent(
+                text, focus: focus),
+               await executeDirectIntent(readingIntent)
+            {
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].finishedAt = Date()
+                }
+                return
+            }
             // "Continue" / "keep reading" / "tell me more" — page the
             // next chunk of the article we're currently reading aloud.
             // Checked before `classify` so a bare "continue" never tries
@@ -1978,6 +2556,7 @@ public final class ChatSession {
             // places search) falls straight through to normal routing.
             let wantsContinue = IntentRouter.isContinueReading(text)
             if wantsContinue, readingState != nil {
+                activeQueryTelemetry?.setRoute("reading")
                 await continueReadingArticle()
                 isGenerating = false
                 if let idx = messages.indices.last,
@@ -1992,6 +2571,45 @@ public final class ChatSession {
             // reading request (`noteReadingState`).
             if !wantsContinue { readingState = nil }
 
+            // Explicit source control outranks both the pinned discussion and
+            // stateless location patterns. This is the user's recovery path
+            // when routing selected the wrong corpus or a disambiguation page:
+            // "Use the Wikipedia article on Santa Rosa, California and tell
+            // me what it says about the 1906 earthquake." Load that exact
+            // article's full section set, re-anchor the discussion, and answer
+            // the requested facet from it.
+            if let sourceDirective = IntentRouter.wikipediaSourceDirective(
+                text, focus: focus)
+            {
+                discussionState = nil
+                groundedPromptCache = nil
+                debug("explicit source directive: Wikipedia article “\(sourceDirective.title)”"
+                    + (sourceDirective.question.map { " · question=\($0)" } ?? ""),
+                    category: "Router")
+                _ = await handleWikipediaSourceDirective(sourceDirective)
+                activeQueryTelemetry?.setRoute("source_directive")
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant {
+                    messages[idx].finishedAt = Date()
+                }
+                return
+            }
+
+            if let intent = pendingFactoidIntent {
+                debug("factoid clarification selected — reapplying original predicate",
+                      category: "Router")
+                let handled = await executeDirectIntent(intent)
+                if handled {
+                    isGenerating = false
+                    if let idx = messages.indices.last,
+                       messages[idx].role == .assistant {
+                        messages[idx].finishedAt = Date()
+                    }
+                    return
+                }
+            }
+
             // Discussion mode: while an article is pinned ("let's discuss
             // X"), answer follow-ups from its sections instead of routing
             // each turn afresh. An explicit "stop" or a navigation / new-
@@ -1999,6 +2617,7 @@ public final class ChatSession {
             // about the pinned article.
             if let ds = discussionState, !wantsContinue {
                 if IntentRouter.isDiscussionExit(text) {
+                    activeQueryTelemetry?.setRoute("discussion")
                     discussionState = nil
                     groundedPromptCache = nil
                     updateAssistant("Okay — we can stop there. What next?")
@@ -2010,7 +2629,41 @@ public final class ChatSession {
                 }
                 let switchIntent = IntentRouter.classify(
                     text, currentLocation: currentLocation, focus: focus)
-                if let intent = switchIntent, intentLeavesDiscussion(intent, state: ds) {
+                // A founding-date factoid is grounded and deterministic even
+                // inside a pinned discussion. Execute it here instead of
+                // handing the same article lead to Bonsai for another long
+                // prefill. If it names a fresh subject, clear the old pin;
+                // if it says "when was it founded?", retain/re-anchor it.
+                if let intent = switchIntent,
+                   intent.toolName == "article_factoid" {
+                    if intentLeavesDiscussion(intent, state: ds, userText: text) {
+                        discussionState = nil
+                        groundedPromptCache = nil
+                    }
+                    let handled = await executeDirectIntent(intent)
+                    if handled {
+                        isGenerating = false
+                        if let i = messages.indices.last,
+                           messages[i].role == .assistant {
+                            messages[i].finishedAt = Date()
+                        }
+                        return
+                    }
+                    failedDiscussionIntent = intent
+                    // A same-topic evidence miss can still use the richer
+                    // pinned sections. A new-topic miss falls through to the
+                    // normal router below instead of querying the old article.
+                    if discussionState != nil {
+                        await answerWithinDiscussion(ds, question: text)
+                        isGenerating = false
+                        if let i = messages.indices.last,
+                           messages[i].role == .assistant {
+                            messages[i].finishedAt = Date()
+                        }
+                        return
+                    }
+                } else if let intent = switchIntent,
+                          intentLeavesDiscussion(intent, state: ds, userText: text) {
                     discussionState = nil   // topic change → normal routing below
                     groundedPromptCache = nil
                 } else {
@@ -2034,6 +2687,7 @@ public final class ChatSession {
             let reference = ReferenceResolver.resolve(text, focus: focus)
             if case .ambiguous(let candidates) = reference.binding,
                candidates.count > 1 {
+                activeQueryTelemetry?.setRoute("clarification")
                 let names = candidates.prefix(3).map(\.name)
                 let list = names.count == 2
                     ? "\(names[0]) or \(names[1])"
@@ -2061,21 +2715,36 @@ public final class ChatSession {
             if let intent = IntentRouter.classify(
                 text, currentLocation: currentLocation, focus: focus
             ) {
-                debug("fast-path intent: \(intent.toolName) — skipping LLM",
-                      category: "Router")
-                let handled = await executeDirectIntent(intent)
-                if handled {
-                    isGenerating = false
-                    if let idx = messages.indices.last,
-                       messages[idx].role == .assistant
-                    {
-                        messages[idx].finishedAt = Date()
+                if intent == failedDiscussionIntent {
+                    debug("fast-path intent already missed during discussion switch — falling back to LLM",
+                          category: "Router")
+                } else {
+                    debug("fast-path intent: \(intent.toolName) — skipping LLM",
+                          category: "Router")
+                    let handled = await executeDirectIntent(intent)
+                    if handled {
+                        isGenerating = false
+                        if let idx = messages.indices.last,
+                           messages[idx].role == .assistant
+                        {
+                            messages[idx].finishedAt = Date()
+                        }
+                        return
                     }
-                    return
+                    debug("fast-path intent: dispatch failed, falling back to LLM",
+                          category: "Router")
                 }
-                debug("fast-path intent: dispatch failed, falling back to LLM",
-                      category: "Router")
             }
+            // Only a genuine generic-model fallback needs the per-turn
+            // location block. Capture it on the visible user message without
+            // changing the bubble text; subsequent transcript rebuilds then
+            // reproduce the exact bytes that entered the provider cache.
+            if let idx = messages.lastIndex(where: { $0.role == .user }),
+               messages[idx].modelContext == nil
+            {
+                messages[idx].modelContext = modelContextForCurrentTurn()
+            }
+            await awaitLlamaPromptOptimizationIfNeeded()
             await runGenerationLoop()
             // Phase 2c: for explanatory turns, if the model pulled
             // >=2 sections, run a stateless map-reduce synthesis
@@ -2109,6 +2778,7 @@ public final class ChatSession {
     /// `MCPToolAdapter.dispatch(...)`, appends a synthetic tool response to
     /// the transcript, and restarts.
     private func runGenerationLoop() async {
+        activeQueryTelemetry?.setRoute("llm")
         defer {
             isGenerating = false
             if let idx = messages.indices.last, messages[idx].role == .assistant {
@@ -2116,16 +2786,10 @@ public final class ChatSession {
             }
         }
         debug("runGenerationLoop: entered", category: "Chat")
-        // Navigational / topical queries lean heavily on location.
-        // If a fetch is in flight, give it a short window to land
-        // before we bake the preamble — otherwise the model sees
-        // "Location permission hasn't resolved yet" and apologises
-        // instead of answering.
-        if lastQueryComplexity == .navigational || lastQueryComplexity == .topical {
-            debug("runGenerationLoop: awaiting location (max 4s)", category: "Chat")
-            await awaitLocationIfAny(maxWait: 4)
-            debug("runGenerationLoop: location await done", category: "Chat")
-        }
+        // Location-dependent turns already request/wait immediately after
+        // transcription in `send`. Topical Wikipedia turns deliberately do
+        // not wait for GPS; doing so added four seconds to ordinary questions
+        // whenever permission was absent.
         guard let adapter else {
             debug("No adapter — library is empty.", category: "Chat")
             appendAssistant("[No ZIMs loaded — add .zim files to the app's Documents folder, then tap Refresh Library.]")
@@ -2161,6 +2825,23 @@ public final class ChatSession {
             ? "Gemma-4 native format"
             : "generic <tool_call> preamble"
         debug("Dispatch loop: \(toolDecls.count) tools available (\(promptFormatLabel))", category: "Chat")
+        let llamaStaticPrefix: (
+            provider: LlamaCppProvider,
+            prompt: String,
+            cacheURL: URL
+        )? = {
+            guard let llama = selectedModel as? LlamaCppProvider else {
+                return nil
+            }
+            let template = selectedModel.template
+            let prompt = template.bos + template.formatSystemTurn(
+                systemMessage: systemMessage, tools: toolDecls)
+            return (
+                provider: llama,
+                prompt: prompt,
+                cacheURL: llamaPromptCacheURL(
+                    provider: llama, prefixPrompt: prompt))
+        }()
 
         // Structured turns that survive across tool-loop iterations. We drop
         // the final (empty) assistant placeholder since the provider template
@@ -2186,7 +2867,9 @@ public final class ChatSession {
                 }
             }
             if !msg.text.isEmpty {
-                turns.append(ChatTurn(role: msg.role.asChatTurnRole, text: msg.text))
+                turns.append(ChatTurn(
+                    role: msg.role.asChatTurnRole,
+                    text: msg.modelText))
             }
         }
         // The last message is the empty assistant placeholder the
@@ -2257,7 +2940,9 @@ public final class ChatSession {
         // retry) before landing on a useful answer. Still capped so
         // a genuinely stuck loop terminates.
         let maxIters = 6
-        for iter in 0..<maxIters {
+        var toolLoopGuard = ToolLoopGuard()
+        var forcedSummaryReason: String?
+        toolLoop: for iter in 0..<maxIters {
             // Preemptive memory-pressure guard. MLX's Metal backend
             // doesn't surface command-buffer errors as Swift errors —
             // when the GPU runs out of memory mid-eval the underlying
@@ -2290,8 +2975,9 @@ public final class ChatSession {
             }
 
             // Every provider renders via its OWN template, which folds the
-            // systemMessage (incl. the `=== Current location ===` block) and
-            // the tool schemas into the model's TRAINED prompt shape. The
+            // static systemMessage and tool schemas into the model's TRAINED
+            // prompt shape. A generic navigational fallback carries its
+            // dynamic `=== Current location ===` block on the user turn. The
             // LFM2.5 and Gemma-3-gguf FTs were trained on exactly this
             // (system prose + JSON tool block folded into the first user
             // turn) — also what the llama-smoke eval scores 12/13 on. The old
@@ -2360,6 +3046,25 @@ public final class ChatSession {
                           category: "Chat")
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     debug("map teardown wait done", category: "Chat")
+                }
+            }
+            if let prefix = llamaStaticPrefix {
+                do {
+                    let result = try await prefix.provider.preparePromptPrefix(
+                        prefixPrompt: prefix.prompt,
+                        fullPrompt: prompt,
+                        cacheURL: prefix.cacheURL)
+                    debug(String(format:
+                        "static prefix cache: %@ · %d tok · %.1f MB · %.3fs",
+                        result.mode, result.tokens,
+                        Double(result.bytes) / 1_048_576,
+                        result.seconds),
+                        category: "LlamaCpp")
+                } catch {
+                    // Cache acceleration is opportunistic. Generation's own
+                    // LCP/reset logic remains the correctness fallback.
+                    debug("static prefix cache unavailable: \(error)",
+                          category: "LlamaCpp")
                 }
             }
             let genStart = Date()
@@ -2470,9 +3175,26 @@ public final class ChatSession {
             // location". Covers the `origin` arg on `route_from_places` and
             // anywhere the model used the preamble's shortcut phrasing.
             let resolvedArgs = substituteCurrentLocation(in: call.args)
-            let argsData = try? JSONSerialization.data(withJSONObject: resolvedArgs)
+            let argsData = try? JSONSerialization.data(
+                withJSONObject: resolvedArgs, options: [.sortedKeys])
             let argsStr = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             let pre = String(buffer[..<call.range.lowerBound])
+            switch toolLoopGuard.evaluate(
+                toolName: call.name, canonicalArguments: argsStr)
+            {
+            case .allow:
+                break
+            case .stop(let reason):
+                // Keep the model's prose before the rejected call, but do not
+                // append the redundant tool emission to the transcript. The
+                // forced no-tools summary below can answer from results that
+                // are already present without another exploratory dispatch.
+                updateAssistant(pre)
+                forcedSummaryReason = reason
+                debug("tool-loop circuit breaker: \(reason) — forcing summary",
+                      category: "Chat")
+                break toolLoop
+            }
             // Use the FULL buffer (not trimmed at call.range.upperBound).
             // The sampler's last token often decodes to text that spans
             // the `<tool_call|>` marker AND a few chars past it (e.g. a
@@ -2539,6 +3261,10 @@ public final class ChatSession {
                 let rawData = (try? JSONSerialization.data(withJSONObject: fullResult, options: [.sortedKeys])) ?? resultData
                 let rawStr = String(data: rawData, encoding: .utf8) ?? resultStr
                 let toolDt = Date().timeIntervalSince(toolStart)
+                activeQueryTelemetry?.recordTool(
+                    name: call.name,
+                    duration: toolDt,
+                    usedZimKinds: telemetryZimKinds(from: fullResult))
                 let delta = MemoryStats.physFootprintMB() - memBefore
                 debug(String(format: "tool %@ returned %d bytes in %.2fs · Δmem=%+.1f MB (trimmed for model: %d bytes)",
                               call.name, rawStr.count,
@@ -2605,6 +3331,7 @@ public final class ChatSession {
                     let synth = Self.synthesizeRoutingReply(from: fullResult)
                     if !synth.isEmpty {
                         updateAssistant(synth)
+                        debug(synth, category: "Assistant")
                         debug("routing skip-model-reply: synthesized \(synth.count) chars (iter 1 skipped)",
                               category: "Chat")
                         return
@@ -2662,9 +3389,15 @@ public final class ChatSession {
         // no-tool-call generation so the user sees a reply instead of
         // an empty assistant bubble. Happens on small/slower models
         // that burn iterations exploring.
-        if let last = messages.last, last.role == .assistant, last.text.isEmpty {
-            debug("tool loop exhausted after \(maxIters) iters — forcing a summary turn",
-                  category: "Chat")
+        if let last = messages.last, last.role == .assistant,
+           forcedSummaryReason != nil || last.text.isEmpty {
+            if let forcedSummaryReason {
+                debug("tool loop stopped (\(forcedSummaryReason)) — forcing a summary turn",
+                      category: "Chat")
+            } else {
+                debug("tool loop exhausted after \(maxIters) iters — forcing a summary turn",
+                      category: "Chat")
+            }
             let summaryPrompt: String
             let summaryInstruction = ChatTurn(
                 role: .user,
@@ -2679,7 +3412,9 @@ public final class ChatSession {
                 systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
             )
             var buffer = ""
-            let params = GenerationParameters(maxTokens: 256, temperature: 0.3, topP: 0.9)
+            let params = GenerationParameters(
+                maxTokens: 256, temperature: 0.3, topP: 0.9,
+                useModelSamplingProfile: false)
             do {
                 for try await chunk in selectedModel.generate(prompt: summaryPrompt, parameters: params) {
                     buffer += chunk
@@ -2751,7 +3486,9 @@ public final class ChatSession {
 
         // ===== Map phase =====
         var summaries: [String] = []
-        let mapParams = GenerationParameters(maxTokens: 256, temperature: 0.2, topP: 0.9)
+        let mapParams = GenerationParameters(
+            maxTokens: 256, temperature: 0.2, topP: 0.9,
+            useModelSamplingProfile: false)
         for (i, sec) in sections.enumerated() {
             let mapUserTurn = """
             User's question: \(userQuery)
@@ -2841,7 +3578,8 @@ public final class ChatSession {
         var buffer = ""
         let reduceParams = GenerationParameters(
             maxTokens: effectiveMaxReplyTokens,
-            temperature: 0.3, topP: 0.9
+            temperature: 0.3, topP: 0.9,
+            useModelSamplingProfile: false
         )
         var lastUIPush = Date.distantPast
         do {
@@ -2912,19 +3650,59 @@ public final class ChatSession {
     private func appendAssistant(_ text: String) {
         if messages.last?.role == .assistant {
             messages[messages.count - 1].text = text
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                activeQueryTelemetry?.markFirstResponse()
+            }
         }
     }
 
     private func appendToAssistant(_ replacement: String) {
         if messages.last?.role == .assistant {
-            messages[messages.count - 1].text = scrubReasoning(replacement)
+            let scrubbed = scrubReasoning(replacement)
+            messages[messages.count - 1].text = scrubbed
+            if !scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                activeQueryTelemetry?.markFirstResponse()
+            }
         }
     }
 
     private func updateAssistant(_ newText: String) {
         if messages.last?.role == .assistant {
-            messages[messages.count - 1].text = scrubReasoning(newText)
+            let scrubbed = scrubReasoning(newText)
+            messages[messages.count - 1].text = scrubbed
+            if !scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                activeQueryTelemetry?.markFirstResponse()
+            }
         }
+    }
+
+    /// Convert result-local ZIM filenames into broad archive kinds before
+    /// telemetry. The names themselves never leave this process.
+    private func telemetryZimKinds(from result: [String: Any]) -> [String] {
+        var referencedNames: Set<String> = []
+        func collect(_ value: Any, depth: Int) {
+            guard depth <= 5 else { return }
+            if let dictionary = value as? [String: Any] {
+                for (key, nested) in dictionary {
+                    if key == "zim", let name = nested as? String, !name.isEmpty {
+                        referencedNames.insert(name.lowercased())
+                    } else {
+                        collect(nested, depth: depth + 1)
+                    }
+                }
+            } else if let array = value as? [Any] {
+                for nested in array.prefix(100) {
+                    collect(nested, depth: depth + 1)
+                }
+            }
+        }
+        collect(result, depth: 0)
+
+        var kindByFilename: [String: String] = [:]
+        for entry in library {
+            kindByFilename[entry.url.lastPathComponent.lowercased()] = entry.kind.rawValue
+        }
+        return Array(Set(referencedNames.compactMap { kindByFilename[$0] })).sorted()
     }
 
     /// Run the selected model's template-specific reasoning scrubber
@@ -3208,17 +3986,20 @@ public final class ChatSession {
         groundedPromptCache = nil
         discussionState = DiscussionState(
             anchorTitle: title, topic: topic,
-            zim: result["zim"] as? String, sources: [])
+            zim: result["zim"] as? String, sources: [],
+            linkedArticleTitles: [],
+            sectionEmbeddings: [:],
+            lastQuestion: nil)
     }
 
-    /// Enter discussion mode from a `discuss_article` dispatch: pin the
-    /// article's sections, give a short lead-derived opener, and invite
+    /// Enter discussion mode from a `discuss_article` dispatch: pin every
+    /// section, build the reusable semantic section index, then invite
     /// questions. A miss falls back to the same did-you-mean reply as
     /// `article_overview` (no confabulation). Returns `true` (fast path).
     @MainActor
     private func handleDiscussEntry(
         dictArgs: [String: Any], fullResult: [String: Any]
-    ) -> Bool {
+    ) async -> Bool {
         if let err = fullResult["error"] as? String, !err.isEmpty {
             updateAssistant(IntentRouter.synthesizeArticleMissReply(
                 args: dictArgs, fullResult: fullResult))
@@ -3231,39 +4012,183 @@ public final class ChatSession {
             updateAssistant("I couldn't open that article to discuss.")
             return true
         }
-        let sections: [ArticleSection] = rawSecs.map { d in
-            ArticleSection(
-                title: (d["title"] as? String) ?? "",
-                level: (d["level"] as? Int) ?? 0,
-                text: (d["text"] as? String) ?? "")
+        let sections = rawSecs.map(Self.decodedArticleSection)
+        let preparing = "Great — I’m preparing for our chat about \(title)."
+        // Keep this exact prefix when preparation finishes. Voice streaming
+        // can safely speak it immediately, then consume only the appended
+        // "Ready" suffix instead of replaying or slicing replaced text.
+        updateAssistant(preparing)
+        let preparationStarted = ProcessInfo.processInfo.systemUptime
+        let sources = [(title: title, sections: sections)]
+        let embeddings: [String: [Float]]
+        switch discussionPreparationStrategy {
+        case .none:
+            embeddings = [:]
+        case .semanticSections:
+            embeddings = await prepareDiscussionEmbeddings(sources: sources)
         }
+        let preparationElapsed = ProcessInfo.processInfo.systemUptime
+            - preparationStarted
+        lastDiscussionPreparationStats = DiscussionPreparationStats(
+            strategy: discussionPreparationStrategy,
+            title: title,
+            sectionCount: sections.count,
+            vectorCount: embeddings.count,
+            vectorBytes: embeddings.values.reduce(0) {
+                $0 + ($1.count * MemoryLayout<Float>.size)
+            },
+            elapsedSeconds: preparationElapsed)
         groundedPromptCache = nil
         discussionState = DiscussionState(
             anchorTitle: title,
             topic: ArticleHeuristics.topicCore(title),
             zim: fullResult["zim"] as? String,
-            sources: [(title: title, sections: sections)])
-        let rawLead = sections.first(where: { $0.title.isEmpty })?.text
-            ?? sections.first?.text ?? ""
-        // Pick the first SUBSTANTIVE lead paragraph: skips title-repeat lines
-        // ("Solar panel / Solar panel" — robust to singular/plural title
-        // mismatch) and disambiguation hatnotes ("For solar thermal panels,
-        // see …"), then strip citation markers ([1]/[b]) for clean TTS.
-        let leadPara = rawLead.components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { p in
-                p.count >= 40
-                    && !p.lowercased().hasPrefix("for ")
-                    && !p.lowercased().contains(", see ")
-            } ?? rawLead
-        let intro = IntentRouter.firstSentences(
-            ArticleHeuristics.stripCitations(leadPara), maxChars: 300)
-        let opener = intro.isEmpty
-            ? "Sure — let's discuss \(title). Ask me anything about it."
-            : "Sure — let's discuss \(title). \(intro)\n\nAsk me anything about it — "
-                + "I'll answer from the article."
-        updateAssistant(opener)
-        debug("discuss: pinned \(title) (\(sections.count) sections)", category: "Router")
+            sources: sources,
+            linkedArticleTitles: Self.linkedArticleTitles(from: fullResult),
+            sectionEmbeddings: embeddings,
+            lastQuestion: nil)
+        updateAssistant(preparing
+            + "\n\nReady. What would you like to explore about \(title)?")
+        debug(String(format:
+            "discuss: prepared %@ · strategy=%@ · %d sections · %d semantic vectors · %.2fs",
+            title, discussionPreparationStrategy.rawValue,
+            sections.count, embeddings.count, preparationElapsed),
+            category: "Router")
+        return true
+    }
+
+    /// Embed every loaded discussion section once. The title and body entries
+    /// are keyed by the exact strings `ArticleHeuristics` will later ask its
+    /// embedder to score. Body embeddings include their heading and article
+    /// title as context, while the map key remains the unmodified body.
+    private func prepareDiscussionEmbeddings(
+        sources: [(title: String, sections: [ArticleSection])]
+    ) async -> [String: [Float]] {
+        var vectors: [String: [Float]] = [:]
+        for source in sources {
+            for section in source.sections where !section.text.isEmpty {
+                if !section.title.isEmpty {
+                    let key = PreparedDiscussionEmbedder.key(section.title)
+                    if vectors[key] == nil,
+                       let vector = await SemanticReranker.shared.embedText(
+                           section.title)
+                    {
+                        vectors[key] = vector
+                    }
+                }
+                let contextualBody = [source.title, section.title, section.text]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ". ")
+                if let vector = await SemanticReranker.shared.embedText(
+                    contextualBody)
+                {
+                    vectors[PreparedDiscussionEmbedder.key(section.text)] = vector
+                }
+            }
+        }
+        return vectors
+    }
+
+    /// Honor an explicit user-selected Wikipedia article as the authoritative
+    /// source for this turn and subsequent follow-ups. Unlike
+    /// `article_overview`, this loads all sections so a narrow request can
+    /// retrieve evidence buried deep in the article (for example Santa Rosa,
+    /// California's "20th century" section).
+    @MainActor
+    private func handleWikipediaSourceDirective(
+        _ directive: WikipediaSourceDirective
+    ) async -> Bool {
+        guard let adapter else {
+            updateAssistant("Wikipedia isn't ready yet.")
+            return true
+        }
+        var args: [String: Any] = ["title": directive.title]
+        guard let wikipedia = library.first(where: {
+            $0.isEnabled && $0.reader.kind == .wikipedia
+        }) ?? library.first(where: {
+            $0.isEnabled && $0.reader.kind == .mdwiki
+        }) else {
+            updateAssistant(
+                "I don't have an enabled offline Wikipedia library open.")
+            debug("explicit Wikipedia source unavailable: no Wikipedia ZIM",
+                  category: "Router")
+            return true
+        }
+        // Supplying the exact library is the authority boundary: a source
+        // correction may resolve or fail inside Wikipedia, but it can never
+        // drift into a StreetZIM article or place search.
+        args["zim"] = wikipedia.url.lastPathComponent
+        guard let result = try? await adapter.dispatch(
+            tool: "discuss_article", args: args)
+        else {
+            updateAssistant("I couldn't open the Wikipedia article on \(directive.title).")
+            return true
+        }
+        let argsData = try? JSONSerialization.data(
+            withJSONObject: args, options: [.sortedKeys])
+        let resultData = try? JSONSerialization.data(
+            withJSONObject: result, options: [.sortedKeys])
+        let argsString = argsData.flatMap {
+            String(data: $0, encoding: .utf8)
+        } ?? "{}"
+        let resultString = resultData.flatMap {
+            String(data: $0, encoding: .utf8)
+        } ?? "{}"
+        recordToolTrace(ToolCallTrace(
+            name: "discuss_article",
+            arguments: argsString,
+            result: resultString,
+            rawResult: resultString,
+            error: nil))
+        if let error = result["error"] as? String, !error.isEmpty {
+            updateAssistant(IntentRouter.synthesizeArticleMissReply(
+                args: args, fullResult: result))
+            debug("explicit Wikipedia source missed: \(error)",
+                  category: "Router")
+            return true
+        }
+        guard let title = result["title"] as? String,
+              let rawSections = result["sections"] as? [[String: Any]],
+              !rawSections.isEmpty
+        else {
+            updateAssistant("I found the Wikipedia article but couldn't read its sections.")
+            return true
+        }
+        let sections = rawSections.map(Self.decodedArticleSection)
+        let sources = [(title: title, sections: sections)]
+        let embeddings: [String: [Float]]
+        switch discussionPreparationStrategy {
+        case .none:
+            embeddings = [:]
+        case .semanticSections:
+            embeddings = await prepareDiscussionEmbeddings(sources: sources)
+        }
+        var state = DiscussionState(
+            anchorTitle: title,
+            topic: ArticleHeuristics.topicCore(title),
+            zim: result["zim"] as? String,
+            sources: sources,
+            linkedArticleTitles: Self.linkedArticleTitles(from: result),
+            sectionEmbeddings: embeddings,
+            lastQuestion: nil)
+        discussionState = state
+        groundedPromptCache = nil
+        focus.remember(FocusEntity(
+            name: title, kind: .topic,
+            zimPath: result["path"] as? String))
+        debug("explicit source selected: \(title) · \(sections.count) sections",
+              category: "Router")
+
+        if let facet = directive.question, !facet.isEmpty {
+            let question = "What does the article say about \(facet)?"
+            state.lastQuestion = nil
+            discussionState = state
+            await answerWithinDiscussion(state, question: question)
+        } else {
+            updateAssistant(
+                "Okay — I’ll use the Wikipedia article “\(title)” as the source. "
+                + "What would you like me to look for?")
+        }
         return true
     }
 
@@ -3274,7 +4199,15 @@ public final class ChatSession {
     /// passages a question needs — never the whole article.
     @MainActor
     private func answerWithinDiscussion(_ ds: DiscussionState, question: String) async {
+        activeQueryTelemetry?.setRoute("discussion")
         var state = ds
+        let contextualQuestion = ArticleHeuristics
+            .contextualizedDiscussionQuestion(
+                question, previousQuestion: state.lastQuestion)
+        if contextualQuestion != question {
+            debug("discussion continuation resolved: \(contextualQuestion)",
+                  category: "Chat")
+        }
         // Implicit-entry anchors store only the title; pull the anchor's
         // sections on the first follow-up.
         if state.sources.isEmpty, let adapter {
@@ -3282,11 +4215,15 @@ public final class ChatSession {
             if let zim = state.zim { a["zim"] = zim }
             if let res = try? await adapter.dispatch(tool: "discuss_article", args: a),
                let raw = res["sections"] as? [[String: Any]], !raw.isEmpty {
-                state.sources = [(state.anchorTitle, raw.map {
-                    ArticleSection(title: ($0["title"] as? String) ?? "",
-                                   level: ($0["level"] as? Int) ?? 0,
-                                   text: ($0["text"] as? String) ?? "")
-                })]
+                state.sources = [(
+                    state.anchorTitle,
+                    raw.map(Self.decodedArticleSection)
+                )]
+                state.linkedArticleTitles = Self.linkedArticleTitles(from: res)
+                if discussionPreparationStrategy == .semanticSections {
+                    state.sectionEmbeddings = await prepareDiscussionEmbeddings(
+                        sources: state.sources)
+                }
                 discussionState = state
             }
         }
@@ -3294,30 +4231,48 @@ public final class ChatSession {
             updateAssistant("What would you like to know about \(state.topic)?")
             return
         }
-        // Corpus fallback: if none of the articles in hand cover the
-        // follow-up, search the corpus around the topic and pull in the
-        // best match — so "population" (not in History-of-Lithuania) or
-        // "perovskites" (not in Solar-panel) still gets a grounded answer.
+        // Direct-link fallback: if none of the articles in hand cover the
+        // follow-up, search for a useful candidate but accept it only when an
+        // article already in hand links to it. Name similarity alone cannot
+        // escape the prepared topic.
         let coveredByHand = state.sources.contains {
-            ArticleHeuristics.sectionsCoverQuestion($0.sections, question)
+            ArticleHeuristics.sectionsCoverQuestion(
+                $0.sections, contextualQuestion, articleTitle: $0.title)
         }
-        if !coveredByHand, let adapter {
-            let kwList = ArticleHeuristics.questionKeywords(question)
+        let asksAboutOpposingSides = ArticleHeuristics
+            .asksAboutOpposingSides(contextualQuestion)
+        if (!coveredByHand || asksAboutOpposingSides), let adapter {
+            let kwList = ArticleHeuristics.questionKeywords(contextualQuestion)
             let query = (state.topic + " " + kwList.joined(separator: " "))
                 .trimmingCharacters(in: .whitespaces)
+            let existingTitles = Set(state.sources.map { $0.title.lowercased() })
+            let preferredTitles = ArticleHeuristics.namedEventArticleCandidates(
+                state.sources.flatMap(\.sections), question: contextualQuestion)
             if let pulled = await pullArticleForDiscussion(
-                query: query, keywords: kwList, zim: state.zim, adapter: adapter),
-               !state.sources.contains(where: {
-                   $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
-               }) {
-                state.sources.append(pulled)
+                query: query, keywords: kwList, zim: state.zim, adapter: adapter,
+                excludingTitles: existingTitles,
+                preferredTitles: preferredTitles,
+                allowedTitles: state.linkedArticleTitles) {
+                state.sources.append((pulled.title, pulled.sections))
+                state.linkedArticleTitles.formUnion(pulled.linkedTitles)
+                if discussionPreparationStrategy == .semanticSections {
+                    let added = await prepareDiscussionEmbeddings(sources: [
+                        (title: pulled.title, sections: pulled.sections),
+                    ])
+                    state.sectionEmbeddings.merge(added) { _, new in new }
+                    debug("discuss: indexed pulled source \(pulled.title) · \(added.count) semantic vectors",
+                          category: "Chat")
+                }
                 debug("discuss: pulled “\(pulled.title)” for “\(question)”",
                       category: "Router")
             }
         }
+        state.lastQuestion = question
         discussionState = state   // persist any pulled-in article
 
-        let first = await generateGroundedAnswer(state: state, question: question)
+        let first = await generateGroundedAnswer(
+            state: state, question: question,
+            retrievalQuestion: contextualQuestion)
         // Reactive corpus fallback: the coverage gate is lexical, so a
         // question whose keywords merely APPEAR in the articles in hand
         // ("why did he invade Ukraine?" while holding the Crimea-annexation
@@ -3325,19 +4280,33 @@ public final class ChatSession {
         // see it". Treat that answer as the coverage signal: pull the best
         // corpus article for the question and regenerate ONCE.
         if Self.looksLikeDontSee(first), let adapter {
-            let kwList = ArticleHeuristics.questionKeywords(question)
+            let kwList = ArticleHeuristics.questionKeywords(contextualQuestion)
             let query = (state.topic + " " + kwList.joined(separator: " "))
                 .trimmingCharacters(in: .whitespaces)
+            let existingTitles = Set(state.sources.map { $0.title.lowercased() })
+            let preferredTitles = ArticleHeuristics.namedEventArticleCandidates(
+                state.sources.flatMap(\.sections), question: contextualQuestion)
             if let pulled = await pullArticleForDiscussion(
-                query: query, keywords: kwList, zim: state.zim, adapter: adapter),
-               !state.sources.contains(where: {
-                   $0.title.caseInsensitiveCompare(pulled.title) == .orderedSame
-               }) {
-                state.sources.append(pulled)
+                query: query, keywords: kwList, zim: state.zim, adapter: adapter,
+                excludingTitles: existingTitles,
+                preferredTitles: preferredTitles,
+                allowedTitles: state.linkedArticleTitles) {
+                state.sources.append((pulled.title, pulled.sections))
+                state.linkedArticleTitles.formUnion(pulled.linkedTitles)
+                if discussionPreparationStrategy == .semanticSections {
+                    let added = await prepareDiscussionEmbeddings(sources: [
+                        (title: pulled.title, sections: pulled.sections),
+                    ])
+                    state.sectionEmbeddings.merge(added) { _, new in new }
+                    debug("discuss: indexed retry source \(pulled.title) · \(added.count) semantic vectors",
+                          category: "Chat")
+                }
                 discussionState = state
                 debug("discuss: retry — pulled “\(pulled.title)” after a don't-see answer",
                       category: "Router")
-                _ = await generateGroundedAnswer(state: state, question: question)
+                _ = await generateGroundedAnswer(
+                    state: state, question: question,
+                    retrievalQuestion: contextualQuestion)
             }
         }
     }
@@ -3346,10 +4315,48 @@ public final class ChatSession {
     /// used as the trigger for the one-shot corpus-pull retry.
     private static func looksLikeDontSee(_ s: String) -> Bool {
         let t = s.lowercased()
-        return t.contains("don't see") || t.contains("do not see")
+        if t.contains("don't see") || t.contains("do not see")
             || t.contains("not in the passages")
             || t.contains("don't have that")
             || t.contains("isn't in what i have")
+        { return true }
+
+        // A qualified answer can give the useful period/reign and then note
+        // that the evidence lacks a more exact date. That is not a retrieval
+        // failure. Only treat the newer insufficiency phrases as a fallback
+        // signal when they occur in the opening sentence; this still catches
+        // "The evidence does not specify the sides" without discarding a
+        // three-sentence answer that ends with an honest caveat.
+        let opening = t.split(separator: ".", maxSplits: 1,
+                              omittingEmptySubsequences: true)
+            .first.map(String.init) ?? String(t.prefix(240))
+        return opening.contains("does not specify")
+            || opening.contains("doesn't specify")
+            || opening.contains("not specified in")
+            || opening.contains("not provided in the evidence")
+    }
+
+    /// Grounded answers keep their useful section follow-ups and also expose
+    /// the explicit full-article narration action that older builds offered.
+    /// The chip's complete prompt makes it deterministic even when the user is
+    /// already inside pinned discussion mode.
+    private func groundedSuggestions(
+        state: DiscussionState,
+        sections: [ArticleSection],
+        after question: String
+    ) -> [DiscoveryThread] {
+        let readFull = DiscoveryThread(
+            label: "Read full article",
+            kind: .topic,
+            source: .section,
+            note: "Complete Wikipedia article",
+            prompt: "Read the full article about \(state.anchorTitle) aloud")
+        let contextual = ConversationThreads.contextualQuestions(
+            topic: state.topic,
+            sections: sections,
+            after: question,
+            max: 3)
+        return [readFull] + contextual
     }
 
     /// One grounded generation over the discussion's current sources:
@@ -3358,21 +4365,76 @@ public final class ChatSession {
     @MainActor
     @discardableResult
     private func generateGroundedAnswer(
-        state: DiscussionState, question: String
+        state: DiscussionState, question: String,
+        retrievalQuestion: String? = nil
     ) async -> String {
+        preemptLlamaPromptOptimizationForGroundedTurn()
+        let resolvedQuestion = retrievalQuestion ?? question
         // Anchor lead for topic context + the top-ranked sections across all
         // articles in hand. Wider budget (6) than before — llama.cpp KV is
         // cheap, and specific-fact follow-ups need the deeper section, not
         // just the lead. Each passage is capped so several fit in n_ctx.
-        let passageLimit = ArticleHeuristics.groundedPassageLimit(for: question)
-        let passageCharacterLimit = ArticleHeuristics
-            .groundedPassageCharacterLimit(for: question)
-        let ranked = ArticleHeuristics.rankSectionsMultiSource(
-            question, sources: state.sources, k: max(4, passageLimit * 2))
+        let defaultPassageLimit = ArticleHeuristics
+            .groundedPassageLimit(for: resolvedQuestion)
+        let passageLimit = longerReplies
+            ? min(8, max(6, defaultPassageLimit + 2))
+            : defaultPassageLimit
+        let defaultCharacterLimit = ArticleHeuristics
+            .groundedPassageCharacterLimit(for: resolvedQuestion)
+        let passageCharacterLimit = longerReplies
+            ? min(2_400, max(1_400, defaultCharacterLimit + 500))
+            : defaultCharacterLimit
+        // A content-free referential follow-up ("What are they?", "tell me
+        // more") refers to the pinned topic, not whichever linked support
+        // article happened to be retrieved most recently. Rank only the
+        // anchor for that turn so an auxiliary source cannot capture it.
+        let anchorSnapback = ArticleHeuristics
+            .questionKeywords(resolvedQuestion).isEmpty
+        let rankingSources = anchorSnapback
+            ? Array(state.sources.prefix(1))
+            : state.sources
+        let ranked: [(article: String, section: ArticleSection)]
+        if !state.sectionEmbeddings.isEmpty,
+           let questionVector = await SemanticReranker.shared.embedText(
+               resolvedQuestion)
+        {
+            var vectors = state.sectionEmbeddings
+            vectors[PreparedDiscussionEmbedder.key(resolvedQuestion)] = questionVector
+            let embedder = PreparedDiscussionEmbedder(vectors: vectors)
+            ranked = ArticleHeuristics.rankSectionsMultiSource(
+                resolvedQuestion, sources: rankingSources, embedder: embedder,
+                k: max(4, passageLimit * 2))
+            debug("discuss retrieval: prepared semantic section index",
+                  category: "Chat")
+        } else {
+            ranked = ArticleHeuristics.rankSectionsMultiSource(
+                resolvedQuestion, sources: rankingSources,
+                k: max(4, passageLimit * 2))
+        }
         var picked: [(article: String, section: ArticleSection)] = []
         if let anchor = state.sources.first,
            let lead = anchor.sections.first(where: { $0.title.isEmpty }) {
             picked.append((anchor.title, lead))
+        }
+        // A participant follow-up may have just pulled a dedicated event
+        // article. Even after indexing that source, make its lead the next
+        // passage when its title carries all of the event terms in the
+        // question. Otherwise a broad country section can still win a close
+        // semantic tie and hide the better Red/White/combatant evidence.
+        if ArticleHeuristics.asksAboutOpposingSides(resolvedQuestion) {
+            let participantTerms: Set<String> = [
+                "side", "sides", "combatant", "combatants", "belligerent",
+                "belligerents", "fought", "forces", "armies",
+            ]
+            let eventTerms = ArticleHeuristics.questionKeywords(resolvedQuestion)
+                .filter { !participantTerms.contains($0) }
+            if let dedicated = state.sources.dropFirst().first(where: { source in
+                let title = source.title.lowercased()
+                return !eventTerms.isEmpty
+                    && eventTerms.allSatisfy { title.contains($0) }
+            }), let lead = dedicated.sections.first(where: { $0.title.isEmpty }) {
+                picked.append((dedicated.title, lead))
+            }
         }
         for r in ranked where !picked.contains(where: {
             $0.article == r.article && $0.section.title == r.section.title
@@ -3387,7 +4449,7 @@ public final class ChatSession {
         func passageText(_ p: (article: String, section: ArticleSection)) -> String {
             ArticleHeuristics.groundedPassageWindow(
                 p.section.text,
-                question: question,
+                question: resolvedQuestion,
                 maxChars: passageCharacterLimit)
         }
         func passageKey(_ p: (article: String, section: ArticleSection)) -> String {
@@ -3417,8 +4479,11 @@ public final class ChatSession {
                 return "## \(head)\n\(passageText(p))"
             }.joined(separator: "\n\n")
         }
+        let answerStyle = longerReplies
+            ? "Be detailed but natural, and don't say \"according to the passage\". For broad questions, answer in four to eight substantive sentences and cover the main context, chronology, and consequences supported by the evidence."
+            : "Be conversational and informative, and don't say \"according to the passage\". Usually answer in two to four substantive sentences: give the direct answer first, then add the most useful context supported by the evidence. A truly atomic fact may use one sentence. For historical questions, include the date or period when the evidence gives it, then briefly explain what happened and why it mattered."
         let preamble = """
-        You are discussing "\(state.topic)" with the user using offline Wikipedia evidence supplied throughout this conversation. Answer using ONLY that evidence. Be concise and natural, and don't say "according to the passage". If the answer isn't in the evidence, say you don't see it in what you have on \(state.topic). Attribute carefully: the evidence may mix statements by DIFFERENT parties (\(state.topic), other governments, critics) — never put one party's words in another's mouth; if the question asks what someone said, report only THAT person's statements. When casualty figures conflict, label each side or source's estimate separately; never combine killed and wounded into a total death count. When asked who fought, name every opposing side supported by the evidence, not only the most recently mentioned force. Answer in one to three sentences, keeping key specifics (names, dates, places) when the evidence gives them. Give just the answer directly — no reasoning steps, no preamble, no <think> block.
+        You are discussing "\(state.topic)" with the user using offline Wikipedia evidence supplied throughout this conversation. Answer using ONLY that evidence. \(answerStyle) If the answer isn't in the evidence, say you don't see it in what you have on \(state.topic). Attribute carefully: the evidence may mix statements by DIFFERENT parties (\(state.topic), other governments, critics) — never put one party's words in another's mouth; if the question asks what someone said, report only THAT person's statements. For a broad school or education question, include both secondary school and university when the evidence supplies both. For "how many died", report figures explicitly labeled killed or dead for each side; a broader casualty figure may include wounded and is NOT a death count, so label it separately rather than substituting it for deaths. When casualty figures conflict, label each side or source's estimate separately; never combine killed and wounded into a total death count. When asked who fought or about opposing sides, name every opposing side supported by the evidence, not only the most recently mentioned force. Use at least two sentences for a participant question: identify the principal sides first, then add supported context such as other participants, foreign intervention, or what each side represented. Give just the answer directly — no reasoning steps, no preamble, no <think> block.
         """
 
         var cache: GroundedPromptCache
@@ -3437,18 +4502,33 @@ public final class ChatSession {
         }
 
         let wasWarm = !cache.turns.isEmpty
-        let lowerQuestion = question.lowercased()
-        let refreshLeadForSides = [
-            "combatant", "belligerent", "who fought", "which side",
-        ].contains(where: { lowerQuestion.contains($0) })
-        var passagesForTurn = picked.filter { passage in
-            let title = passage.section.title.lowercased()
-            let isLead = title.isEmpty || title == "lead"
-            return (refreshLeadForSides && isLead)
-                || !cache.passageKeys.contains(passageKey(passage))
+        let lowerQuestion = resolvedQuestion.lowercased()
+        let refreshLeadForSides = ArticleHeuristics
+            .asksAboutOpposingSides(lowerQuestion)
+        // Put genuinely unseen evidence first. Participant questions may
+        // also refresh a previously cached lead because a different sentence
+        // window can contain the sides, but that refresh must never consume
+        // the warm turn's one-passage budget ahead of a newly pulled exact
+        // event article.
+        var passagesForTurn = picked.filter {
+            !cache.passageKeys.contains(passageKey($0))
+        }
+        if refreshLeadForSides {
+            passagesForTurn += picked.filter { passage in
+                let title = passage.section.title.lowercased()
+                let isLead = title.isEmpty || title == "lead"
+                return isLead
+                    && cache.passageKeys.contains(passageKey(passage))
+            }
         }
         if !wasWarm {
             passagesForTurn = picked
+        } else if anchorSnapback, let anchorPassage = picked.first {
+            // Repeat the anchor evidence even when its cache key is already
+            // present. The newest user turn then carries an explicit topic
+            // reset instead of asking the model to resolve a bare pronoun
+            // against a potentially newer auxiliary article.
+            passagesForTurn = [anchorPassage]
         } else if passagesForTurn.count > 1 {
             // Earlier evidence remains in the append-only transcript. Add at
             // most the best unseen section per follow-up; appending all
@@ -3469,7 +4549,9 @@ public final class ChatSession {
             } else {
                 evidence = "New offline Wikipedia evidence:\n\n" + renderPassages(passages)
             }
-            return ChatTurn(role: .user, text: "\(evidence)\n\nQuestion: \(question)")
+            return ChatTurn(
+                role: .user,
+                text: "\(evidence)\n\nQuestion: \(resolvedQuestion)")
         }
         func renderPrompt(_ turns: [ChatTurn]) -> String {
             if selectedModel is Gemma4Provider {
@@ -3486,8 +4568,52 @@ public final class ChatSession {
         // the answer mid-sentence ("Perovskite solar cells can be built…").
         // 512 leaves room for the answer even after a short reasoning preamble.
         let params = GenerationParameters(
-            maxTokens: max(effectiveMaxReplyTokens, 512), temperature: 0.3, topP: 0.9)
+            maxTokens: max(effectiveMaxReplyTokens, 512),
+            temperature: 0.3, topP: 0.9,
+            // Bonsai's publisher-tuned sampler is materially better for
+            // natural grounded conversation. Providers without a profile
+            // continue to use the conservative task values above.
+            useModelSamplingProfile: true)
         var candidateTurns = cache.turns + [makeUserTurn(passages: passagesForTurn)]
+
+        // Preserve exact grounded names and count labels for the few fact
+        // shapes where a sampled paraphrase is actively harmful. Bonsai is
+        // still the conversational engine for every open-ended turn; this
+        // is the same fast/extractive split used by the top-level factoid
+        // router, now applied to follow-ups within a pinned article.
+        if let extractive = ArticleHeuristics.groundedExtractiveAnswer(
+            question: resolvedQuestion,
+            // The extractor does not feed this text to the model, so it can
+            // safely inspect the complete selected sections. Using the
+            // compact model window here dropped an earlier 60–200 killed
+            // estimate from the Alamo casualty section.
+            passages: picked.map { $0.section.text }) {
+            updateAssistant(extractive)
+            cache.turns = candidateTurns
+                + [ChatTurn(role: .assistant, text: extractive)]
+            cache.passageKeys.formUnion(passagesForTurn.map(passageKey))
+            groundedPromptCache = cache
+            if let idx = messages.indices.last,
+               messages[idx].role == .assistant {
+                var seenSources = Set<GroundingSource>()
+                messages[idx].groundingSources = picked.compactMap { p in
+                    let source = GroundingSource(
+                        kind: .wikipedia,
+                        title: p.article,
+                        section: p.section.title.isEmpty ? nil : p.section.title,
+                        library: state.zim)
+                    return seenSources.insert(source).inserted ? source : nil
+                }
+                let sections = state.sources.first?.sections
+                    ?? state.sources.flatMap(\.sections)
+                messages[idx].suggestions = groundedSuggestions(
+                    state: state, sections: sections, after: question)
+            }
+            debug("grounded extractive reply: \(extractive)", category: "Chat")
+            debug(extractive, category: "Assistant")
+            return extractive
+        }
+
         var prompt = renderPrompt(candidateTurns)
 
         // Keep enough room for the complete answer. Once a long discussion
@@ -3535,10 +4661,23 @@ public final class ChatSession {
             }
             let final = stripLeakedReasoning(buffer)
             updateAssistant(final)
-            // Store the exact raw emission, not the display-scrubbed answer:
-            // re-tokenising this transcript must reproduce the tokens already
-            // resident in llama.cpp so the next prompt is a strict append.
-            cache.turns = candidateTurns + [ChatTurn(role: .assistant, text: buffer)]
+            // Normally store the exact raw emission: re-tokenising that
+            // transcript reproduces the tokens already resident in llama.cpp,
+            // so the next prompt is a strict append. A leaked reasoning marker
+            // is different. Keeping it would contaminate every later turn and
+            // could make the model continue the malformed pattern. Rebuild the
+            // next turn from the scrubbed answer instead; sacrificing one warm
+            // append is preferable to poisoning the whole discussion cache.
+            let cacheAnswer: String
+            if buffer.contains("<think>") || buffer.contains("</think>") {
+                cacheAnswer = final
+                debug("reasoning marker removed from grounded cache; next turn may rebuild KV",
+                      category: "Chat")
+            } else {
+                cacheAnswer = buffer
+            }
+            cache.turns = candidateTurns
+                + [ChatTurn(role: .assistant, text: cacheAnswer)]
             cache.passageKeys.formUnion(passagesForTurn.map(passageKey))
             groundedPromptCache = cache
             if let idx = messages.indices.last,
@@ -3567,11 +4706,8 @@ public final class ChatSession {
                 // drift away from the conversation.
                 let sections = state.sources.first?.sections
                     ?? state.sources.flatMap(\.sections)
-                messages[idx].suggestions = ConversationThreads.contextualQuestions(
-                    topic: state.topic,
-                    sections: sections,
-                    after: question,
-                    max: 3)
+                messages[idx].suggestions = groundedSuggestions(
+                    state: state, sections: sections, after: question)
                 debug("contextual suggestions: "
                     + messages[idx].suggestions.map(\.label).joined(separator: " | "),
                       category: "Chat")
@@ -3607,7 +4743,14 @@ public final class ChatSession {
     /// returning the raw closed block here made the reactive fallback inspect
     /// hidden chain-of-thought and retry otherwise-good answers.
     private func stripLeakedReasoning(_ s: String) -> String {
-        let scrubbed = selectedModel.template.stripReasoning(s)
+        var scrubbed = selectedModel.template.stripReasoning(s)
+        // Some llama.cpp chat templates evaluate `<think>` as part of the
+        // assistant prefix, so the generated buffer contains only
+        // `draft</think>final`. Template-specific scrubbers normally handle
+        // this, but keep the grounded path safe for every provider family.
+        if let close = scrubbed.range(of: "</think>", options: .backwards) {
+            scrubbed = String(scrubbed[close.upperBound...])
+        }
         guard let open = scrubbed.range(of: "<think>") else { return scrubbed }
         if scrubbed.range(of: "</think>", range: open.upperBound..<scrubbed.endIndex) != nil {
             return scrubbed
@@ -3626,8 +4769,42 @@ public final class ChatSession {
     /// `discuss_article` (all sections) dispatches — all real ZIM data.
     @MainActor
     private func pullArticleForDiscussion(
-        query: String, keywords: [String], zim: String?, adapter: MCPToolAdapter
-    ) async -> (title: String, sections: [ArticleSection])? {
+        query: String, keywords: [String], zim: String?, adapter: MCPToolAdapter,
+        excludingTitles: Set<String> = [], preferredTitles: [String] = [],
+        allowedTitles: Set<String>
+    ) async -> (title: String, sections: [ArticleSection], linkedTitles: Set<String>)? {
+        func loadArticle(
+            _ title: String
+        ) async -> (title: String, sections: [ArticleSection], linkedTitles: Set<String>)? {
+            var args: [String: Any] = ["title": title]
+            if let zim { args["zim"] = zim }
+            guard let res = try? await adapter.dispatch(
+                tool: "discuss_article", args: args),
+                  let raw = res["sections"] as? [[String: Any]], !raw.isEmpty
+            else { return nil }
+            let secs = raw.map(Self.decodedArticleSection)
+            guard secs.reduce(0, { $0 + $1.text.count }) >= 500 else {
+                return nil
+            }
+            return (
+                (res["title"] as? String) ?? title,
+                secs,
+                Self.linkedArticleTitles(from: res))
+        }
+
+        for title in preferredTitles {
+            let key = title.lowercased()
+            guard !excludingTitles.contains(key),
+                  ArticleHeuristics.isDirectlyLinkedArticle(
+                    title, allowedTitleKeys: allowedTitles)
+            else { continue }
+            if let article = await loadArticle(title) {
+                debug("discuss: direct-link named-event pull “\(article.title)”",
+                      category: "Router")
+                return article
+            }
+        }
+
         guard let search = try? await adapter.dispatch(
             tool: "search", args: ["query": query, "limit": 5]) else { return nil }
         let hits = (search["hits"] as? [[String: Any]])
@@ -3641,15 +4818,18 @@ public final class ChatSession {
             return nil
         }
         let titles = hits.compactMap(hitTitle)
-        // Order candidates: hits whose TITLE carries a question keyword first
-        // ("Perovskite solar cell" for "how about perovskites", stem-matched
-        // so "perovskites" finds "Perovskite…"), then the rest. The query
-        // mixes topic + keyword so the #1 blended hit isn't always on-topic.
-        let stems = keywords.filter { $0.count >= 4 }.map { String($0.prefix(6)).lowercased() }
-        func matchesKeyword(_ t: String) -> Bool {
-            let lt = t.lowercased(); return stems.contains { lt.contains($0) }
+        // A candidate must be both directly linked AND title-relevant. The
+        // old "then the rest" fallback let a semantic search hit for Raman
+        // scattering answer "When were photons discovered?" and persisted
+        // that drift into the next turn.
+        let ordered = titles.filter {
+            ArticleHeuristics.linkedExpansionTitleMatchesQuestion(
+                $0, keywords: keywords)
         }
-        let ordered = titles.filter(matchesKeyword) + titles.filter { !matchesKeyword($0) }
+        if ordered.isEmpty, !titles.isEmpty {
+            debug("discuss: declined unrelated linked search hits for \"\(query)\"",
+                  category: "Router")
+        }
 
         // Try candidates in order, returning the first with REAL content —
         // skip redirect/stub pages (real capture 2026-05-30: the search's top
@@ -3659,24 +4839,41 @@ public final class ChatSession {
         var tried = Set<String>()
         for title in ordered.prefix(5) {
             let key = title.lowercased()
-            if tried.contains(key) { continue }
+            if tried.contains(key) || excludingTitles.contains(key)
+                || !ArticleHeuristics.isDirectlyLinkedArticle(
+                    title, allowedTitleKeys: allowedTitles) { continue }
             tried.insert(key)
-            var args: [String: Any] = ["title": title]
-            if let zim { args["zim"] = zim }
-            guard let res = try? await adapter.dispatch(tool: "discuss_article", args: args),
-                  let raw = res["sections"] as? [[String: Any]], !raw.isEmpty
-            else { continue }
-            let secs = raw.map { d in
-                ArticleSection(title: (d["title"] as? String) ?? "",
-                               level: (d["level"] as? Int) ?? 0,
-                               text: (d["text"] as? String) ?? "")
-            }
-            // Stub/redirect pages render as just the repeated title — require
-            // real body text before accepting the article.
-            if secs.reduce(0, { $0 + $1.text.count }) < 500 { continue }
-            return ((res["title"] as? String) ?? title, secs)
+            if let article = await loadArticle(title) { return article }
         }
         return nil
+    }
+
+    /// Normalize the outbound link metadata returned by `discuss_article`.
+    /// Keep both visible anchor text and the destination path's final
+    /// component: Wikipedia may display "the civil war" while linking to
+    /// `A/Russian_Civil_War`, and the latter is the exact article identity.
+    private static func linkedArticleTitles(
+        from result: [String: Any]
+    ) -> Set<String> {
+        let links = result["linked_articles"] as? [[String: Any]] ?? []
+        return ArticleHeuristics.linkedArticleTitleKeys(links)
+    }
+
+    /// The overview adapter labels Wikipedia's untitled opening passage
+    /// `lead` for JSON consumers, while discussion retrieval represents that
+    /// same passage with an empty heading. Normalize at the tool boundary so
+    /// lead anchoring works identically for both adapter paths.
+    private static func decodedArticleSection(
+        _ dictionary: [String: Any]
+    ) -> ArticleSection {
+        let rawTitle = (dictionary["title"] as? String) ?? ""
+        let title = rawTitle.caseInsensitiveCompare("lead") == .orderedSame
+            ? ""
+            : rawTitle
+        return ArticleSection(
+            title: title,
+            level: (dictionary["level"] as? Int) ?? 0,
+            text: (dictionary["text"] as? String) ?? "")
     }
 
     /// Run the dispatched tool, record the trace, and synthesize a
@@ -3685,6 +4882,7 @@ public final class ChatSession {
     @MainActor
     private func executeDirectIntent(_ intent: DirectIntent) async -> Bool {
         guard let adapter else { return false }
+        activeQueryTelemetry?.setRoute("fast_path", primaryTool: intent.toolName)
         // Replace "my location" / "here" / "me" / "current location"
         // with "lat,lon" before dispatching, so the geocoder's parse-
         // as-coords shortcut picks up the user's GPS fix. Previously
@@ -3703,15 +4901,28 @@ public final class ChatSession {
         }()
         debug("fast-path dispatch \(intent.toolName)(\(argsStr))", category: "Tool")
         do {
+            let dispatchStarted = ProcessInfo.processInfo.systemUptime
+            let dispatchMemory = MemoryStats.physFootprintMB()
             let fullResult = try await adapter.dispatch(
                 tool: intent.toolName, args: dictArgs
             )
+            let dispatchDuration = ProcessInfo.processInfo.systemUptime - dispatchStarted
+            activeQueryTelemetry?.recordTool(
+                name: intent.toolName,
+                duration: dispatchDuration,
+                usedZimKinds: telemetryZimKinds(from: fullResult))
             // Record subject + drift threads for the next follow-up.
             updateFocusAfterTool(
                 toolName: intent.toolName, args: dictArgs, result: fullResult)
             let resultData = (try? JSONSerialization.data(
                 withJSONObject: fullResult, options: [.sortedKeys]
             )) ?? Data()
+            debug(String(format:
+                "fast-path %@ returned %d bytes in %.3fs · Δmem=%+.1f MB",
+                intent.toolName, resultData.count,
+                dispatchDuration,
+                MemoryStats.physFootprintMB() - dispatchMemory),
+                category: "Tool")
             let rawStr = String(data: resultData, encoding: .utf8) ?? "{}"
             recordToolTrace(ToolCallTrace(
                 name: intent.toolName,
@@ -3720,8 +4931,40 @@ public final class ChatSession {
                 rawResult: rawStr,
                 error: nil
             ))
+            if intent.toolName == "narrate_article" {
+                let body = (fullResult["text"] as? String) ?? ""
+                let passThrough = (fullResult["pass_through"] as? Bool) == true
+                guard passThrough, !body.isEmpty else {
+                    let title = (dictArgs["title"] as? String) ?? "that topic"
+                    updateAssistant("I couldn't read the full article on \(title) from the loaded Wikipedia archive.")
+                    debug("narrate fast path returned no body", category: "Router")
+                    return true
+                }
+                noteReadingState(
+                    toolName: "narrate_article",
+                    args: dictArgs,
+                    result: fullResult)
+                noteDiscussionAnchor(
+                    toolName: "narrate_article",
+                    result: fullResult)
+                updateAssistant(body)
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].groundingSources = [GroundingSource(
+                        kind: .wikipedia,
+                        title: (fullResult["title"] as? String)
+                            ?? (dictArgs["title"] as? String) ?? "Wikipedia",
+                        section: nil,
+                        library: fullResult["zim"] as? String)]
+                }
+                debug("narrate fast path: emitted \(body.count) chars; no LLM",
+                      category: "Router")
+                return true
+            }
             if intent.toolName == "discuss_article" {
-                return handleDiscussEntry(dictArgs: dictArgs, fullResult: fullResult)
+                return await handleDiscussEntry(
+                    dictArgs: dictArgs, fullResult: fullResult)
             }
             let placesTools: Set<String> = [
                 "near_named_place", "near_places",
@@ -3744,6 +4987,8 @@ public final class ChatSession {
                     return IntentRouter.compareResultIsUsable(fullResult)
                 case "article_overview":
                     return IntentRouter.articleOverviewResultIsUsable(fullResult)
+                case "article_factoid":
+                    return IntentRouter.articleFactoidResultIsUsable(fullResult)
                 case "what_is_here":
                     return IntentRouter.whatIsHereResultIsUsable(fullResult)
                 default:
@@ -3753,6 +4998,81 @@ public final class ChatSession {
                 }
             }()
             if !usable {
+                if intent.toolName == "article_factoid" {
+                    if (fullResult["ambiguous"] as? Bool) == true {
+                        let synth = IntentRouter.synthesizeArticleFactoidReply(
+                            args: dictArgs, fullResult: fullResult)
+                        updateAssistant(synth)
+                        let rows = (fullResult["disambiguation"]
+                            as? [[String: Any]]) ?? []
+                        let predicate = (dictArgs["predicate"] as? String)
+                            ?? "foundation"
+                        let choices = rows.compactMap { row -> DiscoveryThread? in
+                            guard let title = row["title"] as? String,
+                                  !title.isEmpty else { return nil }
+                            let prompt = predicate == "age"
+                                ? "How old is \(title)?"
+                                : "When was \(title) founded?"
+                            return DiscoveryThread(
+                                label: title,
+                                kind: .topic,
+                                source: .wikilink,
+                                zimPath: row["path"] as? String,
+                                prompt: prompt)
+                        }
+                        if let idx = messages.indices.last,
+                           messages[idx].role == .assistant {
+                            messages[idx].suggestions = choices
+                        }
+                        focus.setLastList(rows.compactMap { row -> FocusEntity? in
+                            guard let title = row["title"] as? String,
+                                  !title.isEmpty else { return nil }
+                            return FocusEntity(
+                                name: title, kind: .topic,
+                                zimPath: row["path"] as? String)
+                        })
+                        pendingFactoidPredicate = predicate
+                        debug("factoid ambiguity — offered "
+                            + choices.map(\.label).joined(separator: " | ")
+                            + "; no LLM", category: "Router")
+                        return true
+                    }
+                    if let notes = fullResult["diagnostics"] as? [String],
+                       !notes.isEmpty {
+                        debug("factoid diagnostics: "
+                            + notes.joined(separator: " | "), category: "Router")
+                    }
+                    // An incomplete "When was X?" only produces a factoid
+                    // when the adapter proved X is a company. On a miss,
+                    // immediately open the same Wikipedia title instead of
+                    // dropping into an ungrounded model turn. Besides avoiding
+                    // preknowledge, this establishes discussion focus so
+                    // follow-ups such as "how many died there?" and "who were
+                    // the combatants?" stay attached to the event.
+                    if (dictArgs["implicit"] as? Bool) == true
+                        || (dictArgs["tentative"] as? Bool) == true {
+                        if let idx = messages.indices.last,
+                           messages[idx].role == .assistant {
+                            messages[idx].toolCalls.removeAll()
+                            messages[idx].text = ""
+                        }
+                        if let title = dictArgs["title"] as? String,
+                           !title.isEmpty {
+                            debug("tentative factoid miss — opening Wikipedia topic \(title)",
+                                  category: "Router")
+                            return await executeDirectIntent(DirectIntent(
+                                toolName: "article_overview",
+                                args: ["title": .string(title)]))
+                        }
+                        return false
+                    }
+                    let synth = IntentRouter.synthesizeArticleFactoidReply(
+                        args: dictArgs, fullResult: fullResult)
+                    updateAssistant(synth)
+                    debug("factoid evidence miss — skipping LLM",
+                          category: "Router")
+                    return true
+                }
                 // article_overview misses are deterministic — the LLM
                 // has no hidden knowledge of what's in the offline ZIM,
                 // and when handed a missed title it confabulates a wrong
@@ -3851,6 +5171,18 @@ public final class ChatSession {
             } else if routingTools.contains(intent.toolName) {
                 let synth = Self.synthesizeRoutingReply(from: fullResult)
                 updateAssistant(synth.isEmpty ? "Route below." : synth)
+            } else if intent.toolName == "article_factoid" {
+                noteDiscussionAnchor(toolName: "article_overview",
+                                     result: fullResult)
+                let synth = IntentRouter.synthesizeArticleFactoidReply(
+                    args: dictArgs, fullResult: fullResult)
+                updateAssistant(synth)
+                debug(synth, category: "Assistant")
+                let resolution = (fullResult["resolution"] as? String) ?? "unknown"
+                debug("factoid fast path → grounded Wikipedia lead (\(resolution)); no LLM",
+                      category: "Router")
+                await appendThreadOfferIfUseful()
+                return true
             } else if intent.toolName == "article_overview"
                    || intent.toolName == "compare_articles"
             {
@@ -3875,12 +5207,8 @@ public final class ChatSession {
                     ?? "Tell me about this."
                 var sources: [(title: String, sections: [ArticleSection])] = []
                 func sections(from dict: [String: Any]) -> [ArticleSection] {
-                    ((dict["sections"] as? [[String: Any]]) ?? []).map {
-                        ArticleSection(
-                            title: ($0["title"] as? String) ?? "",
-                            level: ($0["level"] as? Int) ?? 0,
-                            text: ($0["text"] as? String) ?? "")
-                    }
+                    ((dict["sections"] as? [[String: Any]]) ?? [])
+                        .map(Self.decodedArticleSection)
                 }
                 if let articles = fullResult["articles"] as? [[String: Any]] {
                     for a in articles {
@@ -3903,7 +5231,10 @@ public final class ChatSession {
                     anchorTitle: anchor,
                     topic: ArticleHeuristics.topicCore(anchor),
                     zim: fullResult["zim"] as? String,
-                    sources: sources)
+                    sources: sources,
+                    linkedArticleTitles: [],
+                    sectionEmbeddings: [:],
+                    lastQuestion: nil)
                 debug("fast-path \(intent.toolName) → grounded single-shot over \(sources.count) source(s)",
                       category: "Router")
                 await generateGroundedAnswer(state: grounded, question: question)
@@ -4029,7 +5360,7 @@ public final class ChatSession {
         if result["error"] != nil { return }
 
         let topicTools: Set<String> = [
-            "article_overview", "compare_articles",
+            "article_overview", "article_factoid", "compare_articles",
             "get_article_section", "narrate_article",
         ]
         if topicTools.contains(toolName),
@@ -4047,7 +5378,7 @@ public final class ChatSession {
         }
 
         let placesTools: Set<String> = [
-            "near_named_place", "near_places",
+            "locate", "near_named_place", "near_places",
             "nearby_stories", "nearby_stories_at_place",
         ]
         if placesTools.contains(toolName) {
@@ -4270,7 +5601,8 @@ public final class ChatSession {
     /// with its own offer, or the reply is empty.
     private func appendThreadOfferIfUseful() async {
         var offerable = focus.openThreads.filter {
-            ($0.kind != .place || $0.zimPath != nil)
+            ConversationThreads.isUserFacing($0)
+                && ($0.kind != .place || $0.zimPath != nil)
                 && !recentlyOfferedThreadKeys.contains($0.matchKey)
         }
         guard !offerable.isEmpty else { return }
@@ -4667,11 +5999,12 @@ public final class ChatSession {
     /// exotic (deeply nested objects, oneOf, etc.) falls through as a
     /// best-effort OBJECT so the model at least knows the param exists.
     ///
-    /// For the `zim` parameter specifically, we also inject the actual
-    /// list of loaded ZIM filenames as an enum — small models sometimes
-    /// invent plausible names (`"streetzim"`, `"wikipedia"`) otherwise.
+    /// Keep this schema independent of the user's installed ZIM filenames.
+    /// `zim` is optional and MCPToolAdapter sanitizes invented filenames, so
+    /// baking the live inventory into an enum only made the expensive static
+    /// model prefix differ for every library (and made a release-seeded cache
+    /// impossible to reuse).
     private func toolDeclarations(registry: MCPToolRegistry) -> [ModelToolDeclaration] {
-        let zimNames = library.filter { $0.isEnabled }.map { $0.url.lastPathComponent }
         return registry.tools.map { tool -> ModelToolDeclaration in
             let schema = (try? JSONSerialization.jsonObject(with: tool.inputSchemaJSON)) as? [String: Any] ?? [:]
             let properties = schema["properties"] as? [String: Any] ?? [:]
@@ -4690,9 +6023,8 @@ public final class ChatSession {
                     }
                 }()
                 let description = raw["description"] as? String
-                var enumValues = (raw["enum"] as? [Any])?.compactMap { $0 as? String }
-                if key == "zim" && !zimNames.isEmpty {
-                    enumValues = zimNames
+                let enumValues = (raw["enum"] as? [Any])?.compactMap {
+                    $0 as? String
                 }
                 return .init(
                     name: key,

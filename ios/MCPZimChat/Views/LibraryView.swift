@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct LibraryView: View {
     @Environment(ChatSession.self) private var session
     @State private var showImporter = false
+    @State private var showOfflineSetup = false
     @State private var pendingDelete: ChatSession.LibraryEntry?
 
     // Enabled count → used in the header ("3 of 5 enabled") so the user
@@ -44,12 +45,31 @@ struct LibraryView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Text("The selected model downloads automatically the first time, resumes interrupted downloads, and runs entirely on this device afterward.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Get offline content") {
+                Button {
+                    showOfflineSetup = true
+                } label: {
+                    Label("Choose Wikipedia and StreetZIM maps",
+                          systemImage: "square.stack.3d.up")
+                }
+                Text("Guided downloads for no-picture Wikipedia and a state, region, or country map from streetzim.web.app.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 if session.library.isEmpty {
-                    Text("No ZIMs loaded. Drop `.zim` files into this app's Documents folder (via Finder while the device is mounted, or via Files.app), then tap Refresh.")
-                        .foregroundStyle(.secondary)
-                        .font(.footnote)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("No offline content yet")
+                            .font(.headline)
+                        Text("Use the guided setup above, or add a library or map you already downloaded. You do not need to manage the app's Documents folder manually.")
+                            .foregroundStyle(.secondary)
+                            .font(.footnote)
+                    }
+                    .padding(.vertical, 4)
                 } else {
                     ForEach(session.library) { entry in
                         LibraryRow(
@@ -173,6 +193,7 @@ struct LibraryView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                #if DEBUG
                 VStack(alignment: .leading, spacing: 6) {
                     Text("GitHub PAT (gist scope)")
                         .font(.subheadline.weight(.semibold))
@@ -208,6 +229,22 @@ struct LibraryView: View {
                     }
                 }
                 .padding(.top, 4)
+                #endif
+            }
+
+            Section("About & privacy") {
+                Link(destination: URL(string: "https://tiltastech-zimfo.web.app/privacy")!) {
+                    Label("Privacy policy", systemImage: "hand.raised")
+                }
+                Link(destination: URL(string: "https://tiltastech-zimfo.web.app/support")!) {
+                    Label("Support", systemImage: "questionmark.circle")
+                }
+                Link(destination: URL(string: "https://tiltastech-zimfo.web.app/licenses")!) {
+                    Label("Licenses & attribution", systemImage: "doc.text")
+                }
+                Text("Questions, transcripts, article titles, ZIM filenames, and GPS coordinates stay on this device. Zimfo sends limited Firebase analytics and diagnostics; see the policy for details.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Aggregate capabilities") {
@@ -224,7 +261,7 @@ struct LibraryView: View {
         .navigationTitle("Library")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Add ZIM") { showImporter = true }
+                Button("Add File") { showImporter = true }
             }
             ToolbarItem(placement: .navigation) {
                 Button("Refresh") {
@@ -241,6 +278,21 @@ struct LibraryView: View {
                 // Append — don't replace the sandbox-scanned library.
                 Task { await session.addReaders(urls: urls) }
             }
+        }
+        .sheet(isPresented: $showOfflineSetup) {
+            OfflineContentSetupView()
+                .environment(session)
+        }
+        .alert(
+            "Could not add offline content",
+            isPresented: Binding(
+                get: { session.libraryError != nil },
+                set: { if !$0 { session.libraryError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { session.libraryError = nil }
+        } message: {
+            Text(session.libraryError ?? "Unknown error")
         }
         .confirmationDialog(
             pendingDelete.map {
@@ -284,7 +336,7 @@ struct LibraryView: View {
             // the numeric display.
             let percentLooksStuck = (Int(p * 100) <= 1) && elapsed > 20
             if percentLooksStuck {
-                return "Fetching weights (~2.5 GB, first-launch only)… \(elapsedStr)"
+                return "Fetching \(session.selectedModel.displayName)… \(elapsedStr)"
             }
             return "Downloading weights… \(pct) · \(elapsedStr)"
         case .ready:              return "Ready."
@@ -350,86 +402,131 @@ private struct LibraryRow: View {
     }
 }
 
-/// Kokoro voice asset + picker. Shows current backend, disk
-/// footprint, a one-click downloader for the ~360 MB assets, and a
-/// voice picker. When the assets aren't downloaded, voice chat
-/// still works — it just uses `AVSpeechSynthesizer` (system voice)
-/// until Kokoro is ready.
+/// On-device TTS engine, voice, and asset controls. Supertonic is the default
+/// iPhone backend; Kokoro remains selectable for listening comparisons.
 private struct VoiceModelSection: View {
     @State private var downloader = KokoroDownloader()
+    @State private var selectedBackend = TTSBackendPreference.current
     @State private var selectedVoice: String = KokoroVoicePreference.current
     @State private var isDownloaded: Bool = KokoroAssets.isDownloaded
+    #if canImport(FluidAudio)
+    @State private var selectedSupertonicVoice = SupertonicVoicePreference.current
+    #endif
 
     var body: some View {
         Section {
-            HStack {
-                Text("Backend")
-                Spacer()
-                Text(isDownloaded ? "Kokoro v1.0 (neural, on-device)" : "System voice (AVSpeechSynthesizer)")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            Picker("Engine", selection: $selectedBackend) {
+                ForEach(TTSBackendPreference.allCases, id: \.self) { backend in
+                    Text(backend.displayName).tag(backend)
+                }
+            }
+            .onChange(of: selectedBackend) { _, newValue in
+                TTSBackendPreference.current = newValue
+            }
+            backendControls
+        } header: {
+            Text("Voice chat")
+        } footer: {
+            Text("Engine and voice changes apply the next time voice chat starts.")
+        }
+    }
+
+    @ViewBuilder
+    private var backendControls: some View {
+        if selectedBackend == .supertonic {
+            #if canImport(FluidAudio)
+            Picker("Voice", selection: $selectedSupertonicVoice) {
+                ForEach(SupertonicVoicePreference.available, id: \.self) { voice in
+                    Text(voice).tag(voice)
+                }
+            }
+            .onChange(of: selectedSupertonicVoice) { _, newValue in
+                SupertonicVoicePreference.current = newValue
             }
             HStack {
                 Text("Size on disk")
                 Spacer()
-                Text(formatBytes(KokoroAssets.currentBytesOnDisk)
-                     + " / " + formatBytes(KokoroAssets.totalExpectedBytes))
+                Text(formatBytes(Supertonic3Assets.currentBytesOnDisk))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            switch downloader.state {
-            case .idle, .finished, .failed:
-                if isDownloaded {
-                    Picker("Voice", selection: $selectedVoice) {
-                        ForEach(KokoroVoicePreference.available, id: \.self) { v in
-                            Text(v).tag(v)
-                        }
-                    }
-                    .onChange(of: selectedVoice) { _, new in
-                        KokoroVoicePreference.current = new
-                    }
-                    Button(role: .destructive) {
-                        try? KokoroAssets.deleteAll()
-                        isDownloaded = KokoroAssets.isDownloaded
-                    } label: {
-                        Label("Remove Kokoro voice", systemImage: "trash")
-                    }
-                } else {
-                    Button {
-                        Task {
-                            await downloader.downloadIfNeeded()
-                            isDownloaded = KokoroAssets.isDownloaded
-                        }
-                    } label: {
-                        Label("Download Kokoro voice (~\(formatBytes(KokoroAssets.totalExpectedBytes)))",
-                              systemImage: "arrow.down.circle")
-                    }
-                    if case .failed(let msg) = downloader.state {
-                        Text("Last attempt failed: \(msg)")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-            case .downloading(let name, let written, let total, let overall):
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: overall)
-                    Text("Downloading \(name) — \(formatBytes(written)) / \(formatBytes(total))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Button(role: .destructive) {
-                    downloader.cancel()
-                } label: {
-                    Label("Cancel download", systemImage: "xmark.circle")
-                }
-            }
-            Text("Kokoro v1.0 is an 82M-param neural TTS running on Apple MLX. Without it, voice chat uses your system voice — always available, lower quality. Model from `mlx-community/Kokoro-82M-bf16`; voices from the KokoroTestApp pack. Apache-2.0 licensed.")
+            Text("Supertonic 3 uses fixed-shape INT8 Core ML models, with the repeated VectorEstimator running primarily on the Neural Engine. Assets download on the first voice session and remain entirely on-device afterward.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-        } header: {
-            Text("Voice chat")
+            #else
+            Text("Supertonic 3 is not linked in this build.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            #endif
+        } else if selectedBackend == .kokoro {
+            kokoroControls
+        } else {
+            Text("Apple's compact system voice needs no model download and uses the least memory, with lower voice quality than the neural engines.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private var kokoroControls: some View {
+        HStack {
+            Text("Size on disk")
+            Spacer()
+            Text(formatBytes(KokoroAssets.currentBytesOnDisk)
+                 + " / " + formatBytes(KokoroAssets.totalExpectedBytes))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        switch downloader.state {
+        case .idle, .finished, .failed:
+            if isDownloaded {
+                Picker("Voice", selection: $selectedVoice) {
+                    ForEach(KokoroVoicePreference.available, id: \.self) { voice in
+                        Text(voice).tag(voice)
+                    }
+                }
+                .onChange(of: selectedVoice) { _, newValue in
+                    KokoroVoicePreference.current = newValue
+                }
+                Button(role: .destructive) {
+                    try? KokoroAssets.deleteAll()
+                    isDownloaded = KokoroAssets.isDownloaded
+                } label: {
+                    Label("Remove Kokoro voice", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    Task {
+                        await downloader.downloadIfNeeded()
+                        isDownloaded = KokoroAssets.isDownloaded
+                    }
+                } label: {
+                    Label("Download Kokoro voice (~\(formatBytes(KokoroAssets.totalExpectedBytes)))",
+                          systemImage: "arrow.down.circle")
+                }
+                if case .failed(let message) = downloader.state {
+                    Text("Last attempt failed: \(message)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        case .downloading(let name, let written, let total, let overall):
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: overall)
+                Text("Downloading \(name) — \(formatBytes(written)) / \(formatBytes(total))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Button(role: .destructive) {
+                downloader.cancel()
+            } label: {
+                Label("Cancel download", systemImage: "xmark.circle")
+            }
+        }
+        Text("Kokoro v1.0 is an 82M-parameter neural TTS running on Apple MLX. Model from mlx-community/Kokoro-82M-bf16; voices from the KokoroTestApp pack.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
     }
 
     private func formatBytes(_ b: Int64) -> String {

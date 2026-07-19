@@ -77,12 +77,26 @@ grep -c "BUILD SUCCEEDED" /tmp/ios_build.log   # 1 = success (don't trust $? if 
 > re-mints a development cert/profile from the signed-in Apple ID and signs;
 > it's a no-op when one is already cached, so it's safe to always include.
 >
-> ⚠️ **Do NOT use the App Store Connect API-key form on this machine.** A past
-> recipe recommended `-authenticationKeyPath …/AuthKey_7C7256MDM6.p8`
-> `-authenticationKeyID 7C7256MDM6 -authenticationKeyIssuerID 69a6…`. **That key
-> does not exist here** — the build dies with `error: The -authenticationKeyPath
-> flag must be an absolute path to an existing file.` (Present keys are
-> `9FY5W363V5` / `CM54C7AR73`, but you don't need any of them.)
+> **TestFlight authentication on the Mac Studio:** the working API-key mapping
+> is stored privately at `~/.config/zimfo/testflight.env` (mode `600`).
+> `ios/scripts/testflight-upload.sh` loads it automatically; do not fall back
+> to Xcode's stale Apple-ID token and do not put the private values in this
+> repository. See `docs/SIGNED_APP_BUILDS.md` for the canonical runbook.
+
+### TestFlight — one command
+
+From the repository root:
+
+```sh
+ios/scripts/testflight-upload.sh
+```
+
+It creates a unique timestamped Release archive, verifies the distribution
+signature (`com.tiltastech.zimfo`, team `A6G8H8NGAM`), and uploads it using the
+private API-key config. If upload authentication/networking fails after the
+archive completes, reuse the printed `.xcarchive` with
+`MCPZIM_EXISTING_ARCHIVE=...`; never pay for the compile twice. The exact
+retry command and success markers are in `docs/SIGNED_APP_BUILDS.md`.
 
 # install to Jazzman 17 (edit UUID if device changes)
 xcrun devicectl device install app \
@@ -97,7 +111,7 @@ PID=$(xcrun devicectl device info processes --device 5AE213CA-315A-532A-878B-2CC
 
 xcrun devicectl device process launch \
   --device 5AE213CA-315A-532A-878B-2CC4EB051ABD \
-  org.mcpzim.MCPZimChat
+  com.tiltastech.zimfo
 ```
 
 Gotchas learned the hard way:
@@ -161,10 +175,10 @@ ios/scripts/mcp-deploy-verify.sh watch      # just watch the running app
 # Documents/debug-logs/<launch-timestamp>.log (survives crash/jetsam).
 # List + pull them over wifi:
 xcrun devicectl device info files --device <UUID> \
-  --domain-type appDataContainer --domain-identifier org.mcpzim.MCPZimChat \
+  --domain-type appDataContainer --domain-identifier com.tiltastech.zimfo \
   --subdirectory "Documents/debug-logs"
 xcrun devicectl device copy from --device <UUID> \
-  --domain-type appDataContainer --domain-identifier org.mcpzim.MCPZimChat \
+  --domain-type appDataContainer --domain-identifier com.tiltastech.zimfo \
   --source "Documents/debug-logs/<file>.log" --destination /tmp/<file>.log
 
 # System crash reports (when they DO exist) are listable the same way:

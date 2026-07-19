@@ -51,8 +51,8 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
 
     // MARK: - Public API
 
-    /// Call at launch so the manager starts feeding location the
-    /// moment permission is granted. Safe to call multiple times.
+    /// Start feeding location when permission was granted previously. This
+    /// never presents a permission sheet and is safe to call at launch.
     static func start() {
         DispatchQueue.main.async {
             shared.startIfAuthorized()
@@ -74,9 +74,10 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     /// the user sees the prompt on every launch.
     nonisolated(unsafe) static var debug: @Sendable (String) -> Void = { _ in }
 
-    /// Trigger the `WhenInUse` permission prompt if we haven't yet.
-    /// Call at launch so the dialog shows up while the user is
-    /// looking, not later when they've already asked for directions.
+    /// Trigger the `WhenInUse` permission prompt if we haven't yet. The host
+    /// calls this only after a location-dependent voice turn has finished
+    /// transcription; presenting it during launch can disrupt the first
+    /// speech-recognition audio session.
     static func requestAuthorizationIfNeeded() {
         DispatchQueue.main.async {
             let s = shared.manager.authorizationStatus
@@ -138,6 +139,9 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         if let override = overrideForTesting {
             return try await override()
         }
+        // App Intents can call `once()` without going through ChatSession's
+        // navigational router, so they need the same lazy authorization path.
+        try await shared.authorizeForExplicitUseIfNeeded()
         return try await shared.latestOrWait(timeout: timeout, maxAge: maxAge)
     }
 
@@ -150,6 +154,27 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
             manager.startUpdatingLocation()
         } else {
             locLog.notice("startIfAuthorized: not yet authorized (status=\(s.rawValue, privacy: .public))")
+        }
+    }
+
+    /// Main-actor authorization transition for explicit location use. It
+    /// returns immediately after presenting the sheet; `latestOrWait` then
+    /// waits for `didChangeAuthorization` + the first coordinate.
+    @MainActor
+    private func authorizeForExplicitUseIfNeeded() throws {
+        let s = manager.authorizationStatus
+        if s == .denied || s == .restricted {
+            throw LocationError.denied
+        }
+        if s == .notDetermined {
+            Self.debug("explicit location use → requesting authorization")
+            #if os(iOS)
+            manager.requestWhenInUseAuthorization()
+            #else
+            manager.requestAlwaysAuthorization()
+            #endif
+        } else if Self.isAuthorized(s) {
+            manager.startUpdatingLocation()
         }
     }
 

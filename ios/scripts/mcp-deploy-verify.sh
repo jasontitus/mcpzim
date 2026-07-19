@@ -15,7 +15,7 @@
 set -uo pipefail
 
 DEVICE="${MCPZIM_DEVICE_UUID:-5AE213CA-315A-532A-878B-2CC4EB051ABD}"
-BUNDLE="org.mcpzim.MCPZimChat"
+BUNDLE="com.tiltastech.zimfo"
 APP="${MCPZIM_APP_PATH:-$(dirname "$0")/../build/Build/Products/Debug-iphoneos/MCPZimChat.app}"
 WATCH_SECS="${MCPZIM_WATCH_SECS:-45}"
 CRASH_DIR=/tmp/mcpzim-crash-wifi

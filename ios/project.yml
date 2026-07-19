@@ -42,6 +42,9 @@ packages:
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface.git
     from: 0.9.0
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk.git
+    from: 12.16.0
   # High-quality on-device TTS (Kokoro v1.0 via MLX). Vendored as a
   # local path because upstream kokoro-ios pins `mlx-swift` to exact
   # 0.30.2 which conflicts with Swift-gemma4-core's 0.31+ requirement.
@@ -53,6 +56,13 @@ packages:
   # falls back to AVSpeechSynthesizer.
   KokoroSwift:
     path: LocalPackages/kokoro-ios
+  # Core ML/ANE TTS backends. Supertonic 3 INT8 is linked into both apps and
+  # selected explicitly as the fixed-shape ANE-bucketed variant; the isolated
+  # Mac benchmark remains available for repeatable comparisons with Kokoro.
+  FluidAudio:
+    # Vendored from 0.15.5. MCPZim carries a measured 96-character Supertonic
+    # chunk limit; see LocalPackages/FluidAudio/MCPZIM_PATCHES.md.
+    path: LocalPackages/FluidAudio
   # MLXUtilsLibrary exposes `NpyzReader` which we use directly to
   # decode the Kokoro voices.npz archive. KokoroSwift is built as a
   # dynamic library so transitive symbols aren't visible to us;
@@ -81,6 +91,9 @@ targets:
       - path: MCPZimChat
         excludes:
           - "**/.DS_Store"
+          - "Info-Mac.plist"
+          - "GoogleService-Info-Mac.plist"
+          - "Frameworks/**"
     info:
       path: MCPZimChat/Info.plist
       properties:
@@ -88,6 +101,27 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         CFBundleDisplayName: Zimfo
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: ZIM Offline Archive
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.openzim.zim
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.openzim.zim
+            UTTypeDescription: ZIM Offline Archive
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - zim
+              public.mime-type:
+                - application/x-zim
+        ITSAppUsesNonExemptEncryption: false
+        UIRequiresFullScreen: true
         NSDocumentsFolderUsageDescription: "Needed to read ZIM archives you drop into the app's Documents folder."
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
@@ -109,16 +143,29 @@ targets:
         product: KokoroSwift
         embed: true
         codeSign: true
+      - package: FluidAudio
+        product: FluidAudio
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
       - package: LlamaCppSwift
         product: LlamaCppSwift
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAnalytics
+      - package: Firebase
+        product: FirebaseCrashlytics
+      - package: Firebase
+        product: FirebasePerformance
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChat
+        PRODUCT_BUNDLE_IDENTIFIER: com.tiltastech.zimfo
+        DEVELOPMENT_TEAM: A6G8H8NGAM
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_CFBundleDisplayName: "Zimfo"
         CODE_SIGN_ENTITLEMENTS: MCPZimChat/MCPZimChat-iOS.entitlements
@@ -130,6 +177,23 @@ targets:
         CLANG_ENABLE_MODULES: "YES"
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
         CLANG_CXX_LIBRARY: "libc++"
+        OTHER_LDFLAGS: "$(inherited) -ObjC"
+      configs:
+        Release:
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    postBuildScripts:
+      - name: Upload Crashlytics Symbols
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" = "Release" ]; then
+            "${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run"
+          fi
+        inputFiles:
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}"
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist"
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist"
+          - "$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)"
 
   MCPZimChatMacTests:
     type: bundle.unit-test
@@ -170,6 +234,8 @@ targets:
         excludes:
           - "**/.DS_Store"
           - "Info.plist"
+          - "GoogleService-Info.plist"
+          - "GoogleService-Info-Mac.plist"
           - "Info-Mac.plist"
           - "App/**"    # no SwiftUI @main; we supply our own main.swift
           - "Views/**"  # no UI in a CLI
@@ -199,9 +265,52 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         SWIFT_OBJC_BRIDGING_HEADER: MCPZimChat/Libzim/LibzimBridge.h
         SWIFT_OBJC_INTEROP_MODE: objcxx
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) MCPZIM_EVAL"
         CLANG_ENABLE_MODULES: "YES"
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
         CLANG_CXX_LIBRARY: "libc++"
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
+
+  MCPZimTTSBenchCLI:
+    # Minimal cold-process TTS harness. Keeping the chat/LLM packages out of
+    # this executable avoids contaminating latency/RSS measurements and avoids
+    # loading a second MLXNN product beside Kokoro's dynamic framework.
+    type: tool
+    platform: macOS
+    sources:
+      - path: MCPZimChat/Voice/TTSService.swift
+      - path: MCPZimChat/Voice/KokoroAssets.swift
+      - path: MCPZimTTSBench
+    dependencies:
+      - package: KokoroSwift
+        product: KokoroSwift
+      - package: MLXUtilsLibrary
+        product: MLXUtilsLibrary
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimTTSBenchCLI
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
+
+  MCPZimCoreMLTTSBenchCLI:
+    # Core ML/ANE comparison process. Keeping FluidAudio out of the MLX
+    # benchmark means neither engine's linked runtime contaminates the
+    # other's startup or resident-memory measurements.
+    type: tool
+    platform: macOS
+    sources:
+      - path: MCPZimCoreMLTTSBench
+    dependencies:
+      - package: FluidAudio
+        product: FluidAudio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimCoreMLTTSBenchCLI
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
     scheme:
       testTargets: []
       gatherCoverageData: false
@@ -214,16 +323,35 @@ targets:
         excludes:
           - "**/.DS_Store"
           - "Info.plist"
+          - "GoogleService-Info.plist"
     info:
       path: MCPZimChat/Info-Mac.plist
       properties:
         CFBundleDisplayName: Zimfo
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: ZIM Offline Archive
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.openzim.zim
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.openzim.zim
+            UTTypeDescription: ZIM Offline Archive
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - zim
+              public.mime-type:
+                - application/x-zim
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "Copyright © 2026"
         NSLocationUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
         NSSpeechRecognitionUsageDescription: "Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server."
+        NSApplicationCrashOnExceptions: true
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
@@ -241,16 +369,27 @@ targets:
         product: KokoroSwift
         embed: true
         codeSign: true
+      - package: FluidAudio
+        product: FluidAudio
       - package: MLXUtilsLibrary
         product: MLXUtilsLibrary
       - package: LlamaCppSwift
         product: LlamaCppSwift
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAnalytics
+      - package: Firebase
+        product: FirebaseCrashlytics
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.mcpzim.MCPZimChatMac
+        # Keep local macOS builds tied to a stable designated requirement so
+        # TCC microphone/speech grants survive rebuilds.
+        DEVELOPMENT_TEAM: A6G8H8NGAM
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         SWIFT_OBJC_BRIDGING_HEADER: MCPZimChat/Libzim/LibzimBridge.h
         SWIFT_OBJC_INTEROP_MODE: objcxx
@@ -258,6 +397,23 @@ targets:
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
         CLANG_CXX_LIBRARY: "libc++"
         CODE_SIGN_ENTITLEMENTS: MCPZimChat/MCPZimChat.entitlements
+        OTHER_LDFLAGS: "$(inherited) -ObjC"
+      configs:
+        Release:
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    postBuildScripts:
+      - name: Upload Crashlytics Symbols
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" = "Release" ]; then
+            "${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run" -gsp "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info-Mac.plist"
+          fi
+        inputFiles:
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}"
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist"
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info-Mac.plist"
+          - "$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)"
     scheme:
       testTargets: []
       gatherCoverageData: false

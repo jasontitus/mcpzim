@@ -20,6 +20,13 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let role: Role
     public var text: String
+    /// Per-turn context supplied to the model but not rendered in the chat
+    /// bubble. Location used to live at the end of the large system message,
+    /// making that otherwise-static prompt change whenever GPS drifted. Keep
+    /// the exact context captured for each generic-model turn here so future
+    /// transcript rebuilds remain byte-identical and llama.cpp can reuse its
+    /// append-only cache.
+    public var modelContext: String?
     /// When the assistant's turn contained tool calls, we stash a compact
     /// summary here so the UI can render a collapsible "Tools used" chip.
     public var toolCalls: [ToolCallTrace]
@@ -54,13 +61,25 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
 
     public init(id: UUID = UUID(), role: Role, text: String = "",
                 toolCalls: [ToolCallTrace] = [],
-                startedAt: Date? = nil, finishedAt: Date? = nil) {
+                startedAt: Date? = nil, finishedAt: Date? = nil,
+                modelContext: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
+        self.modelContext = modelContext
         self.toolCalls = toolCalls
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+    }
+
+    /// Exact text inserted into the provider transcript. The UI and user
+    /// history continue to expose only `text`.
+    public var modelText: String {
+        guard role == .user,
+              let modelContext,
+              !modelContext.isEmpty
+        else { return text }
+        return modelContext + "\n\n=== User request ===\n" + text
     }
 
     public var elapsed: TimeInterval? {

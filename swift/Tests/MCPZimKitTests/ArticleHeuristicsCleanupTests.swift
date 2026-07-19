@@ -39,6 +39,15 @@ final class ArticleHeuristicsCleanupTests: XCTestCase {
         ))
     }
 
+    func testDisambigByMostCommonlyRefersToOpener() {
+        // Verbatim structure from wikipedia_en_all_nopic_2026-06.zim.
+        XCTAssertTrue(ArticleHeuristics.isDisambiguationArticle(
+            title: "Washington",
+            leadText: "Washington\n\nWashington most commonly refers to:\n\n"
+                + "George Washington\nWashington (state)\nWashington, D.C."
+        ))
+    }
+
     func testDisambigNotRaisedForNormalArticle() {
         // "also refer to" in running prose should NOT trigger the
         // disambig guard — we want the word-boundary "may refer to"

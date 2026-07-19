@@ -34,10 +34,10 @@ public enum ConversationThreads {
         result: [String: Any]
     ) -> [DiscoveryThread] {
         switch toolName {
-        case "near_named_place", "near_places",
+        case "locate", "near_named_place", "near_places",
              "nearby_stories", "nearby_stories_at_place":
             return placesThreads(result)
-        case "article_overview", "get_article_section",
+        case "article_overview", "article_factoid", "get_article_section",
              "get_article_by_title", "narrate_article":
             return articleThreads(result)
         case "compare_articles":
@@ -139,9 +139,9 @@ public enum ConversationThreads {
         // Section headings as "deeper" threads.
         if let sections = result["sections"] as? [[String: Any]] {
             for s in sections {
-                guard let title = s["title"] as? String,
-                      !title.isEmpty,
-                      !skipSections.contains(title.lowercased())
+                guard let rawTitle = s["title"] as? String else { continue }
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !shouldSkipSection(title)
                 else { continue }
                 out.append(DiscoveryThread(
                     label: "What about \(title.lowercased())?",
@@ -204,16 +204,27 @@ public enum ConversationThreads {
             "uprising", "conflict", "campaign", "attack",
         ]
         let isNamedEvent = !topicWords.isDisjoint(with: eventWords)
-        let isBiography = !isNamedEvent && normalizedHeadings.contains { h in
-            ["early life", "childhood", "education", "personal life", "family"]
+        let hasLifeHeading = normalizedHeadings.contains { h in
+            ["early life", "childhood", "personal life", "family"]
                 .contains(where: { h.contains($0) })
         }
+        let hasPersonContextHeading = normalizedHeadings.contains { h in
+            ["career", "presidency", "public image", "historical evaluation",
+             "legacy", "relationship"]
+                .contains(where: { h.contains($0) })
+        }
+        // Countries, cities, and institutions routinely have an Education
+        // section. That alone cannot make the subject a person: Mongolia was
+        // offered “Where did Mongolia go to school?” and biography-style
+        // legacy wording. Require both a life/family marker and another
+        // person-context marker.
+        let isBiography = !isNamedEvent && hasLifeHeading
+            && hasPersonContextHeading
 
         for (order, section) in sections.enumerated() {
             let raw = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let lower = raw.lowercased()
-            guard !lower.isEmpty, lower != "lead",
-                  !skipSections.contains(lower) else { continue }
+            guard !shouldSkipSection(raw) else { continue }
             if isNamedEvent,
                ["nato", "foreign policy", "the west", "education",
                 "personal life", "family", "public image", "poll", "ranking"]
@@ -240,7 +251,8 @@ public enum ConversationThreads {
             // wording. Two strong chips are better than three padded ones.
             guard priority > 20 else { continue }
             let phrased = contextualQuestion(
-                topic: topic, heading: raw, isBiography: isBiography)
+                topic: topic, heading: raw, isBiography: isBiography,
+                isNamedEvent: isNamedEvent)
             var promptTerms = termSet(ArticleHeuristics.questionKeywords(phrased))
             promptTerms.subtract(topicTerms)
             if !asked.isEmpty, !asked.isDisjoint(with: promptTerms) { continue }
@@ -266,7 +278,8 @@ public enum ConversationThreads {
     private static func contextualQuestion(
         topic: String,
         heading: String,
-        isBiography: Bool
+        isBiography: Bool,
+        isNamedEvent: Bool
     ) -> String {
         let h = heading.lowercased()
         let possessive = topic.hasSuffix("s") ? "\(topic)'" : "\(topic)'s"
@@ -274,7 +287,9 @@ public enum ConversationThreads {
             return "What was \(possessive) early life like?"
         }
         if h.contains("education") || h.contains("school") {
-            return "Where did \(topic) go to school?"
+            return isBiography
+                ? "Where did \(topic) go to school?"
+                : "What is education like in \(topic)?"
         }
         if h.contains("family") || h.contains("parents") {
             return "What about \(possessive) family?"
@@ -305,10 +320,10 @@ public enum ConversationThreads {
         if h.contains("background") || h.contains("prelude") {
             return "What led up to it?"
         }
-        if h.contains("combatant") || h.contains("belligerent")
+        if isNamedEvent && (h.contains("combatant") || h.contains("belligerent")
             || h.contains("forces") || h.contains("army") || h.contains("armies")
             || h.contains("troops") || h.contains("defender")
-            || h.contains("reinforcement")
+            || h.contains("reinforcement"))
         {
             return "Who were the combatants?"
         }
@@ -339,7 +354,7 @@ public enum ConversationThreads {
         if h.contains("application") || h.contains("uses") || h == "use" {
             return "What is it used for?"
         }
-        if isBiography, h.contains("historical") || h.contains("history") {
+        if isBiography && (h.contains("historical") || h.contains("history")) {
             return "How has \(possessive) legacy been assessed?"
         }
         if h.contains("history") || h.contains("discovery") {
@@ -415,7 +430,7 @@ public enum ConversationThreads {
         for src in order {
             for t in threads where t.source == src {
                 let key = t.matchKey
-                if key.isEmpty || seen.contains(key) || discussed.contains(key) {
+                if !isUserFacing(t) || seen.contains(key) || discussed.contains(key) {
                     continue
                 }
                 seen.insert(key)
@@ -454,7 +469,7 @@ public enum ConversationThreads {
     /// model. The LLM path instead gets these threads in the preamble and
     /// writes its own offer.
     public static func offer(_ threads: [DiscoveryThread]) -> String? {
-        let picked = Array(threads.prefix(3))
+        let picked = Array(threads.filter(isUserFacing).prefix(3))
         guard !picked.isEmpty else { return nil }
         let parts = picked.map { t -> String in
             if let n = t.note, !n.isEmpty { return "\(t.label) (\(n))" }
@@ -473,10 +488,45 @@ public enum ConversationThreads {
 
     // MARK: - Helpers
 
+    /// Final defense before a discovery thread becomes visible. Article
+    /// adapters call Wikipedia's untitled opening passage `lead`; that is an
+    /// internal retrieval label, not a subject or section a person can ask
+    /// about. Keep the check source-specific so a real wikilink to the
+    /// article "Lead" (the chemical element) remains a valid suggestion.
+    public static func isUserFacing(_ thread: DiscoveryThread) -> Bool {
+        let label = thread.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return false }
+        guard thread.source == .section else { return true }
+
+        if let note = thread.note, shouldSkipSection(note) { return false }
+        let folded = label.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if internalSectionThreadLabels.contains(folded) { return false }
+        if let prompt = thread.prompt {
+            let foldedPrompt = prompt.lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if internalSectionThreadLabels.contains(foldedPrompt) { return false }
+        }
+        return true
+    }
+
     private static let skipSections: Set<String> = [
         "see also", "references", "notes", "footnotes", "citations",
         "further reading", "external links", "bibliography", "sources",
     ]
+
+    private static let internalSectionTitles: Set<String> = ["lead"]
+    private static let internalSectionThreadLabels: Set<String> = [
+        "lead", "what about lead", "what about lead?",
+    ]
+
+    private static func shouldSkipSection(_ raw: String) -> Bool {
+        let title = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty
+            || internalSectionTitles.contains(title)
+            || skipSections.contains(title)
+    }
 
     private static func firstString(
         _ dict: [String: Any], _ keys: String...
@@ -542,22 +592,26 @@ public enum WikiLinks {
     ]
 
     public static func parse(html: String, max: Int = 8) -> [Link] {
+        // Prefer prose for ordinary related-topic suggestions so infobox and
+        // navigation links cannot dominate the chips.
+        let prose = proseParagraphs(html)
+        return parseLinks(source: prose.isEmpty ? html : prose, max: max)
+    }
+
+    /// Parse the complete article body. Disambiguation pages put their
+    /// canonical choices in lists rather than prose paragraphs, so callers
+    /// resolving an already-confirmed disambiguation page need this variant.
+    public static func parseAll(html: String, max: Int = 8) -> [Link] {
+        parseLinks(source: html, max: max)
+    }
+
+    private static func parseLinks(source: String, max: Int) -> [Link] {
         let pattern = #"<a\b[^>]*?href="([^"]*)"[^>]*>(.*?)</a>"#
         guard let re = try? NSRegularExpression(
             pattern: pattern,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return [] }
 
-        // Pull links from PROSE paragraphs only. Infobox, navbox, and
-        // reference links live in <table>/<ol>, not <p>, so restricting to
-        // <p> drops the boilerplate that was dominating offers (it renders
-        // first in the HTML) and keeps the genuine lateral topics in the
-        // article body — for Aspirin this turns "BAN, USAN, Pregnancy
-        // category, …" into "heart attack, blood clots, colorectal
-        // cancer, …". Falls back to the whole document for stub articles
-        // with no <p> prose.
-        let prose = proseParagraphs(html)
-        let source = prose.isEmpty ? html : prose
         let range = NSRange(source.startIndex..., in: source)
         var out: [Link] = []
         var seen = Set<String>()

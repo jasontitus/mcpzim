@@ -76,15 +76,37 @@ public protocol SpeechRecognizerService: AnyObject, Sendable {
 /// body is filled in.
 public enum SpeechRecognizerFactory {
     public static var preferSpeechAnalyzer: Bool = false
+    #if canImport(Speech)
+    /// Reuse the recognizer shell across voice-sheet presentations. Creating
+    /// a fresh SFSpeechRecognizer for every sheet/cycle repeatedly pays the
+    /// on-device service's cold connection cost before the first partial.
+    private static let sharedLegacyRecognizer = LegacySFSTT()
+    #endif
 
     public static func makeBest() -> SpeechRecognizerService {
         #if canImport(Speech)
         if preferSpeechAnalyzer, #available(iOS 26.0, macOS 26.0, *) {
             if let s = SpeechAnalyzerSTT() { return s }
         }
-        return LegacySFSTT()
+        return sharedLegacyRecognizer
         #else
         return UnsupportedSTT()
+        #endif
+    }
+
+    /// Connect to the local Speech service during normal app startup when the
+    /// user has already granted permission. This does not open the microphone
+    /// and never presents a permission sheet.
+    @MainActor
+    public static func prewarmIfAuthorized(locale: Locale = .current) -> Bool {
+        #if canImport(Speech)
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            return false
+        }
+        sharedLegacyRecognizer.prewarm(locale: locale)
+        return true
+        #else
+        return false
         #endif
     }
 }
@@ -190,12 +212,25 @@ public final class LegacySFSTT: SpeechRecognizerService, @unchecked Sendable {
 
     public init() {}
 
+    /// Create and retain the lightweight recognizer/service connection without
+    /// starting a task or touching audio capture.
+    public func prewarm(locale: Locale) {
+        if recognizer?.locale.identifier != locale.identifier {
+            recognizer = SFSpeechRecognizer(locale: locale)
+                ?? SFSpeechRecognizer()
+        }
+        recognizer?.defaultTaskHint = .dictation
+        _ = recognizer?.supportsOnDeviceRecognition
+        _ = recognizer?.isAvailable
+    }
+
     public func requestAuthorization() async -> SpeechAuthState {
         await SFSpeechRecognizerAuthorizer.request()
     }
 
     public func start(locale: Locale) throws -> AsyncThrowingStream<SpeechPartial, Error> {
-        let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer()
+        prewarm(locale: locale)
+        let recognizer = self.recognizer
         guard let recognizer, recognizer.isAvailable else {
             throw SpeechSTTError.backendUnavailable("Speech recognizer not available for \(locale.identifier).")
         }
@@ -211,17 +246,22 @@ public final class LegacySFSTT: SpeechRecognizerService, @unchecked Sendable {
         self.recognizer = recognizer
         self.request = req
 
-        let stream = AsyncThrowingStream<SpeechPartial, Error> { cont in
-            self.continuation = cont
-        }
-        self.task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-            guard let self else { return }
+        // Keep the callback bound to this task's continuation. A canceled
+        // SFSpeechRecognitionTask can deliver its final error after a new task
+        // has already started. Using `self.continuation` in the callback lets
+        // that stale error terminate the new stream, which can create an
+        // immediate "no speech" restart loop. The local continuation makes
+        // late callbacks harmless to every subsequent session.
+        let (stream, taskContinuation) =
+            AsyncThrowingStream<SpeechPartial, Error>.makeStream()
+        self.continuation = taskContinuation
+        self.task = recognizer.recognitionTask(with: req) { result, error in
             if let result {
                 let text = result.bestTranscription.formattedString
-                self.continuation?.yield(SpeechPartial(text: text, isFinal: result.isFinal))
+                taskContinuation.yield(
+                    SpeechPartial(text: text, isFinal: result.isFinal))
                 if result.isFinal {
-                    self.continuation?.finish()
-                    self.continuation = nil
+                    taskContinuation.finish()
                 }
             }
             if let error {
@@ -230,9 +270,8 @@ public final class LegacySFSTT: SpeechRecognizerService, @unchecked Sendable {
                 let ns = error as NSError
                 let isBenignEnd = ns.domain == "kAFAssistantErrorDomain" && (ns.code == 1101 || ns.code == 203)
                 if !isBenignEnd {
-                    self.continuation?.finish(throwing: error)
+                    taskContinuation.finish(throwing: error)
                 }
-                self.continuation = nil
             }
         }
         return stream
@@ -247,11 +286,15 @@ public final class LegacySFSTT: SpeechRecognizerService, @unchecked Sendable {
     }
 
     public func cancel() {
+        // Invalidate our public references before canceling. The task may call
+        // back synchronously or later; its callback owns only the local
+        // continuation created in `start`, never a future session's stream.
+        let canceledContinuation = continuation
+        continuation = nil
+        request = nil
         task?.cancel()
         task = nil
-        request = nil
-        continuation?.finish(throwing: CancellationError())
-        continuation = nil
+        canceledContinuation?.finish(throwing: CancellationError())
     }
 }
 
@@ -259,9 +302,19 @@ public final class LegacySFSTT: SpeechRecognizerService, @unchecked Sendable {
 
 enum SFSpeechRecognizerAuthorizer {
     static func request() async -> SpeechAuthState {
+        let current = SFSpeechRecognizer.authorizationStatus()
+        if current != .notDetermined {
+            return state(for: current)
+        }
         let status = await withCheckedContinuation { (cont: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
             SFSpeechRecognizer.requestAuthorization { cont.resume(returning: $0) }
         }
+        return state(for: status)
+    }
+
+    private static func state(
+        for status: SFSpeechRecognizerAuthorizationStatus
+    ) -> SpeechAuthState {
         switch status {
         case .authorized: return .authorized
         case .denied:     return .denied(reason: "Speech recognition denied in Settings.")

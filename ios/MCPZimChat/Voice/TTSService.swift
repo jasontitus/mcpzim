@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
-// On-device text-to-speech with two backends behind a tiny protocol:
+// On-device text-to-speech backends behind a tiny protocol:
 //
+//   • `Supertonic3TTSService` — Core ML with a fixed-shape INT8
+//     VectorEstimator running primarily on the Apple Neural Engine.
 //   • `KokoroTTSService` — wraps the `KokoroSwift` SPM package
 //     (https://github.com/mlalma/kokoro-ios). Kokoro v1.0 is an 82M-
 //     parameter neural TTS that runs on Apple MLX. Loaded fp16 the
@@ -24,12 +26,60 @@
 import AVFoundation
 import Foundation
 
+public enum TTSChunkBoundary: Sendable {
+    case sentence
+    case clause
+    case softWrap
+    case final
+}
+
+/// Bring neural TTS PCM up to a consistent spoken-word level before it reaches
+/// AVAudioEngine. Both Kokoro and Supertonic can emit substantially quieter
+/// native samples than Apple's media route expects. RMS normalization with a
+/// peak ceiling raises quiet output without clipping or applying an unsafe,
+/// fixed boost to already-loud voices.
+enum TTSPlaybackLevel {
+    static func normalized(_ samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return samples }
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        for sample in samples {
+            sumSquares += sample * sample
+            peak = max(peak, abs(sample))
+        }
+        let rms = (sumSquares / Float(samples.count)).squareRoot()
+        guard rms > 0.002, peak > 0 else { return samples }
+        let targetRMS: Float = 0.12       // approximately -18 dBFS RMS
+        let maximumGain: Float = 4.0      // at most +12 dB
+        let desiredGain = min(maximumGain, max(1.0, targetRMS / rms))
+        let clippingSafeGain = 0.95 / peak
+        let gain = min(desiredGain, clippingSafeGain)
+        guard abs(gain - 1.0) > 0.02 else { return samples }
+        return samples.map { $0 * gain }
+    }
+}
+
 public protocol TTSService: AnyObject, Sendable {
     var displayName: String { get }
     var isSpeaking: Bool { get }
     /// Approximate steady-state RSS the wrapped engine adds, surfaced
     /// in the model picker / debug pane so the user can budget.
     var approximateMemoryMB: Int { get }
+    /// Conservative peak headroom needed while producing one conversational
+    /// chunk. The controller uses this for overlap/preparation decisions; it
+    /// is deliberately separate from the steady-state UI estimate.
+    var peakSynthesisMemoryMB: Int { get }
+
+    /// Optional upper bound for text handed to one streaming synthesis call.
+    /// Backends with smaller encoder windows can use this to keep their own
+    /// hidden chunkers from creating audible end-of-utterance seams.
+    var preferredStreamingChunkCharacters: Int? { get }
+
+    /// Optional lower bound before the controller may split unfinished prose
+    /// at a clause or word boundary. A backend that benefits from longer
+    /// prosody windows can raise this while still emitting completed short
+    /// sentences immediately.
+    var preferredStreamingMinimumCharacters: Int? { get }
 
     /// Speak the given text. Returns when playback ends or was
     /// cancelled. Errors are thrown for genuine failures (model not
@@ -44,31 +94,79 @@ public protocol TTSService: AnyObject, Sendable {
     /// Default implementation delegates to `speak`.
     func speakChunk(_ text: String) async throws
 
+    /// Streaming entry point with the source boundary that ended this chunk.
+    /// Backends may use it to distinguish an artificial word wrap from real
+    /// sentence or clause prosody.
+    func speakChunk(_ text: String, boundary: TTSChunkBoundary) async throws
+
     /// Block until all previously queued audio has finished playing.
     /// Default is a no-op (most backends are synchronous).
     func awaitPlayback() async
+
+    /// Prepare expensive model/G2P execution before the first conversational
+    /// response. Implementations must not play audio. The voice controller
+    /// invokes this off the main actor only when memory headroom is healthy.
+    func prepareForConversation() async throws
 
     func stop()
 }
 
 public extension TTSService {
+    var peakSynthesisMemoryMB: Int { approximateMemoryMB }
+    var preferredStreamingChunkCharacters: Int? { nil }
+    var preferredStreamingMinimumCharacters: Int? { nil }
     func speakChunk(_ text: String) async throws { try await speak(text) }
+    func speakChunk(_ text: String, boundary: TTSChunkBoundary) async throws {
+        try await speakChunk(text)
+    }
     func awaitPlayback() async {}
+    func prepareForConversation() async throws {}
 }
 
 public enum TTSFactory {
-    /// Prefer Kokoro when its assets are downloaded; fall back to
-    /// `AVSpeechSynthesizer` otherwise. The model+voices live at
-    /// `Application Support/models/kokoro_mlx/` — see
-    /// `KokoroAssets.swift` for layout + download URLs.
+    /// Build the selected on-device backend. New installs prefer Supertonic 3;
+    /// Kokoro remains available for listening comparisons and the system voice
+    /// is the zero-download fallback.
     public static func makeBest(voice: String = "af_heart") -> TTSService {
+        if TTSBackendPreference.current == .supertonic {
+            #if canImport(FluidAudio)
+            return Supertonic3TTSService(voice: SupertonicVoicePreference.current)
+            #endif
+        }
         #if canImport(KokoroSwift)
-        if KokoroAssets.isDownloaded,
+        if TTSBackendPreference.current != .system,
+           KokoroAssets.isDownloaded,
            let kokoro = try? KokoroTTSService(voice: voice) {
             return kokoro
         }
         #endif
         return SystemTTSService()
+    }
+}
+
+public enum TTSBackendPreference: String, CaseIterable, Sendable {
+    case supertonic
+    case kokoro
+    case system
+
+    private static let key = "tts.backend"
+
+    public var displayName: String {
+        switch self {
+        case .supertonic: return "Supertonic 3 (ANE INT8)"
+        case .kokoro: return "Kokoro v1.0 (MLX)"
+        case .system: return "System voice"
+        }
+    }
+
+    public static var current: TTSBackendPreference {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: key),
+                  let value = TTSBackendPreference(rawValue: raw)
+            else { return .supertonic }
+            return value
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
 }
 
@@ -145,6 +243,25 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     /// we `Memory.clearCache()` after each utterance to keep
     /// steady-state bounded.
     public let approximateMemoryMB = 360
+    /// Measured by MCPZimTTSBenchCLI on Apple silicon with a representative
+    /// 92-character, punctuation-heavy chunk. MLX briefly reached 2.74 GB
+    /// above the settled prepared footprint; round up for the iOS safety gate.
+    public let peakSynthesisMemoryMB = 2_800
+    #if os(macOS)
+    /// Mac has enough memory and substantially faster MLX execution to give
+    /// Kokoro a full prosody window. This avoids turning commas in a long
+    /// sentence into separate, sentence-like utterances. Keep a margin below
+    /// Kokoro's internal 400-character/510-phoneme safety cap because text
+    /// normalization can expand numbers and abbreviations.
+    public let preferredStreamingChunkCharacters: Int? = 360
+    public let preferredStreamingMinimumCharacters: Int? = 180
+    #else
+    /// iPhone retains the controller's conservative 112/56-character window:
+    /// Kokoro's measured synthesis transient is large enough that increasing
+    /// it should be benchmarked on-device before changing this.
+    public let preferredStreamingChunkCharacters: Int? = nil
+    public let preferredStreamingMinimumCharacters: Int? = nil
+    #endif
     public private(set) var isSpeaking: Bool = false
 
     /// Fifty-four voices ship in `voices.npz`. Exposed for the UI
@@ -164,6 +281,7 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     private let voices: [String: MLXArray]
     public let voiceName: String
     private var stopFlag = false
+    private var isPrepared = false
 
     public init(voice: String = "af_heart") throws {
         let modelURL = KokoroAssets.localURL(
@@ -192,6 +310,61 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode,
                        format: AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
+        player.volume = 1.0
+        engine.mainMixerNode.outputVolume = 1.0
+    }
+
+    /// Exercise G2P plus the length-dependent Kokoro graph with a realistic
+    /// first-clause shape, then discard the samples. This moves MLX's first
+    /// execution cost into the listening window rather than the first answer.
+    public func prepareForConversation() async throws {
+        guard !isPrepared else { return }
+        guard let embedding = voices[voiceName + ".npy"] else {
+            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
+        }
+        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+        let phrase = Self.prepForTTS(
+            "Preparing a natural voice to answer the next question clearly."
+        )
+        let (samples, _) = try kokoro.generateAudio(
+            voice: embedding, language: language, text: phrase, speed: 1.0
+        )
+        Memory.clearCache()
+        guard !samples.isEmpty else {
+            throw TTSError.synthesisFailed("Kokoro preparation produced no audio.")
+        }
+        isPrepared = true
+    }
+
+    /// Render through the same normalization, G2P, voice, and chunking path
+    /// used by `speakChunk`, but return PCM instead of scheduling playback.
+    /// The isolated Mac benchmark uses this to produce an audible reference
+    /// file without capturing or resampling system audio.
+    func renderForBenchmark(_ text: String) throws -> (samples: [Float], sampleRate: Int) {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return ([], 24_000) }
+        guard let embedding = voices[voiceName + ".npy"] else {
+            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
+        }
+        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+        let chunks = Self.chunkForTTS(Self.prepForTTS(raw))
+        var combined: [Float] = []
+        for chunk in chunks {
+            let (samples, tokens) = try kokoro.generateAudio(
+                voice: embedding, language: language, text: chunk, speed: 1.0
+            )
+            if ProcessInfo.processInfo.environment["MCPZIM_TTS_TRACE_PHONEMES"] == "1",
+               let tokens {
+                let trace = tokens.map { token in
+                    "\(token.text)=\(token.phonemes ?? "∅")"
+                }.joined(separator: " | ")
+                FileHandle.standardError.write(
+                    Data(("[KokoroG2P] \(trace)\n").utf8))
+            }
+            combined.append(contentsOf: samples)
+            Memory.clearCache()
+        }
+        return (combined, 24_000)
     }
 
     public func speak(_ text: String) async throws {
@@ -238,9 +411,10 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         let lastIdx = chunks.count - 1
         for (i, chunk) in chunks.enumerated() {
             if stopFlag { break }
-            let (samples, _) = try kokoro.generateAudio(
+            let (nativeSamples, _) = try kokoro.generateAudio(
                 voice: embedding, language: language, text: chunk, speed: 1.0
             )
+            let samples = TTSPlaybackLevel.normalized(nativeSamples)
             Memory.clearCache()
             guard !samples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
@@ -288,9 +462,10 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
                                    sampleRate: 24_000, channels: 1, interleaved: false)!
         for sub in subChunks {
             if stopFlag { break }
-            let (samples, _) = try kokoro.generateAudio(
+            let (nativeSamples, _) = try kokoro.generateAudio(
                 voice: embedding, language: language, text: sub, speed: 1.0
             )
+            let samples = TTSPlaybackLevel.normalized(nativeSamples)
             Memory.clearCache()
             guard !samples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
@@ -366,13 +541,27 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         // Drop parens after unit expansion (keeps the content flowing).
         t = t.replacingOccurrences(of: "(", with: ", ")
         t = t.replacingOccurrences(of: ")", with: "")
-        // Common highway / road abbreviations.
+        // `Dr.` and `St.` are ambiguous in conversational answers. Expanding
+        // them globally made "Dr. Vladimir" become "Drive Vladimir" and
+        // "St. Petersburg" become "Street Petersburg." Treat them as road
+        // suffixes only in the route forms we actually emit: before a comma,
+        // distance/direction continuation, or the end of the utterance.
+        let contextualStreetSuffixes: [(pattern: String, replacement: String)] = [
+            (#"\bDr\.(?=\s*(?:,|$|\d|for\b|toward\b|then\b|and\b))"#, "Drive"),
+            (#"\bSt\.(?=\s*(?:,|$|\d|for\b|toward\b|then\b|and\b))"#, "Street"),
+        ]
+        for (pattern, replacement) in contextualStreetSuffixes {
+            t = t.replacingOccurrences(
+                of: pattern, with: replacement, options: .regularExpression)
+        }
+
+        // Unambiguous highway / road abbreviations.
         let replacements: [(String, String)] = [
             ("CA ", "California State Route "),
             ("US ", "U.S. Route "),
             ("I-", "Interstate "),
-            ("St.", "Street"), ("Ave.", "Avenue"), ("Blvd.", "Boulevard"),
-            ("Rd.", "Road"), ("Dr.", "Drive"), ("Ln.", "Lane"),
+            ("Ave.", "Avenue"), ("Blvd.", "Boulevard"),
+            ("Rd.", "Road"), ("Ln.", "Lane"),
             ("Ct.", "Court"), ("Pl.", "Place"), ("Pkwy.", "Parkway"),
             ("Expwy.", "Expressway"), ("Expy.", "Expressway"),
             ("Hwy.", "Highway"),

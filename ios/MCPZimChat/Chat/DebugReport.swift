@@ -43,6 +43,7 @@ private let reportLog = Logger(
 /// paste their PAT once on device and forget about it. When unset,
 /// `emitDebugReport()` falls back to syslog-only transport and the
 /// Mac-side pickup works only if `mcp-logs.sh` is streaming.
+#if DEBUG
 public enum DebugReportConfig {
     private static let tokenKey = "debug.report.githubToken"
 
@@ -65,6 +66,7 @@ public enum DebugReportConfig {
     /// filter the user's gists down to just our reports.
     public static let gistMarker = "mcpzim-debug-report"
 }
+#endif
 
 /// On-disk / on-wire model. Deliberately flat + Codable so the Mac
 /// reassembler doesn't need any of our Swift types to parse it —
@@ -170,10 +172,11 @@ extension ChatSession {
         let endLine = "[DebugReport END hash=\(hash) chunks=\(idx)]"
         reportLog.notice("\(endLine, privacy: .public)")
 
-        // If a GitHub PAT is configured, POST the same JSON as a
-        // gist so the Mac can pull it from anywhere (not just when
-        // `mcp-logs.sh` is running). The syslog transport stays as
-        // the fallback for offline / missing-token scenarios.
+        #if DEBUG
+        // Developer builds may optionally POST the same JSON as a
+        // private gist. This transport is deliberately absent from
+        // Release/TestFlight builds because reports can contain full
+        // conversations, tool arguments, filenames, and coordinates.
         let gistTask: Task<String?, Never>? = {
             guard let token = DebugReportConfig.githubToken,
                   !token.isEmpty, !json.isEmpty
@@ -191,6 +194,7 @@ extension ChatSession {
                 }
             }
         }
+        #endif
 
         // Clear the debug log so the next bad query produces a clean
         // report. We keep the messages themselves — the user may want
@@ -199,6 +203,7 @@ extension ChatSession {
         return hash
     }
 
+    #if DEBUG
     /// POST the serialized report to gist.github.com. Returns the
     /// gist's html_url on success, nil on any error (logged but not
     /// surfaced — the syslog transport is always in effect too).
@@ -256,6 +261,7 @@ extension ChatSession {
             return nil
         }
     }
+    #endif
 
     private func shortHash(_ data: Data) -> String {
         #if canImport(CryptoKit)

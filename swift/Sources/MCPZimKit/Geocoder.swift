@@ -99,6 +99,47 @@ public enum Geocoder {
         return Int(h % UInt32(nBuckets))
     }
 
+    /// Put the hot-split branch most likely to contain an exact-name match
+    /// first. StreetZIM's recursive splitter hashes the full record name at
+    /// level one; if that branch is still too large, its deeper split falls
+    /// back to index slicing (because every record in the branch necessarily
+    /// has the same hash modulo 16). Consequently an exact query can narrow a
+    /// 256-leaf prefix to one 16-leaf branch, but cannot safely pick one leaf
+    /// inside that branch.
+    ///
+    /// The original order is preserved within every branch and all remaining
+    /// leaves stay in the returned list. Callers therefore retain a complete
+    /// substring-search fallback when no exact match is found. A few casing
+    /// variants are tried because the hash is byte/case-sensitive while name
+    /// matching is not (voice input often supplies all-lowercase text).
+    public static func prioritizeSubChunkLeaves(
+        _ leaves: [String], prefix: String, query: String,
+        nBuckets: Int = 16
+    ) -> [String] {
+        guard leaves.count > 1, nBuckets > 0 else { return leaves }
+
+        var variants: [String] = []
+        var seenVariants = Set<String>()
+        for value in [query, query.capitalized, query.lowercased(), query.uppercased()] {
+            guard !value.isEmpty, seenVariants.insert(value).inserted else { continue }
+            variants.append(value)
+        }
+
+        var prioritized: [String] = []
+        var seenLeaves = Set<String>()
+        for variant in variants {
+            let bucket = String(subBucketFor(name: variant, nBuckets: nBuckets), radix: 16)
+            let branch = "\(prefix)-\(bucket)"
+            for leaf in leaves where leaf == branch || leaf.hasPrefix(branch + "-") {
+                if seenLeaves.insert(leaf).inserted { prioritized.append(leaf) }
+            }
+        }
+        for leaf in leaves where seenLeaves.insert(leaf).inserted {
+            prioritized.append(leaf)
+        }
+        return prioritized
+    }
+
     /// Expand a query prefix through the manifest's ``sub_chunks``
     /// dictionary. Returns a list of actual chunk prefixes to fetch.
     /// When the query's prefix wasn't hot-split, returns a single-item

@@ -671,14 +671,41 @@ public actor DefaultZimService: ZimService {
                 // hundreds of MB in the chunk cache.
                 var matching: [[String: Any]] = []
                 let q = attempt.lowercased()
-                for leaf in leaves {
-                    let records = try loadChunk(
-                        pair: pair, prefix: leaf, cache: leaves.count == 1)
+                let orderedLeaves = Geocoder.prioritizeSubChunkLeaves(
+                    leaves, prefix: prefix, query: attempt)
+                for (leafIndex, leaf) in orderedLeaves.enumerated() {
                     if leaves.count == 1 {
-                        matching = records
+                        matching = try loadChunk(pair: pair, prefix: leaf)
                     } else {
-                        matching += records.filter {
-                            (($0["n"] as? String) ?? "").lowercased().contains(q)
+                        // JSONSerialization creates a large temporary object
+                        // graph for each multi-MB shard. Drain it per leaf and
+                        // retain only matching records; without this pool a
+                        // 256-leaf `st` scan peaked +1.45 GB on iPhone even
+                        // though loadChunk(cache:false) did not cache shards.
+                        let leafMatches: [[String: Any]] = try autoreleasepool {
+                            let records = try loadChunk(
+                                pair: pair, prefix: leaf, cache: false)
+                            return records.filter {
+                                (($0["n"] as? String) ?? "")
+                                    .lowercased().contains(q)
+                            }
+                        }
+                        matching += leafMatches
+
+                        // For a single-result named-place lookup, an exact
+                        // case-insensitive name is globally optimal (offset 0
+                        // and the shortest possible containing string). Stop
+                        // immediately instead of reading the other 240 hot
+                        // shards. Substring queries still fan out completely.
+                        if limit == 1,
+                           let exact = Geocoder.rank(
+                               records: leafMatches, query: attempt,
+                               limit: 1, kinds: filterSet
+                           ).first,
+                           exact.name.caseInsensitiveCompare(attempt) == .orderedSame
+                        {
+                            log("geocode exact hit in hot prefix \(prefix) after \(leafIndex + 1)/\(leaves.count) leaf/leaves")
+                            return [(exact, pair.name)]
                         }
                     }
                     if matching.count >= max(200, limit * 8), leaves.count > 1 {

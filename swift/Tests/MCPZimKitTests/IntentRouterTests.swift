@@ -108,6 +108,107 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    // MARK: - Full-article narration
+
+    func testReadWholeArticleBindsToFocusedTopic() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.remember(FocusEntity(name: "Karl Marx", kind: .topic))
+
+        for query in [
+            "Read the whole article",
+            "read the full Wikipedia article aloud",
+            "Could you read me the entire article?",
+        ] {
+            let intent = IntentRouter.classify(query, focus: focus)
+            XCTAssertEqual(intent?.toolName, "narrate_article", query)
+            XCTAssertEqual(intent?.args["title"], .string("Karl Marx"), query)
+        }
+    }
+
+    func testReadWholeArticleAcceptsExplicitTitleWithoutFocus() {
+        let intent = IntentRouter.classify(
+            "Read the full article about gravitational wave aloud")
+        XCTAssertEqual(intent?.toolName, "narrate_article")
+        XCTAssertEqual(
+            intent?.args["title"], .string("gravitational wave"))
+    }
+
+    func testReadMoreRemainsPagedContinuationNotFullNarration() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.remember(FocusEntity(name: "Karl Marx", kind: .topic))
+        XCTAssertNil(IntentRouter.readArticleIntent("read more", focus: focus))
+        XCTAssertTrue(IntentRouter.isContinueReading("read more"))
+    }
+
+    // MARK: - Explicit Wikipedia source control
+
+    func testWikipediaSourceDirectiveWithQuestion() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "What does the Santa Rosa, California Wikipedia article say about the 1906 earthquake?")
+        XCTAssertEqual(directive?.title, "Santa Rosa, California")
+        XCTAssertEqual(directive?.question, "1906 earthquake")
+    }
+
+    func testWikipediaSourceDirectiveFromRealVoiceCorrection() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "I want you to look up the Wikipedia article on Santa Rosa California. "
+                + "I then want you to read what it says about the 1906 earthquake.")
+        XCTAssertEqual(directive?.title, "Santa Rosa California")
+        XCTAssertEqual(directive?.question, "1906 earthquake")
+    }
+
+    func testWikipediaSourceDirectiveToleratesASRFiller() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "I want you to look up the Wikipedia article on Santa Rosa California. "
+                + "I then want you to read what there's what it says about the 1906 earthquake.")
+        XCTAssertEqual(directive?.title, "Santa Rosa California")
+        XCTAssertEqual(directive?.question, "1906 earthquake")
+    }
+
+    func testWikipediaSourceDirectiveWithoutFacet() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "Use the Wikipedia article on Santa Rosa, California.")
+        XCTAssertEqual(directive?.title, "Santa Rosa, California")
+        XCTAssertNil(directive?.question)
+    }
+
+    func testWikipediaSourceDirectiveReverseTitleForm() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "Use the Santa Rosa, California Wikipedia article as the source.")
+        XCTAssertEqual(directive?.title, "Santa Rosa, California")
+        XCTAssertNil(directive?.question)
+    }
+
+    func testWikipediaSourceDirectiveDirectSearchForm() {
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "Search the Santa Rosa, California Wikipedia article for the 1906 earthquake.")
+        XCTAssertEqual(directive?.title, "Santa Rosa, California")
+        XCTAssertEqual(directive?.question, "1906 earthquake")
+    }
+
+    func testWikipediaSourceOnlyDirectiveBindsToFocus() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.remember(FocusEntity(
+            name: "Santa Rosa, California", kind: .topic))
+
+        let directive = IntentRouter.wikipediaSourceDirective(
+            "Use Wikipedia, not StreetZIM, for that.", focus: focus)
+        XCTAssertEqual(directive?.title, "Santa Rosa, California")
+        XCTAssertNil(directive?.question)
+    }
+
+    func testWikipediaSourceDirectiveOutranksLocationPattern() {
+        let intent = IntentRouter.classify(
+            "Use the Wikipedia article on Santa Rosa California for information "
+                + "about the 1906 earthquake",
+            currentLocation: (lat: 37.44, lon: -122.15))
+        XCTAssertEqual(intent?.toolName, "discuss_article")
+        XCTAssertEqual(intent?.args["title"], .string("Santa Rosa California"))
+    }
+
     // MARK: - Corrections / restatements (ASR mishear recovery)
 
     func testCorrectionRoutesToArticle() {
@@ -251,6 +352,42 @@ final class IntentRouterTests: XCTestCase {
             let i = IntentRouter.classify(q, currentLocation: here)
             XCTAssertNotEqual(i?.args["kinds"], .array([.string("what's")]),
                               "variant: \(q)")
+        }
+    }
+
+    // MARK: - "where is <named place>" → locate
+
+    func testWhereIsNamedPlaceRoutesToLocate() {
+        let cases: [(String, String)] = [
+            ("Where is the HP Garage?", "HP Garage"),
+            ("where's Silicon Valley", "Silicon Valley"),
+            ("Where is the Alamo located?", "Alamo"),
+            ("locate Stanford University", "Stanford University"),
+            ("find the location of Golden Gate Bridge", "Golden Gate Bridge"),
+            ("show me Mount Everest on the map", "Mount Everest"),
+        ]
+        for (query, place) in cases {
+            let intent = IntentRouter.classify(query)
+            XCTAssertEqual(intent?.toolName, "locate", "query: \(query)")
+            XCTAssertEqual(intent?.args["place"], .string(place),
+                           "query: \(query)")
+        }
+    }
+
+    func testWhereIsDoesNotHijackNearestOrEncyclopedicQuestions() {
+        let here = (lat: 37.44, lon: -122.15)
+        XCTAssertEqual(IntentRouter.classify(
+            "Where is the nearest coffee shop?", currentLocation: here)?.toolName,
+                       "near_places")
+        for query in [
+            "Where is Apple headquartered?",
+            "Where is the capital of France?",
+            "Where is he from?",
+            "Where is my next turn?",
+            "Where is the article about Stanford?",
+        ] {
+            XCTAssertNotEqual(IntentRouter.classify(query)?.toolName, "locate",
+                              "query: \(query)")
         }
     }
 
@@ -921,6 +1058,33 @@ final class IntentRouterTests: XCTestCase {
 
     // MARK: - Misses → LLM fall-through
 
+    func testClassifyExplanatoryTopicOpeners() {
+        let cases: [(String, String)] = [
+            ("Explain particle physics to me", "particle physics"),
+            ("explain gravity", "gravity"),
+            ("Can you explain the Standard Model?", "standard model"),
+            ("Teach me about gravitational waves", "gravitational waves"),
+            ("Could you help me understand quantum mechanics", "quantum mechanics"),
+        ]
+        for (query, title) in cases {
+            let intent = IntentRouter.classify(query)
+            XCTAssertEqual(intent?.toolName, "article_overview", "query: \(query)")
+            XCTAssertEqual(intent?.args["title"], .string(title), "query: \(query)")
+        }
+    }
+
+    func testClassifyExplanatoryClausesAndPronounsStillUseLLM() {
+        let queries = [
+            "Explain why the sky is blue",
+            "Help me understand how this works",
+            "Explain it to me",
+            "Teach me about this",
+        ]
+        for query in queries {
+            XCTAssertNil(IntentRouter.classify(query), "unexpected match: \(query)")
+        }
+    }
+
     func testClassifyReturnsNilForFreeformQueries() {
         // Queries that don't match any fast path — fall through to
         // the LLM. "what's the weather" and "who was Ada Lovelace"
@@ -929,7 +1093,6 @@ final class IntentRouterTests: XCTestCase {
         // not exist in the loaded ZIMs; the tool returns cleanly
         // either way, which is still faster than a 15 s prefill).
         let queries = [
-            "explain gravity",
             "summarise the article about Jeff Dean",
             "",
             "?!?",
@@ -1076,8 +1239,85 @@ final class IntentRouterTests: XCTestCase {
     func testDiscussionFacetTitlesDoNotMeanTopicChanges() {
         XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("the combatants"))
         XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("his parents"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("its early history"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("their economic policy"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("the modern history"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("the population"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("Demographics"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("the geography"))
+        XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("government and politics"))
         XCTAssertTrue(IntentRouter.isDiscussionFacetTitle("Casualties"))
         XCTAssertFalse(IntentRouter.isDiscussionFacetTitle("Donald Trump"))
         XCTAssertFalse(IntentRouter.isDiscussionFacetTitle("The French Revolution"))
+    }
+
+    func testExplicitDiscussionTopicChangeRequiresFreshSubjectLanguage() {
+        XCTAssertTrue(IntentRouter.isExplicitDiscussionTopicChange(
+            "Tell me about Donald Trump"))
+        XCTAssertTrue(IntentRouter.isExplicitDiscussionTopicChange(
+            "Let's talk about Mongolia"))
+        XCTAssertTrue(IntentRouter.isExplicitDiscussionTopicChange(
+            "Switch the topic to astronomy"))
+        XCTAssertFalse(IntentRouter.isExplicitDiscussionTopicChange(
+            "What is the population?"))
+        XCTAssertFalse(IntentRouter.isExplicitDiscussionTopicChange(
+            "What were the sides in the civil war?"))
+        XCTAssertFalse(IntentRouter.isExplicitDiscussionTopicChange(
+            "How did it expand?"))
+        XCTAssertFalse(IntentRouter.isExplicitDiscussionTopicChange(
+            "Tell me about Buddhism there"))
+        XCTAssertFalse(IntentRouter.isExplicitDiscussionTopicChange(
+            "Tell me about industry in that country"))
+    }
+
+    func testDiscussionDeicticFollowUpsBindToPreparedTopic() {
+        XCTAssertTrue(IntentRouter.isDiscussionDeicticFollowUp(
+            "Tell me about Buddhism there"))
+        XCTAssertTrue(IntentRouter.isDiscussionDeicticFollowUp(
+            "What happened to its monasteries?"))
+        XCTAssertTrue(IntentRouter.isDiscussionDeicticFollowUp(
+            "How did industry develop in that country?"))
+        XCTAssertTrue(IntentRouter.isDiscussionDeicticFollowUp(
+            "What changed during that period?"))
+        XCTAssertFalse(IntentRouter.isDiscussionDeicticFollowUp(
+            "Tell me about Theravada Buddhism"))
+        XCTAssertFalse(IntentRouter.isDiscussionDeicticFollowUp(
+            "Tell me about Donald Trump"))
+    }
+
+    func testEllipticalDiscussionFollowUpsInheritPreparedSubject() {
+        XCTAssertTrue(IntentRouter.isEllipticalDiscussionFollowUp(
+            "How about Buddhism"))
+        XCTAssertTrue(IntentRouter.isEllipticalDiscussionFollowUp(
+            "What about geography and climate?"))
+        XCTAssertTrue(IntentRouter.isEllipticalDiscussionFollowUp(
+            "And how about Christianity?"))
+        XCTAssertFalse(IntentRouter.isEllipticalDiscussionFollowUp(
+            "Tell me about Christianity"))
+        XCTAssertFalse(IntentRouter.isEllipticalDiscussionFollowUp(
+            "Let's talk about Donald Trump"))
+    }
+
+    func testOpposingSidesQuestionsRequestExpandedEvidence() {
+        XCTAssertTrue(ArticleHeuristics.asksAboutOpposingSides(
+            "What were the sides in the civil war?"))
+        XCTAssertTrue(ArticleHeuristics.asksAboutOpposingSides(
+            "Who fought at the Alamo?"))
+        XCTAssertTrue(ArticleHeuristics.asksAboutOpposingSides(
+            "Who were the belligerents?"))
+        XCTAssertFalse(ArticleHeuristics.asksAboutOpposingSides(
+            "When did the civil war begin?"))
+    }
+
+    func testNamedCivilWarCandidateComesFromPinnedEvidence() {
+        let sections = [ArticleSection(
+            title: "Revolution and civil war", level: 2,
+            text: "The Russian Civil War broke out after the revolution. "
+                + "Foreign armies later intervened in the Russian Civil War.")]
+        XCTAssertEqual(ArticleHeuristics.namedEventArticleCandidates(
+            sections, question: "What were the sides in the civil war?"),
+            ["Russian Civil War"])
+        XCTAssertTrue(ArticleHeuristics.namedEventArticleCandidates(
+            sections, question: "When was the revolution?").isEmpty)
     }
 }
