@@ -38,7 +38,10 @@ HF_HUB="$HOME/Library/Caches/huggingface/hub"
 Q1_GGUF="$HF_HUB/models--prism-ml--Bonsai-27B-gguf/snapshots/main/Bonsai-27B-Q1_0.gguf"
 TERNARY_GGUF="$HF_HUB/models--prism-ml--Ternary-Bonsai-27B-gguf/snapshots/main/Ternary-Bonsai-27B-Q2_0.gguf"
 
-LEGS="q1-gguf,ternary-gguf,q1-mlx,ternary-mlx"
+# q1-mlx is NOT in the defaults: it needs the PrismML-Eng/mlx-swift fork
+# (revision e40e0a57a) pinned in mlx-swift-lm + kokoro-ios — retired after
+# the 2026-07-19 A/B. ternary-mlx runs on stock upstream (bits=2).
+LEGS="q1-gguf,ternary-gguf,ternary-mlx"
 if [ "${1:-}" = "--legs" ]; then
   LEGS="$2"; shift 2
 fi

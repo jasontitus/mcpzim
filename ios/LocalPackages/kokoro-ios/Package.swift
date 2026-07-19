@@ -20,12 +20,7 @@ let package = Package(
     // Swift-gemma4-core's 0.31+ requirement. Loosen to a range —
     // CastCircle does the same in its vendored copy and the call
     // sites are compatible from 0.29 onward.
-    // Same-identity requirement: every mlx-swift consumer in the workspace
-    // must point at the SAME url. Tracks mlx-swift-lm's Prism fork pin
-    // (1-bit quant kernels for Bonsai) — REVISION-pinned to the validated
-    // commit; revert both together.
-    .package(url: "https://github.com/PrismML-Eng/mlx-swift",
-             revision: "e40e0a57a6f7ad08dc3fd87ad598a7aa6407d230"),
+    .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.29.1"),
     // .package(url: "https://github.com/mlalma/eSpeakNGSwift", from: "1.0.1"),
     .package(url: "https://github.com/mlalma/MisakiSwift", from: "1.0.4"),
     .package(url: "https://github.com/mlalma/MLXUtilsLibrary.git", from: "0.0.6")

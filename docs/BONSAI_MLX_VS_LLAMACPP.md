@@ -80,18 +80,19 @@ Both providers emit identical `perf start/prefill/first token/complete`
 lines and populate a shared `GenerationStats`; ChatSession logs one
 `[Perf]` row per generation on both the tool-loop and grounded-discuss
 paths; `--probe-discuss --runtime llamacpp|mlx` selects the runtime;
-`tools/bonsai-ab/compare.sh` merges any leg set into this table. The Mac
-model picker carries "Bonsai 27B Ternary (2-bit · MLX · Mac)" beside its
-GGUF sibling for interactive A/Bs.
+`tools/bonsai-ab/compare.sh` merges any leg set into this table. MLX
+operating points live only in the harness — the picker entry was retired
+with the experiment once llama.cpp won the A/B.
 
 ## Dependency state after this work
 
 - **llama.cpp:** PrismML fork xcframework `prism-b9591` — checked their
   HEAD (2026-07-18): only x86/CUDA/CI commits since our pin; Metal
   kernels unchanged, no rebuild needed.
-- **mlx-swift:** PrismML fork branch `prism` (pinned in
-  `LocalPackages/mlx-swift-lm/Package.swift` and `kokoro-ios/Package.swift`
-  — same-identity rule requires both). Revert both lines to
-  `ml-explore/mlx-swift .upToNextMinor("0.31.3")` to drop the fork.
+- **mlx-swift:** back on upstream (`.upToNextMinor("0.31.3")` /
+  kokoro-ios `from: "0.29.1"`). The Prism fork pin used for the q1-mlx
+  leg (revision e40e0a57a6f7ad08dc3fd87ad598a7aa6407d230) was retired
+  with the experiment; re-pin BOTH Package.swift files by revision to
+  reproduce the 1-bit MLX rows.
 - **mlx-swift-lm:** vendored, refreshed with Bonsai; its Qwen35 classes
   are what fixed hybrid-cache resumption.

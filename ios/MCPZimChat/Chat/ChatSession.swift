@@ -1568,31 +1568,11 @@ public final class ChatSession {
         // Hugging Face download and switches to it once loading completes.
         providers.insert(ternaryBonsai27b, at: 1)
 
-        // MLX runtime for the SAME ternary Bonsai weights — Prism's official
-        // 2-bit pack (standard MLX affine quant bits=2/group=128; qwen3_5 is
-        // registered in the vendored factory). Exists for the cross-runtime
-        // A/B against the llama.cpp entry above; same ChatML template and
-        // sampling recipe, only the runtime differs. Mac-only like its GGUF
-        // sibling. NOTE the phone-class 1-BIT pack cannot load on stock
-        // mlx-swift 0.31.x (mlx-c rejects bits=1 — kernels exist only in
-        // PrismML-Eng/mlx-swift branch `prism`), so the phone-side MLX A/B
-        // waits on that dependency swap. Asymmetries to expect in [Perf]
-        // rows: llama.cpp keeps Bonsai's cross-turn KV prefix while MLX
-        // hybrid caches force full re-prefill (mlx-swift-lm#157 guard), and
-        // MLX's unified-memory pool releases lazily — read `footprint` at
-        // `perf complete`, not at load.
-        let ternaryBonsai27b_mlx = Gemma4Provider(
-            id: "bonsai-27b-q2-ternary-mlx",
-            displayName: "Bonsai 27B Ternary (2-bit · MLX · Mac)",
-            huggingFaceRepo: "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
-            approximateMemoryMB: 9500,
-            template: QwenChatMLTemplate(),
-            replyTokensFloor: 1024,
-            samplingProfile: GenerationSamplingProfile(
-                temperature: 0.7, topP: 0.8, topK: 20,
-                presencePenalty: 1.5)
-        )
-        providers.insert(ternaryBonsai27b_mlx, at: 2)
+        // No MLX Bonsai picker entry: the 2026-07-19 quant×runtime A/B
+        // (docs/BONSAI_MLX_VS_LLAMACPP.md) settled it — llama.cpp decodes
+        // 2-3.5× faster on Apple Silicon with equal answer quality, so the
+        // MLX operating points exist only in the eval harness
+        // (`--probe-discuss --runtime mlx`), not the user-facing menu.
 
         // Gemma 3 12B IT QAT-4bit — mac-only reference model. Benched 9/9
         // on the mac-only eval scorecard (perfect tool-calling across
