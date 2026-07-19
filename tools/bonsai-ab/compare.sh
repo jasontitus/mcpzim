@@ -18,6 +18,16 @@ set -uo pipefail
 BIN="${MCPZIM_EVALCLI:-$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/MCPZimChat-*/Build/Products/Debug/MCPZimEvalCLI 2>/dev/null | head -1)}"
 [ -x "$BIN" ] || { echo "MCPZimEvalCLI not found — build the MCPZimEvalCLI scheme first (or set MCPZIM_EVALCLI)"; exit 2; }
 
+# The CLI links llama.framework via @rpath; a fresh DerivedData build
+# doesn't carry the macOS slice. Self-heal (HOW_TO_BUILD gotcha).
+DD="$(dirname "$BIN")"
+if [ ! -d "$DD/PackageFrameworks/llama.framework" ]; then
+  REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+  mkdir -p "$DD/PackageFrameworks"
+  cp -R "$REPO_ROOT/ios/LocalPackages/llama.cpp-swift/llama.xcframework/macos-arm64_x86_64/llama.framework" \
+    "$DD/PackageFrameworks/" 2>/dev/null && echo "(copied llama.framework beside CLI)"
+fi
+
 OUT=/tmp/bonsai-ab
 mkdir -p "$OUT"
 
@@ -37,7 +47,7 @@ import re, sys
 def rows(path):
     out = []
     perf = re.compile(
-        r"\[Perf\] iter (\d+) · runtime=(\S+) model=(\S+) prompt=(\d+)tok "
+        r"\[Perf\] (\S+(?: \d+)?) · runtime=(\S+) model=(\S+) prompt=(\d+)tok "
         r"reused=(\d+) prefill=([\d.]+)s ttft=([\d.-]+)s out=(\d+)tok "
         r"decode=([\d.]+)tok/s total=([\d.]+)s footprint=(\d+)MB stop=(\S+)")
     turn = None

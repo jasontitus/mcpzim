@@ -1531,31 +1531,8 @@ public final class ChatSession {
                 presencePenalty: 1.5),
             template: QwenChatMLTemplate()
         )
-        // MLX operating point for the SAME Bonsai 27B 1-bit weights —
-        // Prism's official pack (standard MLX affine quant, bits=1,
-        // group_size=128; model_type qwen3_5 is registered in our vendored
-        // mlx-swift-lm, and mlx-swift 0.31.x carries 1-bit affine kernels).
-        // Exists for the runtime A/B against the GGUF entry above: Prism
-        // reports ~5.9 GB peak at 4K (vs 5.2 GB llama.cpp) and ~11 tok/s on
-        // iPhone 17 Pro Max via their MLX Swift demo. Two expected
-        // asymmetries to watch in the [Perf] lines, both real properties of
-        // the runtimes rather than harness artifacts:
-        //   * cross-turn KV reuse — llama.cpp keeps Bonsai's prefix cache;
-        //     MLX hybrid (linear-attention) caches trip the stale-scratch
-        //     guard and may re-prefill every turn (mlx-swift-lm#157);
-        //   * peak footprint — MLX's unified-memory pool releases lazily,
-        //     so watch `footprint` at `perf complete`, not just load.
-        let bonsai27b_1bit_mlx = Gemma4Provider(
-            id: "bonsai-27b-q1-mlx",
-            displayName: "Bonsai 27B (1-bit · MLX)",
-            huggingFaceRepo: "prism-ml/Bonsai-27B-mlx-1bit",
-            approximateMemoryMB: 5900,
-            template: QwenChatMLTemplate(),
-            replyTokensFloor: 512
-        )
         var providers: [any ModelProvider] = [
             bonsai27b_1bit,
-            bonsai27b_1bit_mlx,
             lfm25_ft,
             gemma3_4b_gguf_ft,
             gemma3_4b_gguf,
@@ -1590,6 +1567,32 @@ public final class ChatSession {
         // model menu. Selecting this entry invokes the provider's resumable
         // Hugging Face download and switches to it once loading completes.
         providers.insert(ternaryBonsai27b, at: 1)
+
+        // MLX runtime for the SAME ternary Bonsai weights — Prism's official
+        // 2-bit pack (standard MLX affine quant bits=2/group=128; qwen3_5 is
+        // registered in the vendored factory). Exists for the cross-runtime
+        // A/B against the llama.cpp entry above; same ChatML template and
+        // sampling recipe, only the runtime differs. Mac-only like its GGUF
+        // sibling. NOTE the phone-class 1-BIT pack cannot load on stock
+        // mlx-swift 0.31.x (mlx-c rejects bits=1 — kernels exist only in
+        // PrismML-Eng/mlx-swift branch `prism`), so the phone-side MLX A/B
+        // waits on that dependency swap. Asymmetries to expect in [Perf]
+        // rows: llama.cpp keeps Bonsai's cross-turn KV prefix while MLX
+        // hybrid caches force full re-prefill (mlx-swift-lm#157 guard), and
+        // MLX's unified-memory pool releases lazily — read `footprint` at
+        // `perf complete`, not at load.
+        let ternaryBonsai27b_mlx = Gemma4Provider(
+            id: "bonsai-27b-q2-ternary-mlx",
+            displayName: "Bonsai 27B Ternary (2-bit · MLX · Mac)",
+            huggingFaceRepo: "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            approximateMemoryMB: 9500,
+            template: QwenChatMLTemplate(),
+            replyTokensFloor: 1024,
+            samplingProfile: GenerationSamplingProfile(
+                temperature: 0.7, topP: 0.8, topK: 20,
+                presencePenalty: 1.5)
+        )
+        providers.insert(ternaryBonsai27b_mlx, at: 2)
 
         // Gemma 3 12B IT QAT-4bit — mac-only reference model. Benched 9/9
         // on the mac-only eval scorecard (perfect tool-calling across
@@ -4691,6 +4694,12 @@ public final class ChatSession {
             }
             let final = stripLeakedReasoning(buffer)
             updateAssistant(final)
+            // Grounded turns bypass runGenerationLoop, so emit the uniform
+            // cross-runtime [Perf] row here too — the Bonsai A/B harness
+            // drives exactly this path.
+            if let stats = selectedModel.lastGenerationStats {
+                debug("grounded · " + stats.summaryLine, category: "Perf")
+            }
             // Normally store the exact raw emission: re-tokenising that
             // transcript reproduces the tokens already resident in llama.cpp,
             // so the next prompt is a strict append. A leaked reasoning marker

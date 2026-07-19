@@ -450,7 +450,10 @@ enum ProbeDiscussCLI {
             .semanticSections
         var reportJSONPath: String?
         var runtime = "llamacpp"
-        var mlxRepo = "prism-ml/Bonsai-27B-mlx-1bit"
+        // Ternary 2-bit is the stock-runnable MLX pack (affine bits=2).
+        // The phone-class 1-bit pack needs PrismML-Eng/mlx-swift branch
+        // `prism` — stock mlx-c rejects bits=1 at load.
+        var mlxRepo = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
         var args = inputArgs[...]
         while let a = args.first {
             args = args.dropFirst()
