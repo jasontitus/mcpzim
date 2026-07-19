@@ -919,11 +919,89 @@ public actor MCPToolAdapter {
         }
         let zim = args["zim"] as? String
         let maxSections = max(1, min(10, (args["max_sections"] as? Int) ?? 5))
-        let resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
+        var resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
         do {
             resolved = try await ArticleHeuristics.sectionsByTitle(
                 service: service, title: title, zim: zim
             )
+            // Stub guard: fuzzy title resolution sometimes lands on a
+            // near-duplicate stub instead of the canonical article (real
+            // capture 2026-07-19: "apple tv" → a 224-char "Apple Tv" stub
+            // while the full "Apple TV" article exists — grounded on the
+            // stub, the model confabulated dates the passage never
+            // contained). When the resolved article is tiny, ask
+            // full-text search for a same-titled hit with real content
+            // and prefer it.
+            let resolvedChars = resolved.sections.reduce(0) { $0 + $1.text.count }
+            let leadLooksDisambig = ArticleHeuristics.isDisambiguationArticle(
+                title: resolved.title,
+                leadText: resolved.sections.first?.text ?? "")
+            if leadLooksDisambig {
+                // The page IS a disambiguation ("Apple TV may refer to:") —
+                // its own links name the real meanings in display order, and
+                // the first substantial one is what "tell me about X" meant.
+                // (Search can't be trusted here: title-index variants crowd
+                // out "Apple TV (device)" before FTS results merge.) The
+                // runner-up meanings resurface via the swapped article's
+                // hatnotes, which feed the disambiguation offer downstream.
+                if let page = try? await service.article(
+                    path: resolved.path, zim: resolved.zim) {
+                    // parseAll, not parse: the prose-only default returns
+                    // NOTHING here — disambiguation pages put their
+                    // meanings in <ul> lists, not paragraphs.
+                    for link in WikiLinks.parseAll(html: page.text, max: 6) {
+                        // Kiwix hrefs are relative to the article namespace;
+                        // accept both bare and A/-prefixed forms.
+                        let candidates = link.path.hasPrefix("A/")
+                            ? [link.path] : [link.path, "A/" + link.path]
+                        var found: (zim: String, title: String, sections: [ArticleSection])?
+                        var foundPath = link.path
+                        for p in candidates {
+                            if let alt = try? await service.articleSections(
+                                path: p, zim: resolved.zim) {
+                                found = alt; foundPath = p; break
+                            }
+                        }
+                        if let alt = found,
+                           alt.sections.reduce(0, { $0 + $1.text.count }) > 2000,
+                           !ArticleHeuristics.isDisambiguationArticle(
+                               title: alt.title,
+                               leadText: alt.sections.first?.text ?? "")
+                        {
+                            resolved = (resolved.zim, foundPath, alt.title, alt.sections)
+                            break
+                        }
+                    }
+                }
+            } else if resolvedChars < 500,
+               let hits = try? await service.search(query: title, limit: 12, kind: nil) {
+                // Non-disambig thin stub: prefer a same-titled search hit
+                // (exact or with Wikipedia's parenthetical disambiguator)
+                // that carries real content.
+                let want = title.lowercased()
+                    .replacingOccurrences(of: "_", with: " ")
+                for hit in hits where hit.path != resolved.path {
+                    var hitTitle = hit.title.lowercased()
+                    if let paren = hitTitle.range(
+                        of: #"\s+\([^)]*\)$"#, options: .regularExpression) {
+                        hitTitle.removeSubrange(paren)
+                    }
+                    guard hitTitle == want else { continue }
+                    // Resolve the candidate by PATH — re-resolving by title
+                    // would hit the same fuzzy match that produced the stub.
+                    if let alt = try? await service.articleSections(
+                        path: hit.path, zim: hit.zim),
+                       alt.sections.reduce(0, { $0 + $1.text.count })
+                           > max(2000, resolvedChars * 4),
+                       !ArticleHeuristics.isDisambiguationArticle(
+                           title: alt.title,
+                           leadText: alt.sections.first?.text ?? "")
+                    {
+                        resolved = (hit.zim, hit.path, alt.title, alt.sections)
+                        break
+                    }
+                }
+            }
         } catch {
             // Miss. Do NOT throw — a thrown miss hands control to the
             // host's LLM loop, which has no knowledge of what's in the

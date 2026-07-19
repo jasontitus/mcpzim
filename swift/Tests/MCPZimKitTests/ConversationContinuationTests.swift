@@ -223,6 +223,52 @@ final class ConversationContinuationTests: XCTestCase {
         XCTAssertNil(IntentRouter.classify("What about his parents?"))
     }
 
+    // MARK: - Attribute questions (device capture 2026-07-19: "What is the
+    // most recent version?" → Versioning file system; "What is the current
+    // version?" → Nicene Creed)
+
+    func testAttributeQuestionBindsToFocusEntity() {
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Apple Tv", kind: .topic, zimPath: "A/Apple_Tv"))
+        for q in ["What is the most recent version?",
+                  "What is the current version?",
+                  "what's the price?"] {
+            let resolved = ReferenceResolver.resolve(q, focus: f)
+            XCTAssertEqual(resolved.boundEntity?.name, "Apple Tv", "q: \(q)")
+            let intent = IntentRouter.classify(q, focus: f)
+            XCTAssertEqual(intent?.toolName, "article_overview", "q: \(q)")
+            XCTAssertEqual(intent?.anyArgs["title"] as? String, "Apple Tv", "q: \(q)")
+        }
+    }
+
+    func testProperNounAttributeShapeStaysFresh() {
+        // "What is the Nicene Creed?" is a REAL topic despite leading "the" —
+        // the capitalised proper noun keeps it out of the attribute binding.
+        var f = ConversationFocus()
+        f.beginUserTurn()
+        f.remember(FocusEntity(name: "Apple Tv", kind: .topic))
+        let resolved = ReferenceResolver.resolve("What is the Nicene Creed?", focus: f)
+        XCTAssertNil(resolved.boundEntity)
+        // Lowercase non-attribute topics also stay fresh.
+        let resolved2 = ReferenceResolver.resolve("what is quantum entanglement", focus: f)
+        XCTAssertNil(resolved2.boundEntity)
+    }
+
+    func testNoCorrectionStripAndAttributeOfReduction() {
+        // "No. What is the most recent version of Apple TV?" must reach the
+        // overview pattern (leading "No." stripped) and reduce the title to
+        // the entity after "of".
+        let intent = IntentRouter.classify("No. What is the most recent version of Apple TV?")
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.anyArgs["title"] as? String, "apple tv")
+        // Genuine "of" titles are untouched ("the history of France" leads
+        // with an attribute-less noun … actually "history" is not in the
+        // attribute vocabulary, so the phrase passes through intact).
+        let intent2 = IntentRouter.classify("Tell me about the history of France")
+        XCTAssertEqual(intent2?.anyArgs["title"] as? String, "the history of france")
+    }
+
     func testLeadingConnectiveDoesNotDefeatTopicSwitch() {
         // "And tell me about Donald Trump" mid-discussion — the leading
         // "And" broke every ^-anchored stateless pattern, so no intent

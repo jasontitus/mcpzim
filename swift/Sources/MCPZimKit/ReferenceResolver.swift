@@ -115,6 +115,38 @@ public enum ReferenceResolver {
         "how come", "what for", "what year", "by whom",
     ]
 
+    /// Vocabulary of ATTRIBUTE questions — "what is the most recent
+    /// version?" asks about a property of the subject under discussion,
+    /// never about a topic literally titled "the most recent version"
+    /// (real capture 2026-07-19: that phrase was dispatched as an article
+    /// title and search-rescued to "Versioning file system"; "the current
+    /// version" landed on the Nicene Creed). A subject phrase counts as
+    /// attribute-shaped when it leads with "the"/"its" and carries a
+    /// superlative/selector or ends in a property noun.
+    public static let attributeMarkers: Set<String> = [
+        "most", "latest", "newest", "current", "recent", "first", "last",
+        "original", "next", "previous", "earliest", "biggest", "largest",
+        "smallest", "cheapest", "fastest", "best", "worst", "top",
+    ]
+    public static let attributeNouns: Set<String> = [
+        "version", "versions", "model", "models", "release", "releases",
+        "generation", "update", "edition", "price", "cost", "size", "name",
+        "date", "year", "number", "capacity", "resolution", "os",
+        "weight", "speed", "one", "ones",
+    ]
+
+    /// True when `phrase` (lowercased, no trailing punctuation) reads as an
+    /// attribute question about an implicit subject rather than a topic of
+    /// its own.
+    public static func isAttributePhrase(_ phrase: String) -> Bool {
+        let toks = phrase.split(separator: " ").map(String.init)
+        guard let first = toks.first, first == "the" || first == "its",
+              toks.count >= 2 else { return false }
+        let content = Array(toks.dropFirst())
+        return content.contains(where: { attributeMarkers.contains($0) })
+            || attributeNouns.contains(content.last ?? "")
+    }
+
     /// Ordinal words → zero-based list index.
     private static let ordinals: [String: Int] = [
         "first": 0, "1st": 0, "one": 0,
@@ -235,6 +267,25 @@ public enum ReferenceResolver {
             return ResolvedReference(
                 binding: .thread(t.asEntity(turn: focus.turn)),
                 rewrittenQuery: "tell me about \(t.label)",
+                isContinuation: true
+            )
+        }
+
+        // ---- 2c. Attribute question → primary entity ----------------------
+        // "What is the most recent version?" / "what's the price?" — the
+        // subject phrase after the interrogative is attribute-shaped, so it
+        // asks about the CURRENT subject. Guard on no proper noun beyond the
+        // sentence-initial word (raw capitalisation is the signal), so
+        // "What is the Nicene Creed?" still routes as a fresh topic.
+        if let primary = focus.primaryEntity,
+           let m = firstMatch(lower, pattern:
+            #"^(?:what(?:'s| is| are)|which is|which one is)\s+((?:the|its)\s+.+)$"#),
+           Self.isAttributePhrase(m),
+           !hasProperNounBeyondFirstWord(raw)
+        {
+            return ResolvedReference(
+                binding: .entity(primary),
+                rewrittenQuery: "\(text) of \(primary.name)",
                 isContinuation: true
             )
         }
@@ -517,6 +568,17 @@ public enum ReferenceResolver {
         return words[..<firstPronoun].contains {
             !functional.contains($0) && $0.count >= 4
         }
+    }
+
+    /// Any capitalised token after the sentence-initial word signals a
+    /// proper-noun subject ("What is the Nicene Creed?"). Voice dictation
+    /// capitalises proper nouns reliably, making raw case a usable signal.
+    private static func hasProperNounBeyondFirstWord(_ raw: String) -> Bool {
+        let toks = raw.split(whereSeparator: { $0 == " " })
+        for tok in toks.dropFirst() {
+            if let c = tok.first, c.isUppercase { return true }
+        }
+        return false
     }
 
     private static func startsWithWord(_ text: String, _ phrase: String) -> Bool {

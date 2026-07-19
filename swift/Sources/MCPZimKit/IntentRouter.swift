@@ -98,7 +98,7 @@ public enum IntentRouter {
         // (real capture 2026-07-02). Only strip when a real clause
         // follows, so a bare "ok"/"and?" still reads as a continuation.
         if let m = match(text.lowercased(), pattern:
-            #"^(?:and|so|also|then|ok|okay|now|next|hey|oh)[,\s]+(.{4,})$"#) {
+            #"^(?:and|so|also|then|ok|okay|now|next|hey|oh|no|nope|wait|actually)[.,\s]+(.{4,})$"#) {
             text = String(text.suffix(m[0].count))
         }
         if text.isEmpty { return nil }
@@ -475,6 +475,20 @@ public enum IntentRouter {
             // is" with nothing after would match `.+` on the trailing
             // "?!." the caller stripped. Guard against that.
             if subject.isEmpty { return nil }
+            // "the most recent version of Apple TV" — the ENTITY after
+            // "of" is the article title; the attribute phrase is the
+            // question, not part of the title (real capture 2026-07-19:
+            // "No. What is the most recent version of Apple TV?"
+            // dispatched the whole phrase and missed). The grounded
+            // answer keeps the full user question, so the facet
+            // survives even though the title is reduced.
+            var reducedSubject = subject
+            if let m = match(reducedSubject, pattern: #"^((?:the|its)\s+.+?)\s+of\s+(.+)$"#),
+               m.count >= 2,
+               ReferenceResolver.isAttributePhrase(m[0])
+            {
+                reducedSubject = m[1].trimmingCharacters(in: CharacterSet.whitespaces)
+            }
             // "Putin's early life" / "Vladimir Putin and his early life"
             // — the ENTITY is the article title; the possessive facet is
             // a section, not part of the title. Dispatching the raw
@@ -483,7 +497,7 @@ public enum IntentRouter {
             // `article_overview(title: entity)` succeeds and its
             // `pickOverview` already prioritises the classic facet
             // sections ("early life", "career", …).
-            let title = Self.stripPossessiveFacet(from: subject)
+            let title = Self.stripPossessiveFacet(from: reducedSubject)
             return DirectIntent(toolName: "article_overview", args: [
                 "title": .string(title)
             ])
