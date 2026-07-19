@@ -128,3 +128,15 @@ for now; noted here so future work can trace it.
 - `ios/LocalPackages/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`
   — our other local patch, for the `QuantizedKVCacheProtocol` branch;
   documented in `HOW_TO_BUILD.md`.
+
+## Addendum 2026-07-19 — guard retired
+
+The blanket MambaCache reuse guard in `Gemma4Provider` is retired on the
+`bonsai-mlx-compare` branch. The vendored mlx-swift-lm refresh that came
+with Bonsai fixed partial-prefix reuse for the hybrid Qwen35 classes:
+verified empirically on the Mac harness for the original crasher
+(Qwen 3.5 4B — 835-token reuse, no `broadcast_shapes` abort) and for
+Bonsai 27B ternary (838/1071-token reuse, follow-up TTFT 4.8s → 1.0s,
+answers unchanged). Per-family kill-switch remains via
+`ModelTemplate.hasStaleScratchStateBug`. Full A/B numbers:
+`docs/BONSAI_MLX_VS_LLAMACPP.md`.

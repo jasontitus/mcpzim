@@ -602,28 +602,26 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         let inputTokens: [Int32]
                         let kvCache: [KVCache]
                         let hit: Bool
-                        // Hybrid attention (Qwen 3.5 family, Qwen 3 Next,
-                        // Jamba, FalconH1, etc.) mixes `MambaCache` with
-                        // `KVCacheSimple` layer-by-layer. MLX's "feed a
-                        // partial prefix, keep the old cache" path has a
-                        // shape bug on the KV-cache layers in that setup
-                        // — the first follow-up turn hits
-                        // `broadcast_shapes (…128,256) vs (…129,256)`
-                        // and aborts. Workaround: force full prefill any
-                        // time the cache contains a MambaCache, so the
-                        // new turn starts from a fresh newCache() and
-                        // the broken reuse path never runs. Costs the
-                        // first-token latency we'd have saved; avoids a
-                        // SIGABRT.
-                        //
-                        // Upstream status + rationale lives in the repo
-                        // root under `QWEN35_HYBRID_CACHE.md`. TL;DR:
-                        // tracked at mlx-swift-lm#157; the actual bug is
-                        // stale `precomputedPositionIds` / `ropeDeltas`
-                        // on `Qwen35` the model class, not in the
-                        // KVCache itself. No upstream PR yet — do NOT
-                        // drop this guard.
-                        let cacheIsHybrid = existing?.contains(where: { $0 is MambaCache }) ?? false
+                        // Hybrid-cache reuse guard — RETIRED 2026-07-19.
+                        // The blanket "force full prefill when the cache
+                        // contains a MambaCache" workaround dated from the
+                        // mlx-swift-lm#157 era (`broadcast_shapes (…128,256)
+                        // vs (…129,256)` SIGABRT on partial-prefix reuse,
+                        // QWEN35_HYBRID_CACHE.md). The vendored library was
+                        // refreshed for Bonsai and the current Qwen35
+                        // classes derive RoPE/masks/conv state from cache
+                        // offset correctly; verified empirically on this
+                        // machine for BOTH the original crasher (Qwen 3.5
+                        // 4B: 835-token reuse, no abort) and Bonsai 27B
+                        // ternary (838/1071-token reuse, follow-up TTFT
+                        // 4.8s → 1.0s, answers correct). If a hybrid family
+                        // regresses, set `hasStaleScratchStateBug = true`
+                        // on ITS template rather than reinstating the
+                        // blanket guard — the per-eval-state kill-switch
+                        // below still forces full prefill per family, and
+                        // the pre-`generateTokens` canary logging remains
+                        // to diagnose any MLX-side abort.
+                        let cacheIsHybrid = false
                         // Template-declared flag for families whose MLX
                         // model carries per-eval mutable state that
                         // leaks across calls. Gemma 3 / Qwen 3.5 are
