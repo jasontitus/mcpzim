@@ -1,6 +1,7 @@
-# Bonsai 27B — quant × runtime comparison (1-bit / ternary, llama.cpp / MLX)
+# Bonsai 27B — the full quant × runtime matrix (1-bit / ternary × llama.cpp / MLX)
 
 **Date:** 2026-07-19 · **Machine:** Mac Studio M1 Ultra 128 GB · **Branch:** `bonsai-mlx-compare`
+**MLX:** PrismML-Eng/mlx-swift fork `prism` (1-bit kernels) · hybrid-cache reuse ENABLED (stale guard retired)
 
 Same ChatML template, same sampling recipe (temp 0.7 · top-p 0.8 · top-k 20 ·
 presence 1.5), same three grounded turns against the full
@@ -12,78 +13,85 @@ tools/bonsai-ab/compare.sh \
   --turn "Tell me about gravitational waves" \
   --turn "When were they first detected?" \
   --turn "How are they detected?"
-# legs default to q1-gguf,ternary-gguf,ternary-mlx; see --legs
+# legs default to q1-gguf,ternary-gguf,q1-mlx,ternary-mlx
 ```
-
-## Results (MLX hybrid-cache reuse ENABLED — see below)
 
 | turn | leg | reused/prompt tok | prefill s | TTFT s | out tok | decode tok/s | total s | footprint MB | stop |
 |---|---|---|---|---|---|---|---|---|---|
-| Tell me about gravitational waves | q1-gguf | 0/699 | 1.731 | 2.418 | 98 | 35.34 | 5.163 | 875 | eog |
-| When were they first detected? | q1-gguf | 797/982 | 0.005 | 0.718 | 61 | 33.78 | 2.494 | 879 | eog |
-| How are they detected? | q1-gguf | 1043/1250 | 0.006 | 0.795 | 79 | 34.12 | 3.081 | 879 | eog |
-| Tell me about gravitational waves | ternary-gguf | 0/699 | 1.828 | 2.550 | 75 | 23.69 | 5.673 | 1162 | eog |
-| When were they first detected? | ternary-gguf | 774/959 | 0.006 | 0.753 | 22 | 23.75 | 1.637 | 1169 | eog |
-| How are they detected? | ternary-gguf | 981/1188 | 0.005 | 0.832 | 26 | 23.94 | 1.876 | 1169 | eog |
-| Tell me about gravitational waves | ternary-mlx | 0/699 | 4.358 | 4.480 | 74 | 16.51 | 8.972 | 8519 | eos_or_max |
-| When were they first detected? | ternary-mlx | 773/958 | 0.798 | 0.931 | 106 | 16.94 | 7.197 | 8481 | eos_or_max |
-| How are they detected? | ternary-mlx | 1064/1271 | 0.854 | 1.022 | 108 | 16.81 | 7.457 | 8641 | eos_or_max |
+| Tell me about gravitational waves | q1-gguf | 0/699 | 1.739 | 2.430 | 98 | 33.80 | 5.300 | 875 | eog |
+| When were they first detected? | q1-gguf | 797/982 | 0.010 | 0.733 | 61 | 31.92 | 2.613 | 889 | eog |
+| How are they detected? | q1-gguf | 1043/1250 | 0.008 | 0.800 | 79 | 32.83 | 3.176 | 889 | eog |
+| Tell me about gravitational waves | ternary-gguf | 0/699 | 1.843 | 2.567 | 75 | 24.54 | 5.582 | 1164 | eog |
+| When were they first detected? | ternary-gguf | 774/959 | 0.007 | 0.755 | 22 | 22.74 | 1.679 | 1176 | eog |
+| How are they detected? | ternary-gguf | 981/1188 | 0.005 | 0.845 | 26 | 22.85 | 1.939 | 1176 | eog |
+| Tell me about gravitational waves | q1-mlx | 0/699 | 3.384 | 3.666 | 142 | 8.38 | 20.708 | 5287 | eos_or_max |
+| When were they first detected? | q1-mlx | 841/1026 | 0.879 | 1.056 | 80 | 9.87 | 9.156 | 5375 | eos_or_max |
+| How are they detected? | q1-mlx | 1106/1313 | 0.879 | 1.120 | 120 | 9.37 | 13.934 | 5478 | eos_or_max |
+| Tell me about gravitational waves | ternary-mlx | 0/699 | 3.183 | 3.420 | 75 | 10.76 | 10.387 | 8505 | eos_or_max |
+| When were they first detected? | ternary-mlx | 774/959 | 0.797 | 0.961 | 32 | 11.06 | 3.866 | 8522 | eos_or_max |
+| How are they detected? | ternary-mlx | 991/1198 | 0.877 | 1.088 | 68 | 10.29 | 7.707 | 8669 | eos_or_max |
 
-**Medians:** q1-gguf — TTFT 0.80 s, decode 34.1 tok/s · ternary-gguf — TTFT
-0.83 s, decode 23.8 tok/s · ternary-mlx — TTFT 1.02 s, decode 16.8 tok/s.
+**q1-gguf** · turns=3 · median TTFT=0.80s · median decode=32.8 tok/s · peak footprint=889 MB
 
-## Quant axis: 1-bit vs ternary (same runtime, llama.cpp)
+**ternary-gguf** · turns=3 · median TTFT=0.84s · median decode=22.9 tok/s · peak footprint=1176 MB
 
-- **1-bit decodes ~42 % faster** (34.1 vs 23.8 tok/s) with identical
-  sub-second follow-up TTFT and ~25 % lower process footprint
-  (879 vs 1169 MB; weights 3.6 vs 6.8 GB on disk).
-- Prefill speed and prefix reuse are equivalent.
-- Quality: this 3-turn set produced correct grounded answers from both; the
-  16-scenario Mac conversational suite (GRID_RESULTS_BONSAI_* in
-  tools/llama-smoke) scored the two at near-parity with one wrong-tool turn
-  difference, which deterministic routing already covers. Ternary's case is
-  a quality-insurance margin, not a measured win.
+**q1-mlx** · turns=3 · median TTFT=1.12s · median decode=9.4 tok/s · peak footprint=5478 MB
 
-## Runtime axis: llama.cpp vs MLX (same ternary weights)
+**ternary-mlx** · turns=3 · median TTFT=1.09s · median decode=10.8 tok/s · peak footprint=8669 MB
 
-- **First run of this A/B exposed a stale guard, not a runtime property.**
-  MLX follow-ups initially re-prefilled everything (`reused=0`, TTFT
-  3.9–4.8 s) because Gemma4Provider force-disabled cache reuse for any
-  hybrid (MambaCache) model — a workaround for the old mlx-swift-lm#157
-  `broadcast_shapes` SIGABRT. The vendored library refresh that came with
-  Bonsai fixed resumption for the Qwen35 classes; we verified empirically
-  (original crasher Qwen 3.5 4B: 835-token reuse, no abort; Bonsai:
-  838/1071-token reuse, answers unchanged) and retired the guard
-  (per-family kill-switch kept via `ModelTemplate.hasStaleScratchStateBug`).
-- **With reuse enabled, MLX is conversationally competitive:** follow-up
-  TTFT 0.93–1.02 s vs 0.75–0.83 s GGUF. llama.cpp keeps a ~42 % decode
-  advantage on ternary (23.8 vs 16.8 tok/s) and its first-turn prefill is
-  ~2.4× faster (1.8 vs 4.4 s).
-- **Footprint columns are NOT comparable on macOS**: llama.cpp mmaps the
-  GGUF (weights live in the page cache, outside phys_footprint); MLX
-  materializes weights in-process (~8.5 GB shown, matching Prism's ~8.4 GB
-  figure). Prism's phone numbers (5.2 GB GGUF vs 5.9 GB MLX, 1-bit)
-  remain the honest device comparison.
-- Answer quality equivalent across all legs on these turns.
 
-## Verdict
+## Conclusions
 
-- **Quant:** 1-bit GGUF is the right phone operating point — strictly
-  faster and smaller, with quality near-parity per the grid suite.
-- **Runtime:** llama.cpp stays the ship choice (decode + prefill +
-  device-memory margins), but the gap is now honest rather than
-  structural: the MLX cache fix took MLX follow-ups from 4× slower to
-  ~1.2× slower. The missing cell — **1-bit MLX** — still needs
-  `PrismML-Eng/mlx-swift` branch `prism` (stock mlx-c rejects `bits=1`;
-  supported: 2,3,4,5,6,8).
+1. **Quant axis (llama.cpp):** 1-bit is the right phone operating point —
+   ~43 % faster decode (32.8 vs 22.9 tok/s), same sub-second follow-up
+   TTFT, ~25 % lower footprint, half the weights on disk. Quality
+   near-parity per the 16-scenario grid suite.
+2. **Quant axis (MLX):** decode is kernel-bound, not bandwidth-bound —
+   1-bit (9.4 tok/s) is no faster than ternary (10.8) despite half the
+   bytes. 1-bit's real MLX win is memory: 5.3–5.5 GB in-process vs
+   8.5–8.7 GB ternary (consistent with Prism's 5.9 GB @ 4K phone figure).
+3. **Runtime axis:** llama.cpp wins decode decisively on Apple Silicon —
+   3.5× on 1-bit (32.8 vs 9.4 tok/s), 2.1× on ternary (22.9 vs 10.8).
+   With the hybrid-cache fix, MLX follow-up TTFT is competitive
+   (~1.0–1.1 s vs 0.8 s), so the conversational gap is decode speed, not
+   latency structure.
+4. **Fork cost (flag):** swapping mlx-swift to the Prism fork to enable
+   1-bit REGRESSED ternary MLX decode ~35 % vs upstream 0.31.3 on this
+   Mac (16.8 → 10.8 tok/s, same leg, same machine conditions — llama
+   legs varied <5 % between runs). The fork buys capability (bits=1),
+   not speed; its merge base also predates upstream 0.31.6's iOS build
+   fix. If MLX ternary ever matters for shipping, pin upstream and skip
+   1-bit, or get Prism to re-sync.
+5. **Cache reuse works on all four legs** (reused>0 on every follow-up)
+   after retiring the stale MambaCache guard — verified against the
+   original Qwen 3.5 4B crasher too. Per-family kill-switch remains via
+   `ModelTemplate.hasStaleScratchStateBug`.
 
-## Instrumentation shipped on this branch
+## Ship position
+
+Unchanged: **Bonsai 27B 1-bit GGUF on llama.cpp** — fastest decode,
+sub-second follow-ups, smallest weights, safest phone memory. The MLX
+stack is now a fully instrumented, honestly comparable alternative
+rather than a guess.
+
+## Instrumentation (permanent, this branch)
 
 Both providers emit identical `perf start/prefill/first token/complete`
 lines and populate a shared `GenerationStats`; ChatSession logs one
 `[Perf]` row per generation on both the tool-loop and grounded-discuss
 paths; `--probe-discuss --runtime llamacpp|mlx` selects the runtime;
-`tools/bonsai-ab/compare.sh --legs q1-gguf,ternary-gguf,ternary-mlx`
-merges any set of legs into this table. The Mac model picker carries
-"Bonsai 27B Ternary (2-bit · MLX · Mac)" beside its GGUF sibling for
-interactive A/Bs.
+`tools/bonsai-ab/compare.sh` merges any leg set into this table. The Mac
+model picker carries "Bonsai 27B Ternary (2-bit · MLX · Mac)" beside its
+GGUF sibling for interactive A/Bs.
+
+## Dependency state after this work
+
+- **llama.cpp:** PrismML fork xcframework `prism-b9591` — checked their
+  HEAD (2026-07-18): only x86/CUDA/CI commits since our pin; Metal
+  kernels unchanged, no rebuild needed.
+- **mlx-swift:** PrismML fork branch `prism` (pinned in
+  `LocalPackages/mlx-swift-lm/Package.swift` and `kokoro-ios/Package.swift`
+  — same-identity rule requires both). Revert both lines to
+  `ml-explore/mlx-swift .upToNextMinor("0.31.3")` to drop the fork.
+- **mlx-swift-lm:** vendored, refreshed with Bonsai; its Qwen35 classes
+  are what fixed hybrid-cache resumption.

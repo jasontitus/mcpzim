@@ -36,7 +36,12 @@ let package = Package(
             targets: ["IntegrationTestHelpers"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
+        // Prism's mlx-swift fork (branch `prism`, upstream-synced 2026-06-11)
+        // — carries the 1-bit affine quant kernels upstream mlx still lacks
+        // (upstream main: "supported bits are 2, 3, 4, 5, 6 and 8").
+        // Required for prism-ml/Bonsai-27B-mlx-1bit; revert to
+        // ml-explore/mlx-swift .upToNextMinor("0.31.3") to drop the fork.
+        .package(url: "https://github.com/PrismML-Eng/mlx-swift", branch: "prism"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
     ],
     targets: [

@@ -11,8 +11,9 @@
 #   q1-gguf      Bonsai-27B-Q1_0.gguf        · llama.cpp   (phone class)
 #   ternary-gguf Ternary-Bonsai-27B-Q2_0.gguf · llama.cpp  (Mac class)
 #   ternary-mlx  prism-ml/Ternary-Bonsai-27B-mlx-2bit · MLX (Mac class)
-#   q1-mlx       BLOCKED: stock mlx-c rejects bits=1 — needs
-#                PrismML-Eng/mlx-swift branch `prism`.
+#   q1-mlx       prism-ml/Bonsai-27B-mlx-1bit · MLX (phone class) —
+#                needs the PrismML-Eng/mlx-swift `prism` fork pin
+#                (stock mlx-c rejects bits=1), in place since 2026-07-19.
 #
 # Each leg runs in its OWN process so Metal pool state from one can't
 # contaminate another's numbers. Logs land in /tmp/bonsai-ab/<leg>.log;
@@ -37,7 +38,7 @@ HF_HUB="$HOME/Library/Caches/huggingface/hub"
 Q1_GGUF="$HF_HUB/models--prism-ml--Bonsai-27B-gguf/snapshots/main/Bonsai-27B-Q1_0.gguf"
 TERNARY_GGUF="$HF_HUB/models--prism-ml--Ternary-Bonsai-27B-gguf/snapshots/main/Ternary-Bonsai-27B-Q2_0.gguf"
 
-LEGS="q1-gguf,ternary-gguf,ternary-mlx"
+LEGS="q1-gguf,ternary-gguf,q1-mlx,ternary-mlx"
 if [ "${1:-}" = "--legs" ]; then
   LEGS="$2"; shift 2
 fi
@@ -53,7 +54,7 @@ for leg in ${LEGS//,/ }; do
     q1-gguf)      extra=(--runtime llamacpp --gguf "$Q1_GGUF") ;;
     ternary-gguf) extra=(--runtime llamacpp --gguf "$TERNARY_GGUF") ;;
     ternary-mlx)  extra=(--runtime mlx --mlx-repo prism-ml/Ternary-Bonsai-27B-mlx-2bit) ;;
-    q1-mlx)       echo "== $leg SKIPPED: needs PrismML-Eng/mlx-swift branch prism (stock mlx-c rejects bits=1)"; continue ;;
+    q1-mlx)       extra=(--runtime mlx --mlx-repo prism-ml/Bonsai-27B-mlx-1bit) ;;
     *) echo "unknown leg: $leg"; exit 2 ;;
   esac
   echo "== $leg run =="
