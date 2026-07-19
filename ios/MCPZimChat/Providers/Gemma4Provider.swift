@@ -94,6 +94,15 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     /// the two — see `ChatSession.effectiveMaxReplyTokens`.
     public let replyTokensFloor: Int?
 
+    /// Publisher-recommended sampling recipe, same semantics as
+    /// `LlamaCppProvider.samplingProfile` — installed so a cross-runtime
+    /// A/B (Bonsai GGUF vs Bonsai MLX) samples identically on both sides.
+    public let samplingProfile: GenerationSamplingProfile?
+
+    /// Uniform cross-runtime stats for the last completed generate().
+    /// Written at the same point as the `perf complete` log line.
+    public private(set) var lastGenerationStats: GenerationStats?
+
     public init(
         id: String = "gemma4-e2b-it-4bit",
         displayName: String = "Gemma 4 E2B (4-bit · multimodal)",
@@ -101,10 +110,12 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         approximateMemoryMB: Int = 2600,
         template: any ModelTemplate = Gemma4Template(),
         replyTokensFloor: Int? = nil,
+        samplingProfile: GenerationSamplingProfile? = nil,
         localWeightsDirectory: URL? = nil
     ) {
         self.id = id
         self.displayName = displayName
+        self.samplingProfile = samplingProfile
         // Honor a local directory override when provided — used for
         // models we've quantized locally via `mlx_lm.convert` that
         // aren't published to HF. The directory variant skips HubClient
@@ -512,9 +523,18 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     Stream.defaultStream(.gpu).synchronize()
                     MLX.GPU.clearCache()
                     let t0 = Date()
+                    let memoryStarted = MemoryStats.physFootprintMB()
                     let tokens = await container.encode(prompt)
                     let tokens32 = tokens.map { Int32($0) }
-                    self.debug(String(format: "encoded %d tokens in %.2fs", tokens.count, Date().timeIntervalSince(t0)))
+                    let tokenizeSeconds = Date().timeIntervalSince(t0)
+                    self.debug(String(format: "encoded %d tokens in %.2fs", tokens.count, tokenizeSeconds))
+                    // Same field layout as LlamaCppProvider's perf lines so a
+                    // cross-runtime A/B diffs cleanly (lock is llama-only —
+                    // MLX serializes through the container actor instead).
+                    self.debug(String(format:
+                        "perf start · prompt=%d chars · lock=0.000s · tokenize=%d tok/%.3fs · thermal=%@ · footprint=%.0f MB",
+                        prompt.count, tokens.count, tokenizeSeconds,
+                        Self.thermalStateLabel(), memoryStarted))
 
                     // KV-cache quantization, wired via the vendored
                     // mlx-swift-lm fork's patched `Gemma4Attention`.
@@ -538,15 +558,31 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // `DeviceProfile.useQuantizedKVCache` (Mac stays
                     // FP16 — the memory win doesn't matter there).
                     let useQuant = DeviceProfile.current.useQuantizedKVCache
-                    let genParams = GenerateParameters(
+                    // Publisher sampling profile, same precedence rule as
+                    // LlamaCppProvider: model profile wins when the caller
+                    // opted in, else the task-level parameters stand.
+                    let profile = parameters.useModelSamplingProfile
+                        ? self.samplingProfile : nil
+                    let temperature = profile?.temperature ?? parameters.temperature
+                    let topP = profile?.topP ?? parameters.topP
+                    let topK = profile?.topK ?? 0
+                    let presencePenalty = profile?.presencePenalty ?? 0
+                    self.debug(String(format:
+                        "sampler · temp=%.2f · top-p=%.2f · top-k=%d · presence=%.2f",
+                        temperature, topP, topK, presencePenalty))
+                    var genParams = GenerateParameters(
                         maxTokens: parameters.maxTokens,
                         kvBits: useQuant ? 4 : nil,
                         kvGroupSize: 64,
                         quantizedKVStart: 0,
-                        temperature: Float(parameters.temperature),
-                        topP: Float(parameters.topP),
+                        temperature: Float(temperature),
+                        topP: Float(topP),
                         prefillStepSize: 128
                     )
+                    genParams.topK = topK
+                    if presencePenalty != 0 {
+                        genParams.presencePenalty = Float(presencePenalty)
+                    }
 
                     // Decide cache reuse. The cache stores the CUMULATIVE
                     // state of (prompt + generated tokens) from the
@@ -558,7 +594,8 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // append-only transcripts (tool-call
                     // round-trips, follow-up user turns without
                     // conversation reset).
-                    let (tokenStream, tokenizerBox) = try await container.perform { (context) -> (AsyncStream<TokenGeneration>, SendableTokenizer) in
+                    let prefillStarted = Date()
+                    let (tokenStream, tokenizerBox, prefillInputCount, reusedCount, lcpCandidate) = try await container.perform { (context) -> (AsyncStream<TokenGeneration>, SendableTokenizer, Int, Int, Int) in
                         let existing = self.promptKVCache
                         let cached = self.cachedTokens
                         let common = Self.longestCommonPrefix(cached, tokens32)
@@ -680,11 +717,25 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                             input: input, cache: kvCache,
                             parameters: genParams, context: context
                         )
-                        return (stream, SendableTokenizer(context.tokenizer))
+                        return (stream, SendableTokenizer(context.tokenizer),
+                                inputTokens.count, hit ? common : 0, cached.count)
                     }
-                    let tStream = Date()
+                    // `generateTokens` runs the chunked prefill inside
+                    // TokenIterator init, i.e. inside the perform block —
+                    // its duration IS the prefill (plus actor hop noise).
+                    let prefillSeconds = Date().timeIntervalSince(prefillStarted)
+                    let prefillRate = prefillSeconds > 0
+                        ? Double(prefillInputCount) / prefillSeconds : 0
+                    let prefillMemory = MemoryStats.physFootprintMB()
+                    self.debug(String(format:
+                        "perf prefill · prompt=%d tok · LCP candidate=%d · reused=%d · mode=%@ · batches=%d · %.3fs · %.1f tok/s · footprint=%.0f MB (Δ%+.0f)",
+                        tokens.count, lcpCandidate, reusedCount,
+                        reusedCount > 0 ? "mlx-reuse" : "mlx-fresh",
+                        (prefillInputCount + 127) / 128,
+                        prefillSeconds, prefillRate, prefillMemory,
+                        prefillMemory - memoryStarted))
                     let tokenizer = tokenizerBox.wrapped
-                    self.debug(String(format: "stream opened in %.2fs — awaiting first token…", Date().timeIntervalSince(tStream)))
+                    self.debug("stream opened — awaiting first token…")
                     // Gemma's tokenizer encodes `<end_of_turn>` as byte-BPE, not
                     // as a dedicated stop token, so MLX won't halt on it — we
                     // watch the rolling text buffer and terminate on the first
@@ -695,6 +746,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     var pending = ""
                     var firstChunkSeen = false
                     var chunkIdx = 0
+                    var firstTokenAt: Date?
+                    var lastTokenAt: Date?
+                    var stopReason = "eos_or_max"
                     // Halt on a turn close (end of assistant) OR on a tool_call
                     // close (ready for dispatch). Also stop if we see a stray
                     // system-turn open, which should never appear in model output.
@@ -740,9 +794,16 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         decodedSoFar = fullDecoded
                         if newText.isEmpty { continue }
                         if !firstChunkSeen {
-                            self.debug(String(format: "first token after %.2fs (%d chars)", Date().timeIntervalSince(tFirstChunk), newText.count))
+                            let now = Date()
+                            firstTokenAt = now
+                            self.debug(String(format: "first token after %.2fs (%d chars)", now.timeIntervalSince(tFirstChunk), newText.count))
+                            self.debug(String(format:
+                                "perf first token · TTFT=%.3fs · after-prefill=%.3fs",
+                                now.timeIntervalSince(t0),
+                                now.timeIntervalSince(prefillStarted) - prefillSeconds))
                             firstChunkSeen = true
                         }
+                        lastTokenAt = Date()
                         chunkIdx += 1
                         if chunkIdx.isMultiple(of: 40) {
                             self.debug("streaming · \(chunkIdx) chunks")
@@ -774,6 +835,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                                 pending = ""
                             }
                             self.debug("tool_call close seen — halting stream at \(tokenIDs.count) tokens")
+                            stopReason = "tool_call"
                             break chunkLoop
                         }
                         if let hit = stopMarkers.compactMap({ pending.range(of: $0) }).min(by: { $0.lowerBound < $1.lowerBound }) {
@@ -787,6 +849,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                                 tokensAtCutoff = tokenIDs.count
                             }
                             self.debug("stop marker hit — halting stream")
+                            stopReason = "stop_marker"
                             break chunkLoop
                         }
                         if pending.count > maxMarker {
@@ -822,7 +885,44 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // signal the pool to release.
                     Stream.defaultStream(.gpu).synchronize()
                     MLX.GPU.clearCache()
-                    self.debug(String(format: "generate() finished — %d chunks, %.2fs total", chunkIdx, Date().timeIntervalSince(t0)))
+                    // Uniform completion line + stats — mirror of
+                    // LlamaCppProvider's `perf complete` so cross-runtime
+                    // comparisons read straight out of the logs.
+                    let requestFinished = Date()
+                    let totalSeconds = requestFinished.timeIntervalSince(t0)
+                    let ttft = firstTokenAt.map { $0.timeIntervalSince(t0) } ?? -1
+                    let steadyDecodeTokens = max(0, tokenIDs.count - 1)
+                    let steadyDecodeSeconds: Double
+                    if let f = firstTokenAt, let l = lastTokenAt, l > f {
+                        steadyDecodeSeconds = l.timeIntervalSince(f)
+                    } else {
+                        steadyDecodeSeconds = 0
+                    }
+                    let steadyDecodeRate = steadyDecodeSeconds > 0
+                        ? Double(steadyDecodeTokens) / steadyDecodeSeconds : 0
+                    let generationSeconds = firstTokenAt.map {
+                        requestFinished.timeIntervalSince($0)
+                    } ?? 0
+                    let generationRate = generationSeconds > 0
+                        ? Double(tokenIDs.count) / generationSeconds : 0
+                    let memoryFinished = MemoryStats.physFootprintMB()
+                    self.debug(String(format:
+                        "perf complete · output=%d tok · generation=%.3fs/%.2f tok/s · steady-decode=%d tok/%.3fs/%.2f tok/s · TTFT=%.3fs · total=%.3fs · stop=%@ · thermal=%@ · footprint=%.0f MB (Δ%+.0f)",
+                        tokenIDs.count, generationSeconds, generationRate,
+                        steadyDecodeTokens, steadyDecodeSeconds, steadyDecodeRate,
+                        ttft, totalSeconds, stopReason,
+                        Self.thermalStateLabel(), memoryFinished,
+                        memoryFinished - memoryStarted))
+                    self.lastGenerationStats = GenerationStats(
+                        runtime: "mlx", modelID: self.id,
+                        promptTokens: tokens.count, reusedTokens: reusedCount,
+                        prefillSeconds: prefillSeconds, ttftSeconds: ttft,
+                        outputTokens: tokenIDs.count,
+                        decodeTokensPerSecond: steadyDecodeRate,
+                        totalSeconds: totalSeconds,
+                        peakFootprintMB: max(prefillMemory, memoryFinished),
+                        stopReason: stopReason)
+                    self.debug(String(format: "generate() finished — %d chunks, %.2fs total", chunkIdx, totalSeconds))
                     log.notice("generate() finished")
                     continuation.finish()
                 } catch {
@@ -836,6 +936,18 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
 
     public func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String {
         Gemma4PromptTemplate.render(systemPreamble: systemPreamble, turns: turns)
+    }
+
+    /// Same labels as `LlamaCppProvider.thermalStateLabel()` so the perf
+    /// lines diff cleanly across runtimes.
+    private static func thermalStateLabel() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
     }
 
     private static func longestCommonPrefix(_ a: [Int32], _ b: [Int32]) -> Int {

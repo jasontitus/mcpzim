@@ -1531,8 +1531,31 @@ public final class ChatSession {
                 presencePenalty: 1.5),
             template: QwenChatMLTemplate()
         )
+        // MLX operating point for the SAME Bonsai 27B 1-bit weights —
+        // Prism's official pack (standard MLX affine quant, bits=1,
+        // group_size=128; model_type qwen3_5 is registered in our vendored
+        // mlx-swift-lm, and mlx-swift 0.31.x carries 1-bit affine kernels).
+        // Exists for the runtime A/B against the GGUF entry above: Prism
+        // reports ~5.9 GB peak at 4K (vs 5.2 GB llama.cpp) and ~11 tok/s on
+        // iPhone 17 Pro Max via their MLX Swift demo. Two expected
+        // asymmetries to watch in the [Perf] lines, both real properties of
+        // the runtimes rather than harness artifacts:
+        //   * cross-turn KV reuse — llama.cpp keeps Bonsai's prefix cache;
+        //     MLX hybrid (linear-attention) caches trip the stale-scratch
+        //     guard and may re-prefill every turn (mlx-swift-lm#157);
+        //   * peak footprint — MLX's unified-memory pool releases lazily,
+        //     so watch `footprint` at `perf complete`, not just load.
+        let bonsai27b_1bit_mlx = Gemma4Provider(
+            id: "bonsai-27b-q1-mlx",
+            displayName: "Bonsai 27B (1-bit · MLX)",
+            huggingFaceRepo: "prism-ml/Bonsai-27B-mlx-1bit",
+            approximateMemoryMB: 5900,
+            template: QwenChatMLTemplate(),
+            replyTokensFloor: 512
+        )
         var providers: [any ModelProvider] = [
             bonsai27b_1bit,
+            bonsai27b_1bit_mlx,
             lfm25_ft,
             gemma3_4b_gguf_ft,
             gemma3_4b_gguf,
@@ -3153,6 +3176,13 @@ public final class ChatSession {
             }
 
             let dt = Date().timeIntervalSince(genStart)
+            // One uniform [Perf] line per generate call, identical field
+            // layout for every runtime — this is the row the Bonsai
+            // llama.cpp-vs-MLX A/B greps for. Providers without
+            // instrumentation (Mock, Apple FM) simply don't log one.
+            if let stats = selectedModel.lastGenerationStats {
+                debug("iter \(iter) · " + stats.summaryLine, category: "Perf")
+            }
             guard let call = toolCall else {
                 debug(String(format: "iter %d · done (%d chunks, %.2fs, %d chars)",
                               iter, chunkCount, dt, buffer.count),

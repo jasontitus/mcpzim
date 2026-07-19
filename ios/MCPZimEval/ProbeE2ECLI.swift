@@ -449,6 +449,8 @@ enum ProbeDiscussCLI {
         var preparationStrategy: ChatSession.DiscussionPreparationStrategy =
             .semanticSections
         var reportJSONPath: String?
+        var runtime = "llamacpp"
+        var mlxRepo = "prism-ml/Bonsai-27B-mlx-1bit"
         var args = inputArgs[...]
         while let a = args.first {
             args = args.dropFirst()
@@ -513,10 +515,24 @@ enum ProbeDiscussCLI {
                 if let n = args.first.flatMap({ Double($0) }) {
                     ramBudgetMB = n; args = args.dropFirst()
                 }
+            case "--runtime":
+                // llamacpp (default) drives the --gguf path; mlx loads the
+                // official MLX pack via Gemma4Provider (our generic MLX
+                // provider) for the cross-runtime Bonsai A/B. Run the
+                // harness once per runtime — two clean processes measure
+                // more honestly than one process hosting two 27B models.
+                if let r = args.first { runtime = String(r); args = args.dropFirst() }
+            case "--mlx-repo":
+                if let r = args.first { mlxRepo = String(r); args = args.dropFirst() }
             default:
                 FileHandle.standardError.write(Data("probe-discuss: unknown arg \(a)\n".utf8))
                 exit(2)
             }
+        }
+        guard runtime == "llamacpp" || runtime == "mlx" else {
+            FileHandle.standardError.write(Data(
+                "probe-discuss: --runtime must be llamacpp or mlx\n".utf8))
+            exit(2)
         }
 
         let suite: QASuite?
@@ -662,7 +678,9 @@ enum ProbeDiscussCLI {
         }
 
         let lowerGGUF = gguf.lowercased()
-        let isBonsai = lowerGGUF.contains("bonsai")
+        // --runtime mlx is Bonsai-only today, so the MLX path inherits the
+        // Bonsai sampling recipe even when --gguf points elsewhere.
+        let isBonsai = lowerGGUF.contains("bonsai") || runtime == "mlx"
         let isTernaryBonsai = isBonsai
             && (lowerGGUF.contains("ternary") || lowerGGUF.contains("q2_0"))
         let isLFM = lowerGGUF.contains("lfm")
@@ -688,7 +706,38 @@ enum ProbeDiscussCLI {
             }
             return nil
         }()
-        let provider = LlamaCppProvider(
+        let provider: any ModelProvider
+        let sessionModelID: String
+        // Report fields that only the llama.cpp runtime pins exactly.
+        // MLX has no fixed n_ctx (cache grows with the prompt) and no
+        // local file path pre-download, so these stay 0/"n/a" there.
+        var modelFileMB: Double = 0
+        var reportContextTokens = 0
+        var reportKVType = "n/a"
+        if runtime == "mlx" {
+            // The MLX side of the Bonsai A/B: same weights (Prism's official
+            // 1-bit pack, standard MLX affine quant bits=1/group=128), same
+            // ChatML template, same sampling profile — only the runtime
+            // differs. Weights download via HubClient on first load
+            // (~3.8 GB) into the shared HF cache.
+            sessionModelID = "bonsai-27b-q1-mlx"
+            provider = Gemma4Provider(
+                id: sessionModelID,
+                displayName: "Bonsai 27B (1-bit · MLX)",
+                huggingFaceRepo: mlxRepo,
+                approximateMemoryMB: 5900,
+                template: QwenChatMLTemplate(),
+                replyTokensFloor: 512,
+                samplingProfile: samplingProfile)
+            reportKVType = DeviceProfile.current.useQuantizedKVCache
+                ? "mlx-q4" : "mlx-fp16"
+            print("runtime: \(provider.displayName)"
+                + " · repo \(mlxRepo)"
+                + " · profile=\(DeviceProfile.current.label)"
+                + " · phone-mode=\(phoneMode ? "on" : "off")")
+        } else {
+            sessionModelID = modelID
+            let llamaProvider = LlamaCppProvider(
             id: modelID,
             displayName: isTernaryBonsai
                 ? "Bonsai 27B Ternary (2-bit · Metal · Mac)"
@@ -717,19 +766,23 @@ enum ProbeDiscussCLI {
             samplingProfile: samplingProfile,
             samplingSeed: samplingSeed,
             template: template)
-        let modelFileMB: Double = {
-            guard let attrs = try? FileManager.default.attributesOfItem(
-                atPath: gguf),
-                  let bytes = attrs[.size] as? NSNumber
-            else { return 0 }
-            return bytes.doubleValue / 1_048_576
-        }()
-        print("runtime: \(provider.displayName)"
-            + " · model \(String(format: "%.1f", modelFileMB)) MiB"
-            + " · n_ctx=\(provider.contextTokens)"
-            + " · kv=\(provider.kvCacheType.rawValue)"
-            + " · profile=\(DeviceProfile.current.label)"
-            + " · phone-mode=\(phoneMode ? "on" : "off")")
+            provider = llamaProvider
+            modelFileMB = {
+                guard let attrs = try? FileManager.default.attributesOfItem(
+                    atPath: gguf),
+                      let bytes = attrs[.size] as? NSNumber
+                else { return 0 }
+                return bytes.doubleValue / 1_048_576
+            }()
+            reportContextTokens = llamaProvider.contextTokens
+            reportKVType = llamaProvider.kvCacheType.rawValue
+            print("runtime: \(provider.displayName)"
+                + " · model \(String(format: "%.1f", modelFileMB)) MiB"
+                + " · n_ctx=\(llamaProvider.contextTokens)"
+                + " · kv=\(llamaProvider.kvCacheType.rawValue)"
+                + " · profile=\(DeviceProfile.current.label)"
+                + " · phone-mode=\(phoneMode ? "on" : "off")")
+        }
         if let samplingProfile {
             print(String(format: "sampling: temp %.2f · top-p %.2f · top-k %d · seed %u",
                          samplingProfile.temperature,
@@ -746,7 +799,7 @@ enum ProbeDiscussCLI {
         print(String(format: "model loaded in %.1fs\n", Date().timeIntervalSince(t0)))
 
         let session = ChatSession.forTesting(
-            providers: [provider], adapter: adapter, initialModelId: modelID,
+            providers: [provider], adapter: adapter, initialModelId: sessionModelID,
             discussionPreparationStrategy: preparationStrategy)
         // Match the app's two views of its open libraries. The adapter owns
         // the readers used by tools, while ChatSession.library carries source
@@ -966,8 +1019,8 @@ enum ProbeDiscussCLI {
                 gguf: gguf,
                 modelDisplayName: provider.displayName,
                 modelFileMB: modelFileMB,
-                contextTokens: provider.contextTokens,
-                kvCacheType: provider.kvCacheType.rawValue,
+                contextTokens: reportContextTokens,
+                kvCacheType: reportKVType,
                 deviceProfile: DeviceProfile.current.label,
                 phoneMode: phoneMode,
                 ramBudgetMB: ramBudgetMB > 0 ? ramBudgetMB : nil,

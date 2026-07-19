@@ -58,6 +58,60 @@ public struct GenerationSamplingProfile: Sendable {
     }
 }
 
+/// Uniform per-generate timing/memory record, populated by every provider
+/// with the SAME field semantics so cross-runtime A/Bs (llama.cpp GGUF vs
+/// MLX, same weights) can be read straight out of the logs or scripted.
+/// One record per `generate()` call; `ChatSession` mirrors it into a
+/// single `[Perf]` debug line per iteration.
+public struct GenerationStats: Sendable, Equatable {
+    /// "llamacpp" | "mlx" | "applefm" — the runtime, not the model.
+    public var runtime: String
+    public var modelID: String
+    public var promptTokens: Int
+    /// Prompt tokens satisfied from the previous turn's KV cache (0 on a
+    /// full prefill). The headline cross-runtime asymmetry for Bonsai:
+    /// llama.cpp keeps the prefix; MLX hybrid caches force re-prefill.
+    public var reusedTokens: Int
+    public var prefillSeconds: Double
+    public var ttftSeconds: Double
+    public var outputTokens: Int
+    /// Steady-state decode rate (excludes the first token).
+    public var decodeTokensPerSecond: Double
+    public var totalSeconds: Double
+    public var peakFootprintMB: Double
+    public var stopReason: String
+
+    public init(
+        runtime: String, modelID: String, promptTokens: Int,
+        reusedTokens: Int, prefillSeconds: Double, ttftSeconds: Double,
+        outputTokens: Int, decodeTokensPerSecond: Double,
+        totalSeconds: Double, peakFootprintMB: Double, stopReason: String
+    ) {
+        self.runtime = runtime
+        self.modelID = modelID
+        self.promptTokens = promptTokens
+        self.reusedTokens = reusedTokens
+        self.prefillSeconds = prefillSeconds
+        self.ttftSeconds = ttftSeconds
+        self.outputTokens = outputTokens
+        self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.totalSeconds = totalSeconds
+        self.peakFootprintMB = peakFootprintMB
+        self.stopReason = stopReason
+    }
+
+    /// The one-line rendering both the debug pane and the A/B harness use.
+    public var summaryLine: String {
+        String(format:
+            "runtime=%@ model=%@ prompt=%dtok reused=%d prefill=%.3fs " +
+            "ttft=%.3fs out=%dtok decode=%.2ftok/s total=%.3fs " +
+            "footprint=%.0fMB stop=%@",
+            runtime, modelID, promptTokens, reusedTokens, prefillSeconds,
+            ttftSeconds, outputTokens, decodeTokensPerSecond, totalSeconds,
+            peakFootprintMB, stopReason)
+    }
+}
+
 public enum ModelLoadState: Equatable, Sendable {
     case notLoaded
     case downloading(Double)        // progress 0...1
@@ -73,6 +127,12 @@ public protocol ModelProvider: AnyObject, Sendable {
     var displayName: String { get }
     var approximateMemoryMB: Int { get }    // for the UI memory warning.
     var supportsToolCalls: Bool { get }
+
+    /// Stats for the most recent completed `generate()`, nil before the
+    /// first call or on providers that don't measure. Read by ChatSession
+    /// right after a generation finishes (same actor context as the
+    /// stream consumer, so no torn reads in practice).
+    var lastGenerationStats: GenerationStats? { get }
 
     /// Model-family-specific prompt + tool-call template. Drives every
     /// tool-surface detail that differs across LLM families — Gemma 4's
@@ -121,6 +181,9 @@ public extension ModelProvider {
     /// exercise the text-loop tool surface, so the template is
     /// effectively unused.
     var template: any ModelTemplate { Gemma4Template() }
+
+    /// Providers that don't instrument (Mock, Apple FM) report nothing.
+    var lastGenerationStats: GenerationStats? { nil }
 
     /// Generic fallback template — `<|role|>\n…` blocks, ending on an open
     /// assistant turn. Providers with a native template should override.

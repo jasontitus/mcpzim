@@ -132,6 +132,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     /// without an attached Xcode console.
     public var debugSink: (@Sendable (String) -> Void)?
 
+    /// Uniform cross-runtime stats for the last completed generate().
+    /// Written at the same point as the `perf complete` log line.
+    public private(set) var lastGenerationStats: GenerationStats?
+
     // MARK: - Init
 
     public init(
@@ -1176,6 +1180,15 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             requestFinished - requestStarted, stopReason,
             Self.thermalStateLabel(), memoryFinished,
             memoryFinished - memoryStarted))
+        lastGenerationStats = GenerationStats(
+            runtime: "llamacpp", modelID: id,
+            promptTokens: tokens.count, reusedTokens: lcp,
+            prefillSeconds: prefillSeconds, ttftSeconds: ttft,
+            outputTokens: sampledTokens,
+            decodeTokensPerSecond: steadyDecodeRate,
+            totalSeconds: requestFinished - requestStarted,
+            peakFootprintMB: max(prefillMemory, memoryFinished),
+            stopReason: stopReason)
         log.notice("generate: \(newTokens) new tokens")
     }
 
