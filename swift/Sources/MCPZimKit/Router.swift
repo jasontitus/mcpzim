@@ -39,8 +39,9 @@ public struct Route: Sendable {
 /// Driving-time A* search.
 ///
 /// - Cost of a single edge (seconds) = `distance_m / (speed_kmh / 3.6)`.
-/// - Admissible heuristic assumes no road is faster than 100 km/h, giving
-///   `haversine / (100/3.6)`.
+/// - Admissible heuristic assumes no road is faster than the graph's true
+///   max edge speed (capped at the JS viewer's 100 km/h), giving
+///   `haversine / (ceiling/3.6)`.
 public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
     if origin == goal {
         return Route(
@@ -57,7 +58,9 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
 
     let goalLat = graph.lat[goal]
     let goalLon = graph.lon[goal]
-    let speedCeilingMps = 100.0 / 3.6
+    // Tighter ceiling on slow (city) graphs = stronger h = fewer pops;
+    // still admissible because no edge is faster than the graph max.
+    let speedCeilingMps = min(100.0, max(1.0, graph.maxSpeedKmh)) / 3.6
 
     func heuristic(_ node: Int) -> Double {
         haversineMeters(graph.lat[node], graph.lon[node], goalLat, goalLon) / speedCeilingMps
@@ -76,7 +79,7 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
     gScore[origin] = 0
     var open = MinHeap<QueueItem>()
     var counter = 0
-    open.push(QueueItem(f: heuristic(origin), tiebreaker: counter, node: origin))
+    open.push(QueueItem(f: heuristic(origin), g: 0, tiebreaker: counter, node: origin))
     counter += 1
 
     while let current = open.pop() {
@@ -88,7 +91,7 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
         }
         let curG = gScore[current.node]
         // Guard against stale entries left in the heap after a better path was found.
-        if curG < current.f - heuristic(current.node) - 1e-9 { continue }
+        if current.g > curG { continue }
 
         let start = Int(graph.adjOffsets[current.node])
         let end = Int(graph.adjOffsets[current.node + 1])
@@ -102,7 +105,7 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
                 gScore[target] = tentative
                 cameFromPrev[target] = Int32(current.node)
                 cameFromEdge[target] = Int32(e)
-                open.push(QueueItem(f: tentative + heuristic(target), tiebreaker: counter, node: target))
+                open.push(QueueItem(f: tentative + heuristic(target), g: tentative, tiebreaker: counter, node: target))
                 counter += 1
             }
         }
@@ -199,8 +202,9 @@ public func nearestNodeSpatial(index: SZCIIndex, lat: Double, lon: Double) -> In
     var i = 0
     let n = nodes.count
     while i + 1 < n {
-        let dlat = Double(nodes[i] - latE7)
-        let dlon = Double(nodes[i + 1] - lonE7)
+        // Int64: an Int32 diff traps on antimeridian-spanning data (>214.7°).
+        let dlat = Double(Int64(nodes[i]) - Int64(latE7))
+        let dlon = Double(Int64(nodes[i + 1]) - Int64(lonE7))
         let d = dlat * dlat + dlon * dlon
         if d < bestDist { bestDist = d; best = i / 2 }
         i += 2
@@ -247,7 +251,7 @@ func aStarSpatial(
     var closed = Set<Int>()
     var open = MinHeap<QueueItem>()
     var counter = 0
-    open.push(QueueItem(f: heur(origin), tiebreaker: counter, node: origin)); counter += 1
+    open.push(QueueItem(f: heur(origin), g: 0, tiebreaker: counter, node: origin)); counter += 1
     var pops = 0
 
     while let item = open.pop() {
@@ -256,8 +260,10 @@ func aStarSpatial(
         if pops > popLimit { return nil }
         if current == goal { break }
         if closed.contains(current) { continue }
-        closed.insert(current)
         let curG = gScore[current] ?? .infinity
+        // Stale entry — a better path to this node was relaxed after the push.
+        if item.g > curG { continue }
+        closed.insert(current)
         let edges: [SpatialEdge]
         do { edges = try await graph.edgesOfNode(current) } catch { return nil }
         for e in edges {
@@ -275,7 +281,7 @@ func aStarSpatial(
                 let c = coord(target)
                 let h = haversineMeters(c.lat, c.lon, goalC.lat, goalC.lon)
                     / speedCeil * greedyWeight
-                open.push(QueueItem(f: tentative + h, tiebreaker: counter, node: target))
+                open.push(QueueItem(f: tentative + h, g: tentative, tiebreaker: counter, node: target))
                 counter += 1
             }
         }
@@ -355,6 +361,9 @@ private func distSq(_ a: (lat: Double, lon: Double), _ b: (lat: Double, lon: Dou
 
 private struct QueueItem: Comparable {
     let f: Double
+    /// g at push time — lets the pop loop detect stale entries exactly
+    /// (`item.g > gScore[node]`) without recomputing the heuristic.
+    let g: Double
     let tiebreaker: Int
     let node: Int
 

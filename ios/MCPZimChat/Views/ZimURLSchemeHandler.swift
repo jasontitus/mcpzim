@@ -24,9 +24,44 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
     private let lookup: Lookup
     private let log: Log
 
+    /// libzim reads block on cluster decompression (tens of ms for a
+    /// large entry). `start` arrives on the main thread — right when a
+    /// mid-generation map open fans out dozens of tile/glyph requests —
+    /// so the lookup+read runs here and only the `WKURLSchemeTask`
+    /// callbacks hop back to main (WebKit requires task methods on the
+    /// thread `start` arrived on). Concurrent: `ZimReader`
+    /// implementations are documented thread-safe, so parallel tile
+    /// decompresses are fine.
+    private let readQueue = DispatchQueue(
+        label: "org.mcpzim.ZimURLSchemeHandler.read",
+        qos: .utility,
+        attributes: .concurrent
+    )
+
+    /// Tasks whose `stop` arrived while their read was still in flight.
+    /// WebKit raises if any `WKURLSchemeTask` method is called after
+    /// `webView(_:stop:)`, so the completion re-checks (and consumes)
+    /// membership before touching the task. Both `stop` and the
+    /// completion run on the main thread, so plain mutation is safe.
+    /// Keyed by `ObjectIdentifier` so finished tasks aren't retained.
+    private var stoppedTasks = Set<ObjectIdentifier>()
+
+    /// Aggregated GET counter — a single map open issues ~40 resource
+    /// requests, and logging each one costs a debug-pane line plus a
+    /// log-file append exactly while tiles decode. Log the first
+    /// request and every 25th after that. Main-thread only (`start`
+    /// always arrives there). 404s and font aliases still log per-hit —
+    /// they're rare and high-signal.
+    private var requestCount = 0
+
     init(lookup: @escaping Lookup, log: @escaping Log = { _ in }) {
         self.lookup = lookup
         self.log = log
+    }
+
+    private enum ReadOutcome {
+        case success(HTTPURLResponse, Data)
+        case failure(Error)
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
@@ -47,8 +82,43 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
                 userInfo: [NSLocalizedDescriptionKey: "ZIM '\(zimName)' not loaded"]))
             return
         }
-        log("GET \(entryPath) from \(zimName)")
+        requestCount += 1
+        if requestCount == 1 || requestCount.isMultiple(of: 25) {
+            log("GET #\(requestCount) \(entryPath) from \(zimName)")
+        }
 
+        let log = self.log
+        readQueue.async { [weak self] in
+            let outcome = Self.performRead(
+                reader: reader, zimName: zimName, entryPath: entryPath,
+                url: url, log: log)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Stopped while the read was in flight — WebKit forbids
+                // any further task callbacks. Consume the marker so the
+                // set stays bounded (one completion per start).
+                if self.stoppedTasks.remove(ObjectIdentifier(urlSchemeTask)) != nil {
+                    return
+                }
+                switch outcome {
+                case .success(let response, let data):
+                    urlSchemeTask.didReceive(response)
+                    urlSchemeTask.didReceive(data)
+                    urlSchemeTask.didFinish()
+                case .failure(let error):
+                    urlSchemeTask.didFailWithError(error)
+                }
+            }
+        }
+    }
+
+    private static func performRead(
+        reader: any ZimReader,
+        zimName: String,
+        entryPath: String,
+        url: URL,
+        log: Log
+    ) -> ReadOutcome {
         do {
             var entry = try reader.read(path: entryPath)
             // Font-glyph fallback. MapLibre requests glyphs at the
@@ -78,10 +148,9 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
             }
             guard let entry else {
                 log("404 entry '\(entryPath)' not in '\(zimName)'")
-                urlSchemeTask.didFailWithError(NSError(
+                return .failure(NSError(
                     domain: "ZimURLSchemeHandler", code: 404,
                     userInfo: [NSLocalizedDescriptionKey: "entry '\(entryPath)' not in '\(zimName)'"]))
-                return
             }
             let mime = entry.mimetype.isEmpty ? "application/octet-stream" : entry.mimetype
             let response = HTTPURLResponse(
@@ -98,16 +167,16 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
                     "Access-Control-Allow-Origin": "*",
                 ]
             )!
-            urlSchemeTask.didReceive(response)
-            urlSchemeTask.didReceive(entry.content)
-            urlSchemeTask.didFinish()
+            return .success(response, entry.content)
         } catch {
-            urlSchemeTask.didFailWithError(error)
+            return .failure(error)
         }
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        // No per-task cancellation state to unwind; libzim reads are
-        // synchronous on the caller's queue.
+        // The read for this task may still be in flight on `readQueue`;
+        // record the stop (main thread, same as the completion hop) so
+        // the completion never touches the task afterwards.
+        stoppedTasks.insert(ObjectIdentifier(urlSchemeTask))
     }
 }

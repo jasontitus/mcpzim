@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from .library import OpenZim
 
 log = logging.getLogger(__name__)
+
+# Small LRU of parsed articles: fetch + BS4 parse dominate get_article latency,
+# and agents commonly re-read the same page within a session.
+_ARTICLE_CACHE_MAX = 32
+_article_cache: OrderedDict[tuple[str, str], "Article"] = OrderedDict()
+_article_cache_lock = threading.Lock()
 
 
 _WS_RUN = re.compile(r"[ \t]+")
@@ -154,6 +162,13 @@ def _resolve_entry(archive, entry):
 
 def fetch_article(zim: OpenZim, path: str) -> Article | None:
     """Fetch an entry by path. HTML entries are converted to plain text."""
+    cache_key = (str(zim.path), path)
+    with _article_cache_lock:
+        cached = _article_cache.get(cache_key)
+        if cached is not None:
+            _article_cache.move_to_end(cache_key)
+            return cached
+
     archive = zim.archive
     with zim.lock:
         try:
@@ -176,7 +191,7 @@ def fetch_article(zim: OpenZim, path: str) -> Article | None:
     else:
         text = f"[binary content: {mime}, {len(raw)} bytes]"
 
-    return Article(
+    article = Article(
         zim=zim.path.name,
         path=getattr(item, "path", path),
         title=getattr(entry, "title", path),
@@ -184,6 +199,12 @@ def fetch_article(zim: OpenZim, path: str) -> Article | None:
         text=text,
         html_bytes=len(raw),
     )
+    with _article_cache_lock:
+        _article_cache[cache_key] = article
+        _article_cache.move_to_end(cache_key)
+        while len(_article_cache) > _ARTICLE_CACHE_MAX:
+            _article_cache.popitem(last=False)
+    return article
 
 
 def fetch_main_page(zim: OpenZim) -> Article | None:
@@ -225,9 +246,27 @@ class SearchHit:
         return self.__dict__.copy()
 
 
+# One Xapian Searcher per archive — constructing one opens the full-text index,
+# so reuse it across calls. All use is serialised by the per-ZIM lock.
+_searchers: dict[str, object] = {}
+_searchers_lock = threading.Lock()
+
+
+def _searcher_for(zim: OpenZim):
+    from libzim.search import Searcher
+
+    key = str(zim.path)
+    with _searchers_lock:
+        searcher = _searchers.get(key)
+        if searcher is None:
+            searcher = Searcher(zim.archive)
+            _searchers[key] = searcher
+    return searcher
+
+
 def search_zim(zim: OpenZim, query: str, limit: int) -> list[SearchHit]:
     """Run a full-text (or title-prefix) search against a single ZIM."""
-    from libzim.search import Query, Searcher
+    from libzim.search import Query
     from libzim.suggestion import SuggestionSearcher
 
     hits: list[SearchHit] = []
@@ -235,7 +274,7 @@ def search_zim(zim: OpenZim, query: str, limit: int) -> list[SearchHit]:
     with zim.lock:
         if getattr(archive, "has_fulltext_index", False):
             try:
-                search = Searcher(archive).search(Query().set_query(query))
+                search = _searcher_for(zim).search(Query().set_query(query))
                 total = int(search.getEstimatedMatches())
                 for path in search.getResults(0, min(limit, total)):
                     hits.append(_hit_for(zim, path, query))

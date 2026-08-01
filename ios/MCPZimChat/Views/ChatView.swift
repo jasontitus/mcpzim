@@ -20,6 +20,30 @@ struct ChatView: View {
     /// lands on the bottom regardless of which row is currently last.
     private let chatBottomAnchorId = "mcpzim-chat-bottom"
 
+    /// Snapshot of every signal that should pin the chat to the bottom.
+    /// Watching only `last?.text` missed: (a) appending a fresh assistant
+    /// message placeholder (text still ""), (b) new tool-call traces
+    /// arriving on an existing assistant row, (c) the ThinkingIndicator
+    /// appearing/disappearing, (d) `isGenerating` transitions that resize
+    /// neighbouring rows.
+    private struct ScrollSignal: Equatable {
+        var messageCount: Int
+        var lastText: String?
+        var lastToolCallCount: Int?
+        var isGenerating: Bool
+        var showThinking: Bool
+    }
+
+    private var scrollSignal: ScrollSignal {
+        ScrollSignal(
+            messageCount: session.messages.count,
+            lastText: session.messages.last?.text,
+            lastToolCallCount: session.messages.last?.toolCalls.count,
+            isGenerating: session.isGenerating,
+            showThinking: showThinkingIndicator
+        )
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
         // Dispatch to the next runloop — when the caller just mutated
         // `session.messages` or toggled `showThinkingIndicator`,
@@ -50,8 +74,21 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if session.messages.isEmpty { emptyState }
+                        // Compute the latest-assistant / last-message ids
+                        // once per pass and hand them to each row as stored
+                        // `let`s. If every row read `session.messages`
+                        // itself, all instantiated assistant rows would
+                        // re-run `body` on each 10 Hz streaming push
+                        // instead of just the streaming one.
+                        let latestAssistantId = session.messages
+                            .last(where: { $0.role == .assistant })?.id
+                        let lastMessageId = session.messages.last?.id
                         ForEach(session.messages) { m in
-                            MessageRow(message: m).id(m.id)
+                            MessageRow(
+                                message: m,
+                                isLatestAssistant: m.id == latestAssistantId,
+                                isLastMessage: m.id == lastMessageId
+                            ).id(m.id)
                         }
                         // Claude-style "thinking" indicator. Shows
                         // while the session is generating and the
@@ -86,21 +123,20 @@ struct ChatView: View {
                 // so the debug pane + composer area become reachable
                 // without manually tapping "Done".
                 .scrollDismissesKeyboard(.immediately)
-                // Multi-signal auto-scroll — any of these should pin
-                // the view to the bottom. Watching only `last?.text`
-                // missed: (a) appending a fresh assistant message
-                // placeholder (text still ""), (b) new tool-call
-                // traces arriving on an existing assistant row, (c)
-                // the ThinkingIndicator appearing/disappearing, (d)
-                // `lastError` alerts / state transitions that resize
-                // neighbouring rows. Each trigger scrolls to the
-                // dedicated bottom anchor so layout changes above
-                // can't backscroll the visible content.
-                .onChange(of: session.messages.count)      { _, _ in scrollToBottom(proxy) }
-                .onChange(of: session.messages.last?.text) { _, _ in scrollToBottom(proxy) }
-                .onChange(of: session.messages.last?.toolCalls.count) { _, _ in scrollToBottom(proxy) }
-                .onChange(of: session.isGenerating)        { _, _ in scrollToBottom(proxy) }
-                .onChange(of: showThinkingIndicator)       { _, _ in scrollToBottom(proxy) }
+                // Multi-signal auto-scroll — any change in the signal
+                // snapshot pins the view to the bottom anchor so layout
+                // changes above can't backscroll the visible content.
+                // One watcher on the combined snapshot (instead of five
+                // stacked `onChange`s) means a tick that moves several
+                // signals at once — new message + trace + indicator
+                // flip — schedules a single scroll, not three. While
+                // generating the scroll is non-animated: the text
+                // signal fires at 10 Hz, and ten interrupted ease-out
+                // animations per second forced a re-layout down to the
+                // bottom anchor on every push.
+                .onChange(of: scrollSignal) { _, _ in
+                    scrollToBottom(proxy, animated: !session.isGenerating)
+                }
                 .onAppear { scrollToBottom(proxy, animated: false) }
             }
             if !showVoiceChat { composer }
@@ -357,6 +393,15 @@ struct ChatView: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    /// Precomputed in `ChatView`'s ForEach so this row never reads
+    /// `session.messages` — an `@Observable` property rewritten at
+    /// 10 Hz during streaming, which would re-run every instantiated
+    /// row's `body` per push instead of just the streaming one.
+    let isLatestAssistant: Bool
+    /// True when this row is the very last message in the transcript
+    /// (assistant or otherwise) — used to suppress the elapsed label
+    /// on the still-streaming bubble.
+    let isLastMessage: Bool
     @Environment(ChatSession.self) private var session
     @State private var justCopied = false
 
@@ -400,14 +445,12 @@ private struct MessageRow: View {
             // long session. Restrict the inline webview to the newest
             // assistant message — older ones collapse to a static
             // "Open map" chip that full-screens on demand.
-            let isLatestAssistant: Bool = session
-                .messages.last(where: { $0.role == .assistant })?.id == message.id
             VStack(alignment: .leading, spacing: 6) {
                 // Map first — feels natural for routing answers, and
                 // the streaming text grows downward below it instead
                 // of pushing the map around as new sentences arrive.
                 ForEach(message.toolCalls) { trace in
-                    if traceHasRoute(trace) {
+                    if TraceKindCache.hasRoute(trace) {
                         if isLatestAssistant {
                             RouteWebView(trace: trace)
                         } else {
@@ -417,7 +460,7 @@ private struct MessageRow: View {
                                 // the full RouteWebView state anyway.
                             }
                         }
-                    } else if traceHasPlaces(trace) {
+                    } else if TraceKindCache.hasPlaces(trace) {
                         // Nearby-tool results carry a list of geocoded
                         // places — render them as pins on the map with
                         // a coverage-radius ring so the user sees the
@@ -447,7 +490,7 @@ private struct MessageRow: View {
                 let displayed = Self.displayText(message.text, role: .assistant)
                 if !displayed.isEmpty {
                     ZStack(alignment: .topTrailing) {
-                        bubble(fill: Color.gray.opacity(0.15))
+                        bubble(fill: Color.gray.opacity(0.15), displayed: displayed)
                         copyButton.padding(6)
                     }
                 }
@@ -462,7 +505,7 @@ private struct MessageRow: View {
                 }
                 if let elapsed = message.elapsed,
                    !displayed.isEmpty,
-                   !session.isGenerating || message.id != session.messages.last?.id
+                   !session.isGenerating || !isLastMessage
                 {
                     Text(Self.formatElapsed(elapsed))
                         .font(.caption2.italic())
@@ -569,9 +612,12 @@ private struct MessageRow: View {
         return "\(source.kind.rawValue) · \(source.title)"
     }
 
+    /// `displayed` lets the assistant branch pass in the stripped text it
+    /// already computed, so a single body pass doesn't run the
+    /// `displayText` pipeline twice over the same string.
     @ViewBuilder
-    private func bubble(fill: Color) -> some View {
-        let displayed = Self.displayText(message.text, role: message.role)
+    private func bubble(fill: Color, displayed: String? = nil) -> some View {
+        let displayed = displayed ?? Self.displayText(message.text, role: message.role)
         Group {
             if message.role == .assistant {
                 MarkdownMessageText(source: displayed)
@@ -588,6 +634,30 @@ private struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
+    // Compiled once — `replacingOccurrences(options: .regularExpression)`
+    // and `range(of:options:.regularExpression)` recompile their ICU
+    // pattern on every call, and `displayText` runs 2–3× per row per
+    // streaming push.
+
+    /// Closed blocks (all the canonical spellings) — stripped wholesale.
+    private static let closedBlockRegexes: [NSRegularExpression] = [
+        #"<\|tool_call\|?>[\s\S]*?<tool_call\|>"#,
+        #"<tool_call>[\s\S]*?</tool_call>"#,
+        #"<\|tool_response\|?>[\s\S]*?<tool_response\|>"#,
+        // Reasoning the FT sometimes emits — strip closed <think>…</think>
+        // so it isn't shown (it's scrubbed from the final text anyway, but
+        // without this it flashes on screen mid-stream then redraws away).
+        #"<think>[\s\S]*?</think>"#,
+    ].map { try! NSRegularExpression(pattern: $0) }
+
+    /// Stray openers — everything from the first match to end-of-string
+    /// gets masked. Broad prefixes so a 4-byte token like "<|to" or
+    /// "<|tool_c" in-flight is also hidden.
+    private static let strayOpenerRegexes: [NSRegularExpression] = [
+        #"<\|?tool[_a-z]*"#,
+        #"<tool[_a-z]*"#,
+    ].map { try! NSRegularExpression(pattern: $0) }
+
     /// Strip leftover tool-call markup from the assistant's visible
     /// prose. The parser catches well-formed blocks, but during
     /// streaming we briefly see the half-emitted opener (e.g.
@@ -598,17 +668,11 @@ private struct MessageRow: View {
         guard role == .assistant else { return raw }
         var t = raw
         // Closed blocks (all the canonical spellings).
-        let closedPatterns = [
-            #"<\|tool_call\|?>[\s\S]*?<tool_call\|>"#,
-            #"<tool_call>[\s\S]*?</tool_call>"#,
-            #"<\|tool_response\|?>[\s\S]*?<tool_response\|>"#,
-            // Reasoning the FT sometimes emits — strip closed <think>…</think>
-            // so it isn't shown (it's scrubbed from the final text anyway, but
-            // without this it flashes on screen mid-stream then redraws away).
-            #"<think>[\s\S]*?</think>"#,
-        ]
-        for pat in closedPatterns {
-            t = t.replacingOccurrences(of: pat, with: "", options: .regularExpression)
+        for re in closedBlockRegexes {
+            let range = NSRange(t.startIndex..., in: t)
+            if re.firstMatch(in: t, range: range) != nil {
+                t = re.stringByReplacingMatches(in: t, range: range, withTemplate: "")
+            }
         }
         // Qwen 3.x may put the opening <think> in the prompt and generate
         // only `scratchpad</think>answer`. Do not display the scratchpad or
@@ -620,13 +684,13 @@ private struct MessageRow: View {
         // streaming this hides the partially-arrived tool-call until
         // the parser finishes; after parse the opener shouldn't remain,
         // but if the model went off-format we still don't show raw
-        // template text. Use a broad prefix so a 4-byte token like
-        // "<|to" or "<|tool_c" in-flight also gets masked.
-        if let r = t.range(of: #"<\|?tool[_a-z]*"#, options: .regularExpression) {
-            t = String(t[..<r.lowerBound])
-        }
-        if let r = t.range(of: #"<tool[_a-z]*"#, options: .regularExpression) {
-            t = String(t[..<r.lowerBound])
+        // template text.
+        for re in strayOpenerRegexes {
+            if let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+               let r = Range(m.range, in: t)
+            {
+                t = String(t[..<r.lowerBound])
+            }
         }
         // Unclosed <think> mid-stream: hide from the opener to end until the
         // closing tag arrives (then the closed pattern above strips the pair).
@@ -668,6 +732,40 @@ private func copyMessage(_ text: String) {
     #elseif canImport(UIKit)
     UIPasteboard.general.string = text
     #endif
+}
+
+/// Route/places classification JSON-parses the trace's full `rawResult`
+/// (10–100 KB for map-bearing traces). Traces are immutable after
+/// creation, so classify each id once and memoize — without this every
+/// `MessageRow.body` re-run during streaming re-parses the payload at
+/// 10 Hz. Main-actor only: called exclusively from `body`.
+@MainActor
+private enum TraceKindCache {
+    private static var route: [UUID: Bool] = [:]
+    private static var places: [UUID: Bool] = [:]
+
+    static func hasRoute(_ trace: ToolCallTrace) -> Bool {
+        if let hit = route[trace.id] { return hit }
+        let v = traceHasRoute(trace)
+        trimIfNeeded(&route)
+        route[trace.id] = v
+        return v
+    }
+
+    static func hasPlaces(_ trace: ToolCallTrace) -> Bool {
+        if let hit = places[trace.id] { return hit }
+        let v = traceHasPlaces(trace)
+        trimIfNeeded(&places)
+        places[trace.id] = v
+        return v
+    }
+
+    /// Traces are bounded per conversation but ids never repeat across
+    /// resets, so cap the map. A wholesale drop on the (rare) crossing
+    /// beats tracking LRU order for a dictionary of Bools.
+    private static func trimIfNeeded(_ cache: inout [UUID: Bool]) {
+        if cache.count >= 1024 { cache.removeAll(keepingCapacity: true) }
+    }
 }
 
 private struct ToolCallRow: View {

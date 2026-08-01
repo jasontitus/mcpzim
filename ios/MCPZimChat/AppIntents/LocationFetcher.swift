@@ -44,6 +44,12 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         // Configure once — these carry across app lifetime.
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // Without a distanceFilter every ~1 Hz fix fires the delegate at
+        // GPS-jitter resolution even when stationary — each callback fans
+        // out to currentLocation observers (map dot, preamble staleness
+        // checks). 25 m tracks real movement, not jitter, and matches the
+        // hundred-meter accuracy actually requested.
+        manager.distanceFilter = 25
         manager.pausesLocationUpdatesAutomatically = true
         manager.activityType = .other
         locLog.notice("LocationFetcher.shared created")
@@ -146,6 +152,14 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     }
 
     // MARK: - Internals
+
+    /// True when the user has explicitly denied/restricted location — a
+    /// fix can never arrive, so turn pipelines should skip their GPS wait
+    /// entirely instead of stalling to the timeout (PERFORMANCE_REVIEW.md D7).
+    static var isAuthorizationDenied: Bool {
+        let s = shared.manager.authorizationStatus
+        return s == .denied || s == .restricted
+    }
 
     private func startIfAuthorized() {
         let s = manager.authorizationStatus

@@ -18,9 +18,31 @@ struct HeroMediaView: View {
     let trace: ToolCallTrace
     @Environment(ChatSession.self) private var session
     @State private var presentFullscreen = false
+    /// Resolved off-body. The ZIM read + HTML scan used to run inside
+    /// `body` on the main actor on every pass (up to ~2 MB of HTML,
+    /// mid-generation); `.task(id:)` now resolves once per trace and
+    /// stores the result here.
+    @State private var resolution: Resolution = .pending
+
+    private enum Resolution: Equatable {
+        case pending
+        case resolved(Spec?)
+    }
 
     var body: some View {
-        if let spec = resolveSpec() {
+        switch resolution {
+        case .pending:
+            // Zero-height placeholder for the frame(s) before the
+            // resolve lands — `.task` needs a real view to attach to
+            // (modifiers on an absent conditional never fire).
+            Color.clear
+                .frame(height: 0)
+                .task(id: trace.id) {
+                    resolution = .resolved(await resolveSpec())
+                }
+        case .resolved(nil):
+            EmptyView()
+        case .resolved(let spec?):
             SmallWebMedia(spec: spec, session: session)
                 .frame(height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -63,7 +85,12 @@ struct HeroMediaView: View {
         let isVideo: Bool
     }
 
-    private func resolveSpec() -> Spec? {
+    /// Hero media sits at the top of Wikipedia/Kiwix article HTML —
+    /// scanning past the first 64 KB only finds body images we'd
+    /// reject anyway, and articles run to ~2 MB.
+    private static let heroScanBytes = 64 * 1024
+
+    private func resolveSpec() async -> Spec? {
         // Surface hero media for any article-fetching tool call
         // (including `get_article_section` which is the common path
         // when the model asks for the lead section). We parse the
@@ -90,10 +117,20 @@ struct HeroMediaView: View {
               })
         else { return nil }
 
-        guard let raw = try? entry.reader.read(path: path),
-              let html = String(data: raw.content, encoding: .utf8)
+        // The blocking libzim read + regex scans run off the main
+        // actor (`ZimReader` implementations are thread-safe). Lossy
+        // UTF-8 decode: truncating at a byte boundary can split a
+        // multi-byte sequence, which the strict initializer would
+        // reject wholesale.
+        let reader = entry.reader
+        let scanBytes = Self.heroScanBytes
+        guard let (src, caption, isVideo) = await Task.detached(priority: .utility, operation: {
+            () -> (src: String, caption: String, isVideo: Bool)? in
+            guard let raw = try? reader.read(path: path) else { return nil }
+            let html = String(decoding: raw.content.prefix(scanBytes), as: UTF8.self)
+            return Self.firstMedia(in: html)
+        }).value
         else { return nil }
-        guard let (src, caption, isVideo) = Self.firstMedia(in: html) else { return nil }
 
         let base = "zim://\(zim)/"
         let absolute: String
@@ -115,7 +152,7 @@ struct HeroMediaView: View {
     /// Very small regex scan for the first `<img>` or `<video>` tag.
     /// Returns the src, an optional caption (nearest `<figcaption>`),
     /// and whether the tag was a video.
-    private static func firstMedia(in html: String) -> (src: String, caption: String, isVideo: Bool)? {
+    private nonisolated static func firstMedia(in html: String) -> (src: String, caption: String, isVideo: Bool)? {
         // Try video first (less common, higher signal value).
         if let videoSrc = extractSrc(from: html, tag: "video") {
             return (videoSrc, extractCaption(from: html) ?? "", true)
@@ -126,7 +163,7 @@ struct HeroMediaView: View {
         return nil
     }
 
-    private static func extractSrc(from html: String, tag: String) -> String? {
+    private nonisolated static func extractSrc(from html: String, tag: String) -> String? {
         // Accept both `src="…"` and Wikipedia/Kiwix's lazy-load
         // variants (`data-src`, `srcset`). We scan tag-by-tag so we
         // can reject 1-pixel spacer images that Wikipedia uses for
@@ -148,7 +185,7 @@ struct HeroMediaView: View {
         return nil
     }
 
-    private static func firstAttribute(in tag: String, names: [String]) -> String? {
+    private nonisolated static func firstAttribute(in tag: String, names: [String]) -> String? {
         for name in names {
             let pattern = #"\b\#(name)\s*=\s*["']([^"']+)["']"#
             if let r = tag.range(of: pattern, options: .regularExpression) {
@@ -164,7 +201,7 @@ struct HeroMediaView: View {
         return nil
     }
 
-    private static func firstSrcsetURL(in tag: String) -> String? {
+    private nonisolated static func firstSrcsetURL(in tag: String) -> String? {
         guard let r = tag.range(of: #"\bsrcset\s*=\s*["']([^"']+)["']"#, options: .regularExpression)
         else { return nil }
         let attr = String(tag[r])
@@ -179,14 +216,14 @@ struct HeroMediaView: View {
 
     /// Reject 1-pixel transparent spacers Wikipedia uses for layout
     /// (they have `width="1"` or `height="1"` or a `spacer` class).
-    private static func isLikelySpacer(_ tag: String) -> Bool {
+    private nonisolated static func isLikelySpacer(_ tag: String) -> Bool {
         if tag.range(of: #"\bwidth\s*=\s*["']?1["']?"#, options: .regularExpression) != nil { return true }
         if tag.range(of: #"\bheight\s*=\s*["']?1["']?"#, options: .regularExpression) != nil { return true }
         if tag.contains("spacer") { return true }
         return false
     }
 
-    private static func extractCaption(from html: String) -> String? {
+    private nonisolated static func extractCaption(from html: String) -> String? {
         let pattern = #"<figcaption[^>]*>([\s\S]*?)</figcaption>"#
         guard let r = html.range(of: pattern, options: .regularExpression) else { return nil }
         var inner = String(html[r])

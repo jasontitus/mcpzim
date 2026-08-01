@@ -1127,8 +1127,27 @@ public final class ChatSession {
         }
     }
 
+    /// Coordinate frozen into the preamble for this conversation. The
+    /// preamble is the FIRST turn of the prompt, so any byte change there
+    /// invalidates the entire KV prefix — and the shipping hybrid models
+    /// can't partially truncate, so a moving user would pay a full 4–15 s
+    /// re-prefill EVERY turn if live GPS were interpolated directly
+    /// (PERFORMANCE_REVIEW.md A1). Refreshed only after real movement;
+    /// tool dispatch separately substitutes precise live coordinates via
+    /// `substituteCurrentLocation`, so the preamble never needed meter
+    /// precision.
+    private var preambleLocationSnapshot: (lat: Double, lon: Double)?
+    /// Set after a location wait times out with no fix; suppresses further
+    /// pre-turn GPS waits for the session (a late fix still flows in via
+    /// the normal delegate path and clears nothing — it just means future
+    /// waits are unnecessary anyway).
+    private var locationFixTimedOut = false
+    /// Movement past this distance re-freezes the preamble coordinate
+    /// (one deliberate re-prefill, matching the seed-reseed hysteresis).
+    private let preambleLocationRefreshMeters: Double = 300
+
     private func locationLineText() -> String {
-        guard let here = currentLocation else {
+        guard let live = currentLocation else {
             return """
 
             === Current location ===
@@ -1137,8 +1156,20 @@ public final class ChatSession {
             fix right now rather than guessing coordinates.
             """
         }
-        let latStr = String(format: "%.5f", here.lat)
-        let lonStr = String(format: "%.5f", here.lon)
+        let here: (lat: Double, lon: Double)
+        if let snap = preambleLocationSnapshot,
+           GeoMath.haversineMeters(snap.lat, snap.lon, live.lat, live.lon)
+               < preambleLocationRefreshMeters
+        {
+            here = snap
+        } else {
+            preambleLocationSnapshot = (live.lat, live.lon)
+            here = (live.lat, live.lon)
+        }
+        // %.3f ≈ 110 m — consistent with the hundred-meter accuracy the
+        // app actually requests from CoreLocation.
+        let latStr = String(format: "%.3f", here.lat)
+        let lonStr = String(format: "%.3f", here.lon)
         return """
 
         === Current location ===
@@ -1638,6 +1669,13 @@ public final class ChatSession {
         // exercises the new runtime instead of silently reopening the prior
         // LFM/Gemma choice. Subsequent launches and manual picker changes are
         // preserved normally.
+        // DEBUG-only: on TestFlight/App Store installs this would force a
+        // ~5.5 GB-peak model onto EVERY first launch — at or over the
+        // 6 GB jetsam line before TTS/WebKit overhead, and a much larger
+        // download than the shipping LFM2.5 default
+        // (PERFORMANCE_REVIEW.md H1). Release fresh installs fall back to
+        // lfm25_ft below; the dev phone keeps exercising Bonsai.
+        #if DEBUG
         let bonsaiSelectionMigrationKey = "chat.didSelectBonsai27B1BitV2"
         if !defaults.bool(forKey: bonsaiSelectionMigrationKey) {
             resolvedId = bonsai27b_1bit.id
@@ -1649,6 +1687,14 @@ public final class ChatSession {
             resolvedId = gemma3_4b_gguf_ft.id
         }
         self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? bonsai27b_1bit
+        #else
+        if crashesOnDevice.contains(savedId ?? "") {
+            resolvedId = gemma3_4b_gguf_ft.id
+        } else if savedId == gemma3_4b_gguf.id {
+            resolvedId = gemma3_4b_gguf_ft.id
+        }
+        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? lfm25_ft
+        #endif
         #else
         // Give the Mac app the same initial Bonsai operating point as the
         // phone. This one-time migration also moves existing development
@@ -2408,6 +2454,7 @@ public final class ChatSession {
         discussionState = nil
         lastDiscussionPreparationStats = nil
         groundedPromptCache = nil
+        preambleLocationSnapshot = nil
         focus.reset()
         pendingFactoidPredicate = nil
         recentlyOfferedThreadKeys.removeAll()
@@ -2508,7 +2555,14 @@ public final class ChatSession {
             // see a location sheet; nearest-place/directions questions do.
             // Waiting here also lets the deterministic near_places router see
             // the newly granted coordinate instead of falling into the LLM.
-            if complexity == .navigational, currentLocation == nil {
+            // Skip the wait entirely when a fix can never arrive: denied
+            // authorization, or a previous wait already timed out this
+            // session (airplane mode, no GPS) — otherwise every
+            // navigational turn stalls the full 4 s before prefill
+            // (PERFORMANCE_REVIEW.md D7).
+            if complexity == .navigational, currentLocation == nil,
+               !LocationFetcher.isAuthorizationDenied,
+               !locationFixTimedOut {
                 debug("location needed — requesting permission/fix after transcription",
                       category: "Location")
                 LocationFetcher.requestAuthorizationIfNeeded()
@@ -2518,7 +2572,8 @@ public final class ChatSession {
                     debug(String(format: "location ready: (%.5f, %.5f)",
                                  here.lat, here.lon), category: "Location")
                 } else {
-                    debug("location unavailable after 4s — continuing without it",
+                    locationFixTimedOut = true
+                    debug("location unavailable after 4s — continuing without it (and skipping future waits this session)",
                           category: "Location")
                 }
             }
@@ -2932,12 +2987,24 @@ public final class ChatSession {
         func turnsChars() -> Int {
             turns.reduce(systemMessage.count + 2048) { $0 + $1.text.count + 16 }
         }
-        while turnsChars() > charBudget {
-            let userIdxs = turns.indices.filter { turns[$0].role == .user }
-            // Keep at least the current exchange (last user turn onward).
-            guard userIdxs.count > 1 else { break }
-            turns.removeFirst(userIdxs[1])
-            debug("history window: token budget — dropped oldest exchange (\(turnsChars()) chars vs \(charBudget) budget)",
+        // Trim to a LOWER watermark in one step, mirroring the count-based
+        // path above. Trimming minimally (just under budget) means a session
+        // that reaches the budget slides the window start on EVERY
+        // subsequent turn — the prompt prefix diverges each time, and on
+        // hybrid models that means a full ~30k-token re-prefill every turn,
+        // forever (PERFORMANCE_REVIEW.md A3). Cutting to 75% buys several
+        // stable-prefix turns per trim.
+        if turnsChars() > charBudget {
+            let watermark = charBudget * 3 / 4
+            var dropped = 0
+            while turnsChars() > watermark {
+                let userIdxs = turns.indices.filter { turns[$0].role == .user }
+                // Keep at least the current exchange (last user turn onward).
+                guard userIdxs.count > 1 else { break }
+                turns.removeFirst(userIdxs[1])
+                dropped += 1
+            }
+            debug("history window: token budget — dropped \(dropped) oldest exchange(s) to watermark (\(turnsChars()) chars vs \(charBudget) budget)",
                   category: "Chat")
         }
 
@@ -3672,6 +3739,7 @@ public final class ChatSession {
     private func appendToAssistant(_ replacement: String) {
         if messages.last?.role == .assistant {
             let scrubbed = scrubReasoning(replacement)
+            recordRawEmissionIfScrubbed(raw: replacement, scrubbed: scrubbed)
             messages[messages.count - 1].text = scrubbed
             if !scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 activeQueryTelemetry?.markFirstResponse()
@@ -3682,10 +3750,24 @@ public final class ChatSession {
     private func updateAssistant(_ newText: String) {
         if messages.last?.role == .assistant {
             let scrubbed = scrubReasoning(newText)
+            recordRawEmissionIfScrubbed(raw: newText, scrubbed: scrubbed)
             messages[messages.count - 1].text = scrubbed
             if !scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 activeQueryTelemetry?.markFirstResponse()
             }
+        }
+    }
+
+    /// A2 (PERFORMANCE_REVIEW.md): whenever the display text diverges from
+    /// the model's emission (reasoning scrub here; offer/disambiguation
+    /// appendices at their own sites), keep the exact emission on the
+    /// message so the next prompt rebuild byte-matches the KV mirror.
+    /// Streaming pushes overwrite it, so the final push leaves the
+    /// complete raw reply in place.
+    private func recordRawEmissionIfScrubbed(raw: String, scrubbed: String) {
+        guard messages.last?.role == .assistant else { return }
+        if scrubbed != raw || messages[messages.count - 1].rawAssistantText != nil {
+            messages[messages.count - 1].rawAssistantText = raw
         }
     }
 
@@ -5272,6 +5354,11 @@ public final class ChatSession {
                             ? names[names.startIndex]
                             : names.dropLast().joined(separator: ", ")
                                 + " or \(names.last!)"
+                        // Keep the exact emission for prompt rebuilds — the
+                        // appendix was never generated (A2).
+                        if messages[idx].rawAssistantText == nil {
+                            messages[idx].rawAssistantText = messages[idx].text
+                        }
                         messages[idx].text +=
                             "\n\n(\"\(anchor)\" has other meanings too — say the word if you meant \(list).)"
                         focus.setLastList(
@@ -5645,6 +5732,13 @@ public final class ChatSession {
             || tail.contains("shall i") || tail.contains("tell you about")
             || tail.contains("i can tell you") {
             return
+        }
+        // Preserve the model's exact emission for prompt rebuilds BEFORE
+        // mutating the display text — the offer line and the whitespace trim
+        // below were never generated, and re-feeding them diverges the KV
+        // prefix at the last assistant reply (PERFORMANCE_REVIEW.md A2).
+        if messages[idx].rawAssistantText == nil {
+            messages[idx].rawAssistantText = messages[idx].text
         }
         messages[idx].text = text + "\n\n" + line
         // Remember what we offered so the next turn's line is fresh.

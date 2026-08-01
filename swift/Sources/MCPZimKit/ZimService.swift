@@ -126,6 +126,8 @@ public actor DefaultZimService: ZimService {
     private var spatialGraphs: [String: SpatialGraph] = [:]
     private var chunks: [String: [String: [[String: Any]]]] = [:]
     private var manifests: [String: [String: Int]] = [:]
+    /// zim → parsed category-index/manifest.json.
+    private var categoryManifests: [String: [String: Any]] = [:]
     /// zim → prefix → fan-out leaf chunk names (`manifest.sub_chunks`).
     private var subChunkMaps: [String: [String: [String]]] = [:]
     /// Cached streetzim bbox (minLat, minLon, maxLat, maxLon), loaded
@@ -242,10 +244,12 @@ public actor DefaultZimService: ZimService {
         var seen = Set<String>()
         let overfetch = max(limit * 2, 10)
         for pair in readers {
+            if results.count >= limit { break }
             if let wanted = kind, pair.reader.kind != wanted { continue }
             let titleHits = (try? pair.reader.searchTitles(
                 query: keywordQuery, limit: overfetch)) ?? []
             for h in titleHits {
+                if results.count >= limit { break }
                 if Self.isNoisePath(h.path) { continue }
                 let key = "\(pair.name)\t\(h.path)"
                 if seen.contains(key) { continue }
@@ -255,7 +259,6 @@ public actor DefaultZimService: ZimService {
                     zim: pair.name, kind: pair.reader.kind,
                     path: h.path, title: h.title, snippet: snippet
                 ))
-                if results.count >= limit { break }
             }
             for variant in variants {
                 if results.count >= limit { break }
@@ -1039,15 +1042,11 @@ public actor DefaultZimService: ZimService {
     // MARK: - Category-index helpers (streetzim ≥ a485ce3)
 
     private func loadCategoryManifest(pair: (name: String, reader: ZimReader)) -> [String: Any]? {
-        let cacheKey = "__cat_manifest__\(pair.name)"
-        if let cached = manifests[cacheKey] {
-            // Stored as a sentinel non-empty-only manifest just to cache
-            // "yes we tried once"; convert back by re-fetching contents.
-            _ = cached // unused, we re-read below; keeping the flag is cheap.
-        }
+        if let cached = categoryManifests[pair.name] { return cached }
         guard let entry = try? pair.reader.read(path: "category-index/manifest.json"),
               let json = try? JSONSerialization.jsonObject(with: entry.content) as? [String: Any]
         else { return nil }
+        categoryManifests[pair.name] = json
         return json
     }
 

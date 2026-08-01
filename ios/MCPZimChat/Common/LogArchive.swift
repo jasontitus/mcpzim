@@ -2,10 +2,11 @@
 //
 // Persistent rolling log archive. Every launch starts a new file in
 // `Documents/debug-logs/YYYY-MM-DD_HH-mm-ss.log` and streams each
-// `ChatSession.debug(...)` line into it. Crucially, the file is
-// written synchronously on each append — so when iOS jetsams or the
-// app crashes, the log up to the last line is already on disk for
-// post-mortem inspection.
+// `ChatSession.debug(...)` line into it. Appends are enqueued on a
+// serial queue (ordering preserved) and written asynchronously — the
+// caller never blocks on flash I/O. Once `write(2)` returns, the
+// kernel owns the bytes, so a jetsam / crash still leaves the log on
+// disk up to the last drained line for post-mortem inspection.
 //
 // LibraryView shows a "Past logs" list that reads this directory,
 // and each row shares via `UIActivityViewController` so the user can
@@ -55,7 +56,12 @@ public final class LogArchive: @unchecked Sendable {
     }
 
     public func append(_ line: String) {
-        queue.sync {
+        // Async on the same serial queue: ordering is preserved, but
+        // the caller (often the main thread, mid-generation) no longer
+        // blocks on a per-line flash write. Durability comes from the
+        // kernel holding the data after `write(2)`, not from making
+        // the caller wait for it.
+        queue.async { [self] in
             guard let handle, let data = (line + "\n").data(using: .utf8) else { return }
             try? handle.write(contentsOf: data)
         }

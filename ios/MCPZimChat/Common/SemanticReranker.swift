@@ -127,9 +127,22 @@ actor SemanticReranker {
         await loadIfNeeded()
         guard let embedding else { return nil }
         let capped = String(text.prefix(512))
+        // Bounded memo: drift-thread labels recur across turns by design,
+        // and each embed is a real transformer forward pass (~5–50 ms) —
+        // without this, up to 4 labels re-embed on EVERY turn before the
+        // suggestion chips can appear (PERFORMANCE_REVIEW.md E7).
+        if let hit = embedTextCache[capped] { return hit }
         guard let v = embed(capped, with: embedding) else { return nil }
-        return v.map(Float.init)
+        let vec = v.map(Float.init)
+        if embedTextCache.count >= 128 {
+            embedTextCache.removeAll(keepingCapacity: true)
+        }
+        embedTextCache[capped] = vec
+        return vec
     }
+
+    /// See `embedText` — small enough to flush wholesale rather than LRU.
+    private var embedTextCache: [String: [Float]] = [:]
 
     /// Mean-pool the token-level vectors `NLContextualEmbedding`
     /// returns into one sentence embedding.

@@ -72,9 +72,22 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
         self.finishedAt = finishedAt
     }
 
+    /// The assistant emission EXACTLY as the model produced it, before any
+    /// display-side mutation (thread-offer append, disambiguation appendix,
+    /// whitespace trim, map-reduce replacement). Prompt rebuilds must use
+    /// this: the provider's KV mirror holds the tokens actually generated,
+    /// so rebuilding from mutated display text diverges at the last
+    /// assistant reply and — on hybrid models that cannot partially
+    /// truncate — forces a full re-prefill every following turn
+    /// (PERFORMANCE_REVIEW.md A2). nil ⇒ `text` was never mutated.
+    public var rawAssistantText: String?
+
     /// Exact text inserted into the provider transcript. The UI and user
     /// history continue to expose only `text`.
     public var modelText: String {
+        if role == .assistant, let raw = rawAssistantText, !raw.isEmpty {
+            return raw
+        }
         guard role == .user,
               let modelContext,
               !modelContext.isEmpty

@@ -140,18 +140,22 @@ def _register_routing_tools(mcp: FastMCP, state: ServerState) -> None:
         dest_lat: float,
         dest_lon: float,
         zim: str | None = None,
+        include_polyline: bool = False,
     ) -> dict:
         """Compute a driving route between two lat/lon points.
 
         Uses the routing graph bundled inside a streetzim ZIM. Returns total
-        distance, estimated duration, a polyline, and a list of road segments
-        (consecutive edges sharing a street name are coalesced so the result
-        reads as turn-by-turn directions).
+        distance, estimated duration, and a list of road segments (consecutive
+        edges sharing a street name are coalesced so the result reads as
+        turn-by-turn directions).
 
         Args:
             origin_lat, origin_lon: starting coordinates (WGS84, decimal degrees).
             dest_lat, dest_lon: destination coordinates.
             zim: optional streetzim filename if you loaded more than one.
+            include_polyline: also return the full route polyline (can be
+                thousands of points; off by default — ``turn_by_turn`` and
+                ``roads`` already carry the useful signal).
         """
         target = state.find_streetzim(zim)
         if target is None:
@@ -160,7 +164,7 @@ def _register_routing_tools(mcp: FastMCP, state: ServerState) -> None:
         route = plan_route(target, graph, origin_lat, origin_lon, dest_lat, dest_lon)
         if route is None:
             raise RuntimeError("no route found between the supplied coordinates")
-        return {"zim": target.path.name, **route.to_dict()}
+        return {"zim": target.path.name, **route.to_dict(include_polyline=include_polyline)}
 
     @mcp.tool()
     def geocode(query: str, limit: int = 5, zim: str | None = None, kinds: list[str] | None = None) -> dict:
@@ -186,14 +190,20 @@ def _register_routing_tools(mcp: FastMCP, state: ServerState) -> None:
         }
 
     @mcp.tool()
-    def route_from_places(origin: str, destination: str, zim: str | None = None) -> dict:
+    def route_from_places(
+        origin: str,
+        destination: str,
+        zim: str | None = None,
+        include_polyline: bool = False,
+    ) -> dict:
         """Plan a driving route between two free-text place names.
 
         Convenience wrapper that calls ``geocode`` on each string, picks the
         top match, then runs the same A* search as ``plan_driving_route``.
         Raises an error if either query is ambiguous (no match) — in that case
         call ``geocode`` yourself and pick the correct result, then use
-        ``plan_driving_route``.
+        ``plan_driving_route``. Pass ``include_polyline=True`` to also get the
+        full route polyline (off by default; it can be thousands of points).
         """
         target = state.find_streetzim(zim)
         if target is None:
@@ -209,7 +219,7 @@ def _register_routing_tools(mcp: FastMCP, state: ServerState) -> None:
         route = plan_route(target, graph, ohits[0].lat, ohits[0].lon, dhits[0].lat, dhits[0].lon)
         if route is None:
             raise RuntimeError("no route found between the resolved places")
-        resp = route.to_dict()
+        resp = route.to_dict(include_polyline=include_polyline)
         resp["origin_resolved"] = ohits[0].to_dict()
         resp["destination_resolved"] = dhits[0].to_dict()
         resp["zim"] = target.path.name

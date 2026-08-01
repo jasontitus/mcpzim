@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 
 EARTH_R_M = 6_371_000.0
-_SPEED_CEILING_KMH = 100.0  # heuristic assumes no edge is faster than this.
+_SPEED_CEILING_KMH = 100.0  # heuristic fallback for graphs with no usable speeds.
 _NO_GEOM = 0xFFFFFF
 
 
@@ -70,6 +70,9 @@ class Graph:
     edge_name_idx: list[int]    # 0 for unnamed
     names: list[str]            # names[0] == "" (sentinel)
     geoms: list[list[tuple[float, float]]]  # polyline as (lat, lon) pairs
+    # Fastest edge in the graph; the A* heuristic divides by this, so it must be
+    # >= every edge speed to stay admissible (speeds decode from a full byte).
+    max_speed_kmh: float = _SPEED_CEILING_KMH
 
     @classmethod
     def parse(cls, blob: bytes) -> "Graph":
@@ -140,6 +143,7 @@ class Graph:
             edge_name_idx=edge_name_idx,
             names=names,
             geoms=geoms,
+            max_speed_kmh=float(max(edge_speed_kmh, default=0) or _SPEED_CEILING_KMH),
         )
 
     @staticmethod
@@ -169,12 +173,20 @@ class Graph:
         return self.names[idx]
 
     def nearest_node(self, lat: float, lon: float) -> int:
-        """Linear scan for the closest node by haversine distance."""
-        # Haversine everywhere — cheap enough for the scale of city/state graphs.
+        """Linear scan for the closest node by equirectangular squared distance.
+
+        Same argmin as haversine at graph scales (the cos(lat) correction is
+        hoisted out once), but no trig or sqrt inside the loop.
+        """
         best_i = -1
         best_d = math.inf
+        cos_lat = math.cos(math.radians(lat))
+        lats = self.lat
+        lons = self.lon
         for i in range(self.num_nodes):
-            d = haversine_m(lat, lon, self.lat[i], self.lon[i])
+            dlat = lats[i] - lat
+            dlon = (lons[i] - lon) * cos_lat
+            d = dlat * dlat + dlon * dlon
             if d < best_d:
                 best_d = d
                 best_i = i
@@ -208,8 +220,8 @@ class Route:
     roads: list[RoadSegment]
     polyline: list[tuple[float, float]]  # (lat, lon) vertices
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, *, include_polyline: bool = True) -> dict:
+        d = {
             "origin": {"lat": self.origin[0], "lon": self.origin[1]},
             "destination": {"lat": self.destination[0], "lon": self.destination[1]},
             "origin_node": self.origin_node,
@@ -219,17 +231,19 @@ class Route:
             "duration_s": round(self.duration_s, 1),
             "duration_min": round(self.duration_s / 60.0, 1),
             "roads": [r.to_dict() for r in self.roads],
-            "polyline": [[round(lat, 7), round(lon, 7)] for lat, lon in self.polyline],
             "turn_by_turn": [
                 f"{r.name or '(unnamed road)'} for {r.distance_m / 1000:.2f} km"
                 f" (~{r.duration_s / 60:.1f} min)"
                 for r in self.roads
             ],
         }
+        if include_polyline:
+            d["polyline"] = [[round(lat, 7), round(lon, 7)] for lat, lon in self.polyline]
+        return d
 
 
 def astar(graph: Graph, origin: int, goal: int) -> Route | None:
-    """Shortest travel-time path using A* with a haversine / 100 km/h heuristic."""
+    """Shortest travel-time path using A* with a haversine / max-edge-speed heuristic."""
     if origin == goal:
         return Route(
             origin=(graph.lat[origin], graph.lon[origin]),
@@ -244,16 +258,16 @@ def astar(graph: Graph, origin: int, goal: int) -> Route | None:
 
     goal_lat = graph.lat[goal]
     goal_lon = graph.lon[goal]
+    # Admissible ceiling: no edge in this graph is faster than max_speed_kmh.
+    speed_ceiling_mps = graph.max_speed_kmh / 3.6
 
     def h(node: int) -> float:
-        return haversine_m(graph.lat[node], graph.lon[node], goal_lat, goal_lon) / (
-            _SPEED_CEILING_KMH / 3.6
-        )
+        return haversine_m(graph.lat[node], graph.lon[node], goal_lat, goal_lon) / speed_ceiling_mps
 
     came_from: dict[int, tuple[int, int]] = {}  # node -> (prev, edge_idx)
     g_score: dict[int, float] = {origin: 0.0}
-    open_heap: list[tuple[float, int, int]] = []
-    heapq.heappush(open_heap, (h(origin), 0, origin))
+    open_heap: list[tuple[float, int, int, float]] = []
+    heapq.heappush(open_heap, (h(origin), 0, origin, 0.0))
     counter = 1
 
     adj = graph.adj_offsets
@@ -262,10 +276,11 @@ def astar(graph: Graph, origin: int, goal: int) -> Route | None:
     speeds = graph.edge_speed_kmh
 
     while open_heap:
-        _, _, current = heapq.heappop(open_heap)
+        _, _, current, cur_g = heapq.heappop(open_heap)
+        if cur_g > g_score.get(current, math.inf):
+            continue  # stale entry — a better path to ``current`` was pushed later.
         if current == goal:
             return _reconstruct_route(graph, origin, goal, came_from)
-        cur_g = g_score[current]
         for e in range(adj[current], adj[current + 1]):
             speed = speeds[e] or 1  # guard — never divide by zero.
             cost = dists[e] * 3.6 / speed
@@ -274,7 +289,7 @@ def astar(graph: Graph, origin: int, goal: int) -> Route | None:
             if tentative < g_score.get(neigh, math.inf):
                 g_score[neigh] = tentative
                 came_from[neigh] = (current, e)
-                heapq.heappush(open_heap, (tentative + h(neigh), counter, neigh))
+                heapq.heappush(open_heap, (tentative + h(neigh), counter, neigh, tentative))
                 counter += 1
     return None
 

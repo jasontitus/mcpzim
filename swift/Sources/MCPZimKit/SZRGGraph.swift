@@ -65,6 +65,9 @@ public struct SZRGGraph: Sendable {
     public let edgeNameIdx: [UInt32]
     public let names: [String]
     public let geoms: [[(lat: Double, lon: Double)]]
+    /// Fastest edge speed in the graph, computed once at parse. Lets the
+    /// A* heuristic use a tight admissible ceiling on slow city graphs.
+    public let maxSpeedKmh: Double
 
     public var numNodes: Int { lat.count }
     public var numEdges: Int { edgeTargets.count }
@@ -280,7 +283,8 @@ public struct SZRGGraph: Sendable {
                 edgeGeomIdx: edgeGeomIdx,
                 edgeNameIdx: edgeNameIdx,
                 names: names,
-                geoms: geoms
+                geoms: geoms,
+                maxSpeedKmh: Double(edgeSpeedKmh.max() ?? 0)
             )
         }
     }

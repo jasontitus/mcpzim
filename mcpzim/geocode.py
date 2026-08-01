@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from .library import OpenZim
@@ -20,6 +21,7 @@ from .library import OpenZim
 log = logging.getLogger(__name__)
 
 _PREFIX_CLEAN = re.compile(r"[^a-z0-9_]")
+_CHUNK_CACHE_MAX = 64  # parsed prefix chunks kept resident, LRU-evicted.
 
 
 @dataclass
@@ -75,7 +77,7 @@ class Geocoder:
     """Per-ZIM cache of loaded search chunks."""
 
     def __init__(self) -> None:
-        self._chunks: dict[tuple[str, str], list[dict]] = {}
+        self._chunks: OrderedDict[tuple[str, str], list[dict]] = OrderedDict()
         self._manifests: dict[str, dict | None] = {}
         self._lock = threading.Lock()
 
@@ -95,11 +97,15 @@ class Geocoder:
         with self._lock:
             cached = self._chunks.get(key)
             if cached is not None:
+                self._chunks.move_to_end(key)
                 return cached
         data = _read_json(zim, f"search-data/{prefix}.json")
         records = data if isinstance(data, list) else []
         with self._lock:
-            self._chunks.setdefault(key, records)
+            records = self._chunks.setdefault(key, records)
+            self._chunks.move_to_end(key)
+            while len(self._chunks) > _CHUNK_CACHE_MAX:
+                self._chunks.popitem(last=False)
         return records
 
     def search(
