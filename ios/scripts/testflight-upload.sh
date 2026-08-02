@@ -203,6 +203,20 @@ else
   echo "testflight: archive unsigned by design — distribution signing + validation happen at export/upload"
 fi
 
+# Prebuilt binary frameworks (Firebase/GoogleAppMeasurement…) come out of an
+# unsigned archive with AD-HOC linker signatures. -exportArchive treats
+# anything signed as already handled and skips them — and App Store
+# validation rejects ad-hoc ("Invalid Signature … not properly signed",
+# real capture 2026-08-02). Stripping needs NO identity/keychain; export
+# then re-signs every framework with the distribution cert like the app.
+FRAMEWORKS_DIR="$ARCHIVED_APP/Frameworks"
+if [[ -d "$FRAMEWORKS_DIR" ]]; then
+  while IFS= read -r -d '' fw; do
+    /usr/bin/codesign --remove-signature "$fw" 2>/dev/null || true
+  done < <(find "$FRAMEWORKS_DIR" -maxdepth 1 \( -name "*.framework" -o -name "*.dylib" \) -print0)
+  echo "testflight: stripped ad-hoc signatures from embedded frameworks for export re-sign"
+fi
+
 echo "testflight: uploading Zimfo $MARKETING_VERSION ($BUILD_NUMBER)"
 run_xcodebuild \
   -exportArchive \
