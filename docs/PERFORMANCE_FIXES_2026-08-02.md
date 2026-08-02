@@ -10,10 +10,16 @@ need on-device verification.
 
 Verification: `pytest` 41 green plus a fuzz harness for the new
 `nearest_node` grid (500 random queries vs brute force, 0 mismatches;
-warm query 0.076 ms vs 54 ms linear on 500k nodes). Swift changes were
-applied in this cloud session without a Swift toolchain — **run
-`swift test` + the Mac/iOS builds before merging**; every Swift edit was
-kept mechanical for that reason.
+warm query 0.076 ms vs 54 ms linear on 500k nodes). MCPZimKit's full
+test suite — **437 tests, 0 failures** — was run in-session on a Linux
+Swift 5.10.1 toolchain against a scratch copy with four Darwin-only
+corners shimmed (no-op `os.Logger`, pure-Swift SHA-256 verified against
+hashlib, pass-through `autoreleasepool`, `MemoryStats` → 0; plus a
+`canImport(Darwin)` guard around `Gemma4ToolFormat`'s CFBoolean check).
+The shims touch no logic this pass changed. Still to run on a Mac
+before merging: the iOS/macOS app builds and the Kokoro / mlx-swift-lm
+package builds (they need Xcode + Metal/MLX, which no Linux environment
+can provide).
 
 ## Bugs (unbounded growth / leak class)
 
