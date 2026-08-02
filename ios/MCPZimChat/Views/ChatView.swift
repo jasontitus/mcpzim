@@ -475,8 +475,17 @@ private struct MessageRow: View {
                         // article — full fetch, section pull, or
                         // section list — is a signal that the
                         // article is load-bearing for the reply.
-                        // Surface its hero image / video.
-                        HeroMediaView(trace: trace)
+                        // Surface its hero image / video — but ONLY on
+                        // the newest assistant message: HeroMediaView
+                        // mounts a live WKWebView per spec, and
+                        // scrolling back through a session with N
+                        // article traces resurrected N webviews — the
+                        // same jetsam blowup the route/places guards
+                        // above exist to prevent. Older messages
+                        // simply collapse the hero.
+                        if isLatestAssistant {
+                            HeroMediaView(trace: trace)
+                        }
                     }
                 }
                 // Skip the assistant bubble entirely while there's no
@@ -664,8 +673,31 @@ private struct MessageRow: View {
     /// `<|tool_call>call:search{query:<|"|>pizza`) before the closing
     /// sentinel arrives. Nuke anything from the first opener to the
     /// end of the string so the chat never flashes raw template text.
+    /// Tiny FIFO memo over the strip pipeline: during streaming the
+    /// thinking-indicator check and the row body both render the SAME
+    /// growing text at ~10 Hz, so without this the full multi-regex
+    /// pipeline ran twice per UI push on the main thread. Keyed by
+    /// (hash, count) — a collision would only produce a cosmetic glitch.
+    @MainActor
+    private static var displayTextMemo: [(hash: Int, count: Int, value: String)] = []
+
+    @MainActor
     fileprivate static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
         guard role == .assistant else { return raw }
+        let hash = raw.hashValue
+        let count = raw.count
+        if let hit = displayTextMemo.first(where: { $0.hash == hash && $0.count == count }) {
+            return hit.value
+        }
+        let value = computeDisplayText(raw)
+        displayTextMemo.append((hash, count, value))
+        if displayTextMemo.count > 16 {
+            displayTextMemo.removeFirst(displayTextMemo.count - 16)
+        }
+        return value
+    }
+
+    private static func computeDisplayText(_ raw: String) -> String {
         var t = raw
         // Closed blocks (all the canonical spellings).
         for re in closedBlockRegexes {

@@ -661,9 +661,12 @@ public class Idefics3: Module, VLMModel, KVCacheDimensionProvider {
         }
 
         let inputs_embeds = languageModel.getEmbeddings(for: inputIds)
+        // false: only the pooler output is consumed — `true` made the
+        // encoder collect all ~13 per-layer hidden states per image
+        // prefill just to drop them here.
         let (pooler_output, _, _) = visionModel(
             pixelValues,
-            outputHiddenStates: true
+            outputHiddenStates: false
         )
         // Match dtype with inputs_embeds
         let image_features = connector(

@@ -77,19 +77,27 @@ public actor ZimfoContext {
     public var activeRoute: ActiveRoute? { _activeRoute }
     public var lastLocation: ActiveRoute.Coordinate? { _lastLocation }
 
+    /// Monotonic change counter for `activeRoute`. Lets extensions (which
+    /// cannot add stored properties) memoize shapes derived from the
+    /// route — e.g. the MCP `RouteSnapshot` with its polyline copy —
+    /// without this file importing their frameworks.
+    public private(set) var routeVersion: UInt64 = 0
+
     public func setActiveRoute(_ route: ActiveRoute) {
         _activeRoute = route
-        persist()
+        routeVersion &+= 1
+        persistRoute()
     }
 
     public func clearActiveRoute() {
         _activeRoute = nil
-        persist()
+        routeVersion &+= 1
+        persistRoute()
     }
 
     public func updateLastLocation(_ coord: ActiveRoute.Coordinate) {
         _lastLocation = coord
-        persist()
+        persistLocation()
     }
 
     // MARK: - Disk
@@ -112,14 +120,42 @@ public actor ZimfoContext {
     }
 
     private static func load(from url: URL) -> Snapshot? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Snapshot.self, from: data)
+        var snap: Snapshot?
+        if let data = try? Data(contentsOf: url) {
+            snap = try? JSONDecoder().decode(Snapshot.self, from: data)
+        }
+        // The coordinate-only sidecar (see `persistLocation`) is written on
+        // every location update, so when present it is at least as fresh as
+        // the combined snapshot's copy. Old installs simply lack the file.
+        if let data = try? Data(contentsOf: Self.locationURL(for: url)),
+           let coord = try? JSONDecoder().decode(ActiveRoute.Coordinate.self, from: data)
+        {
+            var merged = snap ?? Snapshot(activeRoute: nil, lastLocation: nil)
+            merged.lastLocation = coord
+            snap = merged
+        }
+        return snap
     }
 
-    private func persist() {
+    private static func locationURL(for storeURL: URL) -> URL {
+        storeURL.deletingPathExtension().appendingPathExtension("location.json")
+    }
+
+    /// Route writes re-encode the full snapshot (polyline can be thousands
+    /// of points) but only happen on set/clear. Location updates land on
+    /// every "how much longer?" / "what's around here?" intent, so they go
+    /// to a tiny sidecar file instead of re-serialising the whole route
+    /// for a one-field change.
+    private func persistRoute() {
         let snap = Snapshot(activeRoute: _activeRoute, lastLocation: _lastLocation)
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? data.write(to: storeURL, options: [.atomic])
+    }
+
+    private func persistLocation() {
+        guard let coord = _lastLocation,
+              let data = try? JSONEncoder().encode(coord) else { return }
+        try? data.write(to: Self.locationURL(for: storeURL), options: [.atomic])
     }
 }
 
@@ -139,10 +175,16 @@ public enum RouteProgress {
 
         // Find nearest polyline vertex (good enough for car-scale routes —
         // a finer snap-to-segment approximation barely moves the answer).
+        // Argmin only, so equirectangular squared distance with the fixed
+        // origin's cos hoisted — no per-vertex trig (mirrors
+        // RouteSnapshot.remaining in MCPZimKit).
         var bestIdx = 0
         var bestD = Double.infinity
+        let cosLat = cos(current.lat * .pi / 180)
         for (i, p) in route.polyline.enumerated() {
-            let d = haversineMetersApprox(current.lat, current.lon, p.lat, p.lon)
+            let dLat = p.lat - current.lat
+            let dLon = (p.lon - current.lon) * cosLat
+            let d = dLat * dLat + dLon * dLon
             if d < bestD { bestD = d; bestIdx = i }
         }
         let covered = bestIdx < route.cumulativeDistanceMeters.count

@@ -883,7 +883,13 @@ final class EvalHarness {
         let session = ChatSession.forTesting(
             providers: [provider], adapter: adapter, initialModelId: v.id
         )
-        session.maxDebugEntries = 20_000
+        // 2k, not the old 20k: the ring survives resetConversation() and
+        // accumulated across every scenario of a variant run, holding tens
+        // of MB of log strings that the memory probe then attributed to
+        // the run — in a harness whose whole point is measuring peak RSS.
+        // Per-turn scans only read `suffix(40)` and the since-mark window,
+        // both far under 2k.
+        session.maxDebugEntries = 2_000
         try await provider.load()
         await probe.sample("post_load")
 

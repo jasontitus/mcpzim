@@ -587,7 +587,7 @@ public enum ReferenceResolver {
     }
 
     private static func firstMatch(_ text: String, pattern: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        guard let re = RegexCache.shared.compiled(pattern) else { return nil }
         let range = NSRange(text.startIndex..., in: text)
         guard let m = re.firstMatch(in: text, range: range), m.numberOfRanges >= 2,
               let r = Range(m.range(at: 1), in: text) else { return nil }

@@ -769,10 +769,24 @@ public final class VoiceChatController {
         var firstTextAt: Date?
         var queuedFirstChunk = false
         var memoryDeferralLogged = false
+        // sanitizeForSpeech runs several regex passes over the ENTIRE
+        // growing reply; at the 75 ms poll cadence most polls see
+        // unchanged text (UI pushes are throttled to 10 Hz and decode is
+        // slower still), so re-sanitize only when the raw text changed.
+        // Length is a sufficient change signal here: streaming appends,
+        // and the display-side scrubs that rewrite text always change
+        // the length too.
+        var lastRawCount = -1
+        var lastSanitized = ""
 
         while !Task.isCancelled {
             guard idx < session.messages.count else { break }
-            let full = Self.sanitizeForSpeech(session.messages[idx].text)
+            let raw = session.messages[idx].text
+            if raw.count != lastRawCount {
+                lastSanitized = Self.sanitizeForSpeech(raw)
+                lastRawCount = raw.count
+            }
+            let full = lastSanitized
             if full.count > spokenUpTo {
                 if !full.isEmpty {
                     sawAnyText = true

@@ -16,7 +16,19 @@ import UIKit
 #endif
 
 struct PastLogsView: View {
-    @State private var files: [URL] = []
+    @State private var files: [LogArchive.LogFileInfo] = []
+
+    /// Shared formatters: building a DateFormatter (and ByteCountFormatter)
+    /// per row per body pass was the classic per-row-formatter jank; the
+    /// row metadata now also comes prefetched from `allFileInfos()` instead
+    /// of two extra `resourceValues` stats per row.
+    private static let dateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .short
+        df.timeStyle = .medium
+        return df
+    }()
+    private static let sizeFormatter = ByteCountFormatter()
 
     var body: some View {
         List {
@@ -25,22 +37,22 @@ struct PastLogsView: View {
                     .foregroundStyle(.secondary)
                     .font(.footnote)
             }
-            ForEach(files, id: \.self) { url in
+            ForEach(files, id: \.url) { info in
                 NavigationLink {
-                    LogDetailView(url: url)
+                    LogDetailView(url: info.url)
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(url.lastPathComponent)
+                        Text(info.url.lastPathComponent)
                             .font(.body.monospaced())
                             .lineLimit(1)
-                        Text("\(formattedDate(url)) · \(formattedSize(url))")
+                        Text("\(Self.dateFormatter.string(from: info.modified)) · \(Self.sizeFormatter.string(fromByteCount: info.sizeBytes))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
-                        LogArchive.shared.delete(url)
+                        LogArchive.shared.delete(info.url)
                         reload()
                     } label: {
                         Label("Delete", systemImage: "trash")
@@ -64,18 +76,7 @@ struct PastLogsView: View {
     }
 
     private func reload() {
-        files = LogArchive.shared.allFiles()
-    }
-
-    private func formattedDate(_ url: URL) -> String {
-        let df = DateFormatter()
-        df.dateStyle = .short
-        df.timeStyle = .medium
-        return df.string(from: LogArchive.shared.modificationDate(url))
-    }
-
-    private func formattedSize(_ url: URL) -> String {
-        ByteCountFormatter().string(fromByteCount: LogArchive.shared.fileSize(url))
+        files = LogArchive.shared.allFileInfos()
     }
 }
 

@@ -155,8 +155,14 @@ public enum MediaProcessing {
     /// - Parameters:
     ///   - image: The image to convert
     ///   - colorSpace: Optional color space for rendering
+    ///   - clearCache: Whether to clear the shared CIContext caches after
+    ///     rendering. Video paths pass `false` per frame (clearing per
+    ///     frame defeats GPU/texture cache reuse across a sequence) and
+    ///     clear once when the whole sequence is done.
     /// - Returns: The MLXArray representation of the image
-    public static func asMLXArray(_ image: CIImage, colorSpace: CGColorSpace? = nil) -> MLXArray {
+    public static func asMLXArray(
+        _ image: CIImage, colorSpace: CGColorSpace? = nil, clearCache: Bool = true
+    ) -> MLXArray {
         let size = image.extent.size
         let w = Int(size.width.rounded())
         let h = Int(size.height.rounded())
@@ -173,7 +179,9 @@ public enum MediaProcessing {
             context.render(
                 image, toBitmap: ptr.baseAddress!, rowBytes: bytesPerRow, bounds: image.extent,
                 format: format, colorSpace: colorSpace)
-            context.clearCaches()
+            if clearCache {
+                context.clearCaches()
+            }
         }
 
         var array = MLXArray(data, [h, w, 4], type: Float32.self)
@@ -446,7 +454,10 @@ public enum MediaProcessing {
             }
         }
 
-        let framesAsArrays = ciImages.map { $0.asMLXArray() }
+        // Per-frame renders keep the CIContext caches warm; clear once for
+        // the whole sequence instead of after every frame.
+        let framesAsArrays = ciImages.map { $0.asMLXArray(clearCache: false) }
+        context.clearCaches()
         return ProcessedFrames(
             frames: framesAsArrays,
             timestamps: timestamps,
@@ -512,7 +523,10 @@ public enum MediaProcessing {
             }
         }
 
-        let framesAsArrays = ciImages.map { $0.asMLXArray() }
+        // Per-frame renders keep the CIContext caches warm; clear once for
+        // the whole sequence instead of after every frame.
+        let framesAsArrays = ciImages.map { $0.asMLXArray(clearCache: false) }
+        context.clearCaches()
         return ProcessedFrames(
             frames: framesAsArrays,
             timestamps: timestamps,
@@ -556,7 +570,7 @@ extension CIImage {
         MediaProcessing.padToSquare(self, backgroundColor: color)
     }
 
-    public func asMLXArray(colorSpace: CGColorSpace? = nil) -> MLXArray {
-        return MediaProcessing.asMLXArray(self, colorSpace: colorSpace)
+    public func asMLXArray(colorSpace: CGColorSpace? = nil, clearCache: Bool = true) -> MLXArray {
+        return MediaProcessing.asMLXArray(self, colorSpace: colorSpace, clearCache: clearCache)
     }
 }

@@ -253,6 +253,12 @@ func aStarSpatial(
     var counter = 0
     open.push(QueueItem(f: heur(origin), g: 0, tiebreaker: counter, node: origin)); counter += 1
     var pops = 0
+    // One-cell memo: pops cluster spatially, so most expansions live in
+    // the cell of the previous pop. Walking the cell's flat stride-5 edge
+    // array directly skips the per-expansion actor hop + [SpatialEdge]
+    // materialisation that used to run up to popLimit times per route.
+    var cachedCid = Int.min
+    var cachedCell: SZRCCell?
 
     while let item = open.pop() {
         let current = item.node
@@ -264,20 +270,29 @@ func aStarSpatial(
         // Stale entry — a better path to this node was relaxed after the push.
         if item.g > curG { continue }
         closed.insert(current)
-        let edges: [SpatialEdge]
-        do { edges = try await graph.edgesOfNode(current) } catch { return nil }
-        for e in edges {
-            let target = Int(e.target)
+        guard let cid = index.cellForNode(current) else { continue }
+        if cid != cachedCid {
+            do { cachedCell = try await graph.cell(containingNode: current) } catch { return nil }
+            cachedCid = cid
+        }
+        guard let cell = cachedCell,
+              let local = cell.localIdx(for: UInt32(current)) else { continue }
+        let eStart = Int(cell.cellAdj[local])
+        let eEnd = Int(cell.cellAdj[local + 1])
+        for ei in eStart..<eEnd {
+            let base = ei * 5
+            let target = Int(cell.edges[base])
             if closed.contains(target) { continue }
-            let speed = Double(e.speedKmh)
+            let speedDist = cell.edges[base + 1]
+            let speed = Double((speedDist >> 24) & 0xFF)
             if speed == 0 { continue }
-            let cost = e.distanceMeters * 3.6 / speed
+            let cost = (Double(speedDist & 0x00FF_FFFF) / 10.0) * 3.6 / speed
             let tentative = curG + cost
             if tentative < (gScore[target] ?? .infinity) {
                 gScore[target] = tentative
                 prevEdge[target] = SpatialPrevEdge(
-                    source: current, speedDist: e.speedDist,
-                    geomLocal: e.geomLocal, nameIdx: e.nameIdx)
+                    source: current, speedDist: speedDist,
+                    geomLocal: cell.edges[base + 2], nameIdx: cell.edges[base + 3])
                 let c = coord(target)
                 let h = haversineMeters(c.lat, c.lon, goalC.lat, goalC.lon)
                     / speedCeil * greedyWeight

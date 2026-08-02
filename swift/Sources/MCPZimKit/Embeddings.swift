@@ -197,12 +197,22 @@ public actor EmbeddingIndex {
     ) -> [Hit] {
         guard k > 0 else { return [] }
         let q = VectorMath.normalized(query)
-        let scored = entries.compactMap { e -> Hit? in
-            if excluding.contains(e.key) { return nil }
-            return Hit(key: e.key, title: e.title,
-                       score: VectorMath.dot(q, e.vector))
+        // Bounded top-k selection: keep a small descending buffer instead of
+        // materialising + sorting a Hit for every entry (k is tiny — a
+        // handful — while entries can reach maxEntries) on the per-follow-up
+        // recall path.
+        var top: [Hit] = []
+        top.reserveCapacity(k + 1)
+        for e in entries {
+            if excluding.contains(e.key) { continue }
+            let score = VectorMath.dot(q, e.vector)
+            if top.count == k, score <= top[top.count - 1].score { continue }
+            let hit = Hit(key: e.key, title: e.title, score: score)
+            let idx = top.firstIndex { $0.score < score } ?? top.count
+            top.insert(hit, at: idx)
+            if top.count > k { top.removeLast() }
         }
-        return Array(scored.sorted { $0.score > $1.score }.prefix(k))
+        return top
     }
 
     /// The normalised centroid of the given keys — the "gist" of everything
@@ -218,8 +228,9 @@ public actor EmbeddingIndex {
     /// a global kNN. Missing keys are simply absent from the result.
     public func scores(for keys: [String], against query: [Float]) -> [String: Float] {
         let q = VectorMath.normalized(query)
+        let wanted = Set(keys)
         var out: [String: Float] = [:]
-        for e in entries where keys.contains(e.key) {
+        for e in entries where wanted.contains(e.key) {
             out[e.key] = VectorMath.dot(q, e.vector)
         }
         return out

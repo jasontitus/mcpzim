@@ -349,23 +349,23 @@ public struct Gemma3Template: ModelTemplate {
     /// double commas, trailing commas, whitespace-wedged strings, doubled
     /// opening quotes, and brace-balance clip recovery.
     private static func repairJSON(_ s: String) -> String {
-        var out = s
-        while out.contains(",,") {
-            out = out.replacingOccurrences(of: ",,", with: ",")
-        }
-        out = out.replacingOccurrences(
-            of: #",\s*([}\]])"#, with: "$1", options: .regularExpression
-        )
-        out = out.replacingOccurrences(
-            of: #""\s+"(?=[^"\s,\]\}])"#, with: "\"", options: .regularExpression
-        )
-        out = out.replacingOccurrences(
-            of: #"([{,])\s*""(?=[A-Za-z_])"#, with: "$1\"", options: .regularExpression
-        )
+        // Patterns compiled once via RegexCache — this runs per tool-call
+        // parse attempt. `,{2,}` collapses any comma run in a single pass
+        // (the old `while contains(",,")` rescanned the string per pass).
+        var out = replaceAll(s, #",{2,}"#, with: ",")
+        out = replaceAll(out, #",\s*([}\]])"#, with: "$1")
+        out = replaceAll(out, #""\s+"(?=[^"\s,\]\}])"#, with: "\"")
+        out = replaceAll(out, #"([{,])\s*""(?=[A-Za-z_])"#, with: "$1\"")
         let opens = out.filter { $0 == "{" }.count
         let closes = out.filter { $0 == "}" }.count
         if opens > closes { out += String(repeating: "}", count: opens - closes) }
         return out
+    }
+
+    private static func replaceAll(_ s: String, _ pattern: String, with template: String) -> String {
+        guard let re = RegexCache.shared.compiled(pattern) else { return s }
+        return re.stringByReplacingMatches(
+            in: s, range: NSRange(s.startIndex..., in: s), withTemplate: template)
     }
 
     private static func toolJSONLine(_ t: ModelToolDeclaration) -> String {

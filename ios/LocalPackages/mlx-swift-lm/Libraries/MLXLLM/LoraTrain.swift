@@ -17,6 +17,12 @@ struct LoRABatchIterator: Sequence, IteratorProtocol {
 
     var indices: [Int]
     var index = 0
+    /// Lazily-filled token cache parallel to `dataset`. Shuffling only
+    /// reorders indices, so without this every epoch re-tokenized the
+    /// same strings — tokenization being the dominant CPU cost of LoRA
+    /// training, that was O(datasetSize × epochs) work for O(datasetSize)
+    /// distinct inputs.
+    var tokenCache: [[Int]?]
 
     public init(dataset: [String], tokenizer: Tokenizer, batchSize: Int, train: Bool) {
         self.dataset = dataset
@@ -25,9 +31,19 @@ struct LoRABatchIterator: Sequence, IteratorProtocol {
         self.train = train
 
         self.indices = Array(0 ..< dataset.count)
+        self.tokenCache = Array(repeating: nil, count: dataset.count)
         if train {
             indices.shuffle()
         }
+    }
+
+    private mutating func tokens(at datasetIndex: Int) -> [Int] {
+        if let cached = tokenCache[datasetIndex] {
+            return cached
+        }
+        let encoded = tokenizer.encode(text: dataset[datasetIndex])
+        tokenCache[datasetIndex] = encoded
+        return encoded
     }
 
     mutating public func next() -> (MLXArray, MLXArray, MLXArray)? {
@@ -42,8 +58,11 @@ struct LoRABatchIterator: Sequence, IteratorProtocol {
 
         let endIndex = Swift.min(index + batchSize, indices.count)
 
-        let batch = (index ..< endIndex)
-            .map { tokenizer.encode(text: dataset[indices[$0]]) }
+        var batch: [[Int]] = []
+        batch.reserveCapacity(endIndex - index)
+        for i in index ..< endIndex {
+            batch.append(tokens(at: indices[i]))
+        }
         let lengths = batch.map { $0.count }
         let maxLength = lengths.max() ?? 0
 

@@ -39,29 +39,24 @@ public enum WiredMemoryUtils {
         guard count > 0 else { return [] }
 
         let pad = tokenizer.eosTokenId ?? tokenizer.unknownTokenId ?? 0
-        var tokens: [Int] = []
 
-        var chunk = seedText
-        while tokens.count < count {
-            let newTokens = tokenizer.encode(text: chunk)
-            if newTokens.isEmpty {
-                tokens.append(pad)
-            } else {
-                tokens.append(contentsOf: newTokens)
-            }
-            if tokens.count < count {
-                chunk += seedText
-            }
+        // Encode the seed ONCE and tile the resulting ids — the old loop
+        // re-encoded an ever-growing repeated-seed string per iteration,
+        // spending tokenizer work proportional to the full requested
+        // length on filler whose only requirement is being valid tokens.
+        let seedTokens = tokenizer.encode(text: seedText)
+        guard !seedTokens.isEmpty else {
+            return Array(repeating: pad, count: count)
         }
 
+        var tokens: [Int] = []
+        tokens.reserveCapacity(count + seedTokens.count)
+        while tokens.count < count {
+            tokens.append(contentsOf: seedTokens)
+        }
         if tokens.count > count {
             tokens = Array(tokens.prefix(count))
         }
-
-        if tokens.count < count {
-            tokens.append(contentsOf: repeatElement(pad, count: count - tokens.count))
-        }
-
         return tokens
     }
 

@@ -1218,7 +1218,7 @@ public enum IntentRouter {
     /// capture-less patterns because `numberOfRanges < 2`, so it's
     /// unsuitable here.
     private static func matches(_ text: String, pattern: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let regex = RegexCache.shared.compiled(pattern, options: []) else {
             return false
         }
         let range = NSRange(text.startIndex..., in: text)
@@ -1229,8 +1229,8 @@ public enum IntentRouter {
     /// full-match range). `NSRegularExpression` verbatim with a
     /// `nil`-to-`Substring[]` adapter.
     private static func match(_ text: String, pattern: String) -> [String]? {
-        guard let regex = try? NSRegularExpression(
-            pattern: pattern, options: [.caseInsensitive]
+        guard let regex = RegexCache.shared.compiled(
+            pattern, options: [.caseInsensitive]
         ) else {
             return nil
         }

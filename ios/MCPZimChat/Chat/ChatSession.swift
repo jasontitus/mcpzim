@@ -389,9 +389,21 @@ public final class ChatSession {
         let entry = DebugEntry(timestamp: Date(), category: category, message: decorated)
         debugEntries.append(entry)
         if debugEntries.count > maxDebugEntries {
-            debugEntries.removeFirst(debugEntries.count - maxDebugEntries)
+            // Bulk-drop with slack: removeFirst(k) shifts the whole array,
+            // so trimming one row per call re-copied ~maxDebugEntries
+            // elements on every debug() once the ring filled. Dropping a
+            // chunk below the cap makes the shift run 1/slack as often;
+            // nothing user-visible reads the oldest rows.
+            let slack = min(63, maxDebugEntries / 8)
+            debugEntries.removeFirst(debugEntries.count - (maxDebugEntries - slack))
         }
+        // `print` is synchronous stdout on the @MainActor hot path (every
+        // tool dispatch + generation stage) and only reaches a console
+        // when Xcode is attached — Release builds get the same line via
+        // os_log + LogArchive below.
+        #if DEBUG
         print("[\(category)] \(decorated)")
+        #endif
         // OSLog so idevicesyslog / Console.app can see these lines too.
         // print() only lands in Xcode's console when attached, which
         // we aren't when the app crashes/hangs on-device.
@@ -422,6 +434,10 @@ public final class ChatSession {
     /// origin. Refreshed lazily on each new turn.
     public var currentLocation: (lat: Double, lon: Double)? = nil
     @ObservationIgnored private var lastLocationFetch: Date = .distantPast
+    /// Token for the LocationFetcher subscription, released in `deinit`
+    /// so short-lived sessions (eval harness builds many per process)
+    /// don't accumulate dead subscriber closures in the singleton.
+    @ObservationIgnored private var locationSubscription: UUID?
 
     /// Conversational discourse state — what the conversation is *about*,
     /// the last enumerated list shown (for "the second one"), the vetted
@@ -1760,7 +1776,7 @@ public final class ChatSession {
         // polling / timeout machinery — replaces the fragile
         // `refreshLocationIfStale` + `LocationFetcher.once()` pair.
         #if canImport(UIKit)
-        LocationFetcher.subscribe { [weak self] coord in
+        locationSubscription = LocationFetcher.subscribe { [weak self] coord in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.currentLocation = (coord.latitude, coord.longitude)
@@ -1840,6 +1856,18 @@ public final class ChatSession {
                     gemma.resetPromptCache()
                 }
             }
+        }
+        #endif
+    }
+
+    deinit {
+        // On-device the session lives for the app's lifetime, but eval
+        // harnesses build one per variant — release the LocationFetcher
+        // subscription so the singleton doesn't accumulate dead closures.
+        // Same guard as the subscription site in init.
+        #if canImport(UIKit)
+        if let token = locationSubscription {
+            LocationFetcher.unsubscribe(token)
         }
         #endif
     }
@@ -2997,14 +3025,19 @@ public final class ChatSession {
         if turnsChars() > charBudget {
             let watermark = charBudget * 3 / 4
             var dropped = 0
-            while turnsChars() > watermark {
+            // Running total: re-running the full reduce after every dropped
+            // exchange made this loop O(turns²) in transcript size.
+            var total = turnsChars()
+            while total > watermark {
                 let userIdxs = turns.indices.filter { turns[$0].role == .user }
                 // Keep at least the current exchange (last user turn onward).
                 guard userIdxs.count > 1 else { break }
-                turns.removeFirst(userIdxs[1])
+                let cut = userIdxs[1]
+                for i in 0..<cut { total -= turns[i].text.count + 16 }
+                turns.removeFirst(cut)
                 dropped += 1
             }
-            debug("history window: token budget — dropped \(dropped) oldest exchange(s) to watermark (\(turnsChars()) chars vs \(charBudget) budget)",
+            debug("history window: token budget — dropped \(dropped) oldest exchange(s) to watermark (\(total) chars vs \(charBudget) budget)",
                   category: "Chat")
         }
 
@@ -3073,17 +3106,34 @@ public final class ChatSession {
                     llama.contextTokens - effectiveMaxReplyTokens - 32)
                 var exactTokens = llama.promptTokenCount(prompt)
                 while let count = exactTokens, count > budget {
-                    let userIdxs = turns.indices.filter {
-                        turns[$0].role == .user
+                    // Shed enough whole exchanges to clear the budget (with
+                    // 5% slack) BEFORE paying the next render + tokenize —
+                    // the old loop re-rendered and re-tokenized the full
+                    // ~10k-token prompt once per dropped exchange. The
+                    // outer `while` re-checks the exact count, so the
+                    // char-density estimate only sizes the batch.
+                    let charsPerToken = max(1.0, Double(prompt.count) / Double(count))
+                    var estimate = count
+                    var droppedAny = false
+                    while estimate > budget * 95 / 100 {
+                        let userIdxs = turns.indices.filter {
+                            turns[$0].role == .user
+                        }
+                        guard userIdxs.count > 1 else { break }
+                        let cut = userIdxs[1]
+                        var cutChars = 0
+                        for i in 0..<cut { cutChars += turns[i].text.count + 16 }
+                        turns.removeFirst(cut)
+                        estimate -= Int(Double(cutChars) / charsPerToken)
+                        droppedAny = true
                     }
-                    guard userIdxs.count > 1 else { break }
-                    turns.removeFirst(userIdxs[1])
+                    guard droppedAny else { break }
                     prompt = selectedModel.template.renderTranscript(
                         systemPreamble: systemMessage,
                         tools: toolDecls,
                         turns: turns)
                     exactTokens = llama.promptTokenCount(prompt)
-                    debug("exact context guard: dropped oldest exchange; \(exactTokens ?? -1)/\(budget) prompt tokens",
+                    debug("exact context guard: dropped oldest exchange(s); \(exactTokens ?? -1)/\(budget) prompt tokens",
                           category: "Chat")
                 }
                 if let count = exactTokens, count > budget {
@@ -3172,6 +3222,12 @@ public final class ChatSession {
             // to the eye and recovers most of the main-thread headroom.
             var lastUIPush = Date.distantPast
             let uiMinInterval: TimeInterval = 0.1
+            // Every tool-call opener across templates starts with "<" or a
+            // "```" fence, so until one of those characters has streamed in
+            // there is nothing for the parsers to find — skip the per-chunk
+            // whole-buffer scans (they made plain-prose streaming O(n²) in
+            // reply length). Once seen, scan per chunk as before.
+            var sawMarkerChar = false
             do {
                 for try await chunk in selectedModel.generate(prompt: prompt, parameters: params) {
                     buffer += chunk
@@ -3181,7 +3237,10 @@ public final class ChatSession {
                         appendToAssistant(buffer)
                         lastUIPush = now
                     }
-                    if let call = self.extractToolCall(in: buffer) {
+                    if !sawMarkerChar {
+                        sawMarkerChar = chunk.contains("<") || chunk.contains("`")
+                    }
+                    if sawMarkerChar, let call = self.extractToolCall(in: buffer) {
                         appendToAssistant(buffer)
                         toolCall = call
                         break
@@ -3824,9 +3883,13 @@ public final class ChatSession {
                   let entry = library.first(where: {
                       $0.url.lastPathComponent == zim && $0.isEnabled
                   }),
-                  let data = try? entry.reader.read(path: path)?.content,
-                  let html = String(data: data, encoding: .utf8)
+                  let data = try? entry.reader.read(path: path)?.content
             else { continue }
+            // Strip only a bounded prefix: the preview needs ~400 chars of
+            // cleaned lead, and stripHTML over a full multi-hundred-KB
+            // article per hit was the cost on the search hot path. The
+            // lossy UTF-8 decode absorbs a split trailing codepoint.
+            let html = String(decoding: data.prefix(64 * 1024), as: UTF8.self)
             let stripped = ArticleSections.stripHTML(html)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             // First ~400 chars of the cleaned lead is enough signal
@@ -4156,12 +4219,28 @@ public final class ChatSession {
     /// are keyed by the exact strings `ArticleHeuristics` will later ask its
     /// embedder to score. Body embeddings include their heading and article
     /// title as context, while the map key remains the unmodified body.
+    /// Cap on embedded sections per call: each section costs ~2 real
+    /// transformer forward passes (5–50 ms each), so a 100-section article
+    /// spent seconds in "preparing…" before the discussion could start.
+    /// Sections beyond the cap simply miss their vectors, and retrieval
+    /// degrades to its deterministic order for them. Document order keeps
+    /// the lead + major narrative sections — the ones follow-ups actually
+    /// hit — inside the cap.
+    private static let maxDiscussionEmbedSections = 32
+
     private func prepareDiscussionEmbeddings(
         sources: [(title: String, sections: [ArticleSection])]
     ) async -> [String: [Float]] {
         var vectors: [String: [Float]] = [:]
+        var embedded = 0
         for source in sources {
             for section in source.sections where !section.text.isEmpty {
+                if embedded >= Self.maxDiscussionEmbedSections {
+                    debug("discussion embeddings capped at \(Self.maxDiscussionEmbedSections) sections",
+                          category: "Chat")
+                    return vectors
+                }
+                embedded += 1
                 if !section.title.isEmpty {
                     let key = PreparedDiscussionEmbedder.key(section.title)
                     if vectors[key] == nil,

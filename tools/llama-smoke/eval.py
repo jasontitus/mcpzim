@@ -722,6 +722,10 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     },
 ] + TOOLS_SCHEMA_EXTRA
 
+# Serialized once for _lfm2_render — the schema block never changes and was
+# re-stringified on every render inside the tool loop.
+_TOOLS_SCHEMA_JSON = json.dumps(TOOLS_SCHEMA)
+
 
 def rss_mb() -> float:
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -1394,10 +1398,17 @@ def _lfm2_render(messages: list[dict[str, str]],
     sys_block = system_text.strip()
     if tools_schema:
         # LFM expects OpenAI-shaped tool dicts. Pass through as-is.
+        # The schema block is invariant across the tool loop (up to
+        # TOOL_ITER_BUDGET renders per turn), so serialize the module
+        # constant once instead of per render.
+        if tools_schema is TOOLS_SCHEMA:
+            tools_json = _TOOLS_SCHEMA_JSON
+        else:
+            tools_json = json.dumps(tools_schema)
         if sys_block:
             sys_block += "\n\n"
         sys_block += f"Today's date: {date_str}\n\n"
-        sys_block += "List of tools: " + json.dumps(tools_schema)
+        sys_block += "List of tools: " + tools_json
     parts: list[str] = []
     if sys_block:
         parts.append(f"<|im_start|>system\n{sys_block}<|im_end|>\n")

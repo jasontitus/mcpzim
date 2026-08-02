@@ -85,9 +85,17 @@ public final class LogArchive: @unchecked Sendable {
         // files[0] is the session we just opened; [1] is the previous run.
         guard files.count >= 2 else { return nil }
         let prev = files[1]
-        guard let content = try? String(contentsOf: prev, encoding: .utf8) else {
-            return nil
-        }
+        // Bounded tail read: a long session's log can run to many MB and
+        // this fires on every launch — seek to the last 16 KB instead of
+        // loading the whole file to inspect 3 lines. A mid-codepoint
+        // start only garbles the first (discarded) line.
+        guard let fh = try? FileHandle(forReading: prev) else { return nil }
+        defer { try? fh.close() }
+        let size = (try? fh.seekToEnd()) ?? 0
+        let tailCap: UInt64 = 16 * 1024
+        try? fh.seek(toOffset: size > tailCap ? size - tailCap : 0)
+        let data = (try? fh.readToEnd()) ?? Data()
+        let content = String(decoding: data, as: UTF8.self)
         let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
         guard let last = lines.last else {
             return "\(prev.lastPathComponent): empty log — died before first line"
@@ -106,8 +114,18 @@ public final class LogArchive: @unchecked Sendable {
         queue.sync { currentURL }
     }
 
-    /// All persisted log files, newest first.
-    public func allFiles() -> [URL] {
+    /// One row of the past-logs list: URL plus the metadata the directory
+    /// enumeration already prefetched, so views don't re-stat per row.
+    public struct LogFileInfo: Sendable {
+        public let url: URL
+        public let modified: Date
+        public let sizeBytes: Int64
+    }
+
+    /// All persisted log files with metadata, newest first. The
+    /// `resourceValues` reads below are served from the enumeration's
+    /// prefetched cache — one stat pass for the whole directory.
+    public func allFileInfos() -> [LogFileInfo] {
         guard let dir = Self.logsDirectory(),
               let entries = try? FileManager.default.contentsOfDirectory(
                 at: dir,
@@ -117,11 +135,21 @@ public final class LogArchive: @unchecked Sendable {
         else { return [] }
         return entries
             .filter { $0.pathExtension == "log" }
-            .sorted { lhs, rhs in
-                let l = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return l > r
+            .map { url -> LogFileInfo in
+                let rv = try? url.resourceValues(
+                    forKeys: [.contentModificationDateKey, .fileSizeKey])
+                return LogFileInfo(
+                    url: url,
+                    modified: rv?.contentModificationDate ?? .distantPast,
+                    sizeBytes: Int64(rv?.fileSize ?? 0)
+                )
             }
+            .sorted { $0.modified > $1.modified }
+    }
+
+    /// All persisted log files, newest first.
+    public func allFiles() -> [URL] {
+        allFileInfos().map(\.url)
     }
 
     public func read(_ url: URL) -> String {

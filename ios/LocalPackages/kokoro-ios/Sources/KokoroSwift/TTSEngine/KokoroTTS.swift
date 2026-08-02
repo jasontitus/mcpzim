@@ -349,23 +349,24 @@ public final class KokoroTTS {
   ///   - batchSize: Size of the input batch
   /// - Returns: Alignment matrix [batchSize × totalFrames]
   private func createAlignmentTarget(durations: MLXArray, batchSize: Int) -> MLXArray {
-    // Create indices array by repeating each index according to its duration
-    let indices = MLX.concatenated(
-      durations.enumerated().map { index, duration in
-        let frameCount: Int = duration.item()
-        return MLX.repeated(MLXArray([index]), count: frameCount)
-      }
-    )
-
-    // Create one-hot encoded alignment matrix
-    let totalFrames = indices.shape[0]
+    // ONE bulk host sync for the whole duration vector. The old code
+    // called `.item()` once per phoneme (each a full GPU→CPU evaluation
+    // of the BERT → duration-LSTM → projection graph) to build a
+    // repeated-index tensor, then `.item()` AGAIN once per output frame
+    // to read it back — thousands of full-pipeline stalls per synthesis,
+    // scaling with utterance length. The one-hot matrix is then filled
+    // natively in a single pass.
+    let durationCounts = durations.asArray(Int32.self)
+    let totalFrames = durationCounts.reduce(0) { $0 + Int($1) }
     var alignmentArray = [Float](repeating: 0.0, count: totalFrames * batchSize)
-    
-    for frame in 0 ..< totalFrames {
-      let phonemeIndex: Int = indices[frame].item()
-      alignmentArray[phonemeIndex * totalFrames + frame] = 1.0
+    var frame = 0
+    for (phonemeIndex, count) in durationCounts.enumerated() {
+      let rowBase = phonemeIndex * totalFrames
+      for _ in 0 ..< Int(count) {
+        alignmentArray[rowBase + frame] = 1.0
+        frame += 1
+      }
     }
-    
     let alignmentTarget = MLXArray(alignmentArray).reshaped([batchSize, totalFrames])
     return alignmentTarget.expandedDimensions(axis: 0)
   }

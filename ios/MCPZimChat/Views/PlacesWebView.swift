@@ -48,6 +48,25 @@ struct ArticleSheetIntent: Identifiable, Equatable {
 
 struct PlacesWebView: View {
     let trace: ToolCallTrace
+    /// Parsed once at view construction: as computed properties these
+    /// re-parsed `trace.rawResult` JSON on every access, and `body`
+    /// touches the payload ~5 times per evaluation while re-evaluating
+    /// on each GPS tick / streaming push. The trace is immutable, so a
+    /// stored parse per view init is always fresh.
+    private let payload: PlacesPayload
+    private let zimFromResultField: String?
+
+    init(trace: ToolCallTrace) {
+        self.trace = trace
+        self.payload = parsePlaces(from: trace)
+        if let data = trace.rawResult.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            self.zimFromResultField = json["zim"] as? String
+        } else {
+            self.zimFromResultField = nil
+        }
+    }
+
     @Environment(ChatSession.self) private var session
     @State private var presentFullscreen: Bool = false
     @State private var presentList: Bool = false
@@ -74,8 +93,6 @@ struct PlacesWebView: View {
             .first(where: { $0.isEnabled && $0.reader.kind == .wikipedia })?
             .url.lastPathComponent ?? "wikipedia"
     }
-
-    private var payload: PlacesPayload { parsePlaces(from: trace) }
 
     private var userLocation: (lat: Double, lon: Double)? { session.currentLocation }
 
@@ -208,9 +225,7 @@ struct PlacesWebView: View {
         // against (its result's `zim` field), fall back to the first
         // enabled streetzim in the library.
         var zimFromResult: String? = nil
-        if let data = trace.rawResult.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let z = json["zim"] as? String,
+        if let z = zimFromResultField,
            session.library.contains(where: { $0.url.lastPathComponent == z && $0.isEnabled })
         {
             zimFromResult = z

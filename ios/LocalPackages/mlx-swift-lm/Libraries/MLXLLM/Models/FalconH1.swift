@@ -655,8 +655,11 @@ public class FalconH1ModelInner: Module {
         let cache: [CacheList?] = cache ?? Array(repeating: nil, count: layers.count)
 
         let mambaMask = createSSMMask(h: h, cache: cache[0]?[0] as? MambaCache)
-        let attnMask: MLXArray? = createAttentionMask(
-            h: h, cache: cache[0]?[1] != nil ? [cache[0]![1]] : nil)
+        // createAttentionMask unconditionally returns nil (SDPA handles the
+        // causal mask internally) — the old call built a one-element
+        // [KVCache] array per forward pass, i.e. per generated token, for
+        // an argument the function ignores.
+        let attnMask: MLXArray? = createAttentionMask(h: h, cache: nil)
 
         for (layer, c) in zip(layers, cache) {
             h = layer(

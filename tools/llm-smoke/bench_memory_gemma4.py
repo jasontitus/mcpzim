@@ -34,13 +34,12 @@ from bench_memory import FILLER_PARAGRAPHS, BASE_INSTRUCTIONS
 
 
 def build_preamble(tokenizer, target_tokens: int) -> str:
-    chunks = [BASE_INSTRUCTIONS]
+    # Incremental encode — see bench_memory.build_preamble: re-encoding the
+    # whole accumulated string per appended paragraph was O(target²).
+    ids = list(tokenizer.encode(BASE_INSTRUCTIONS))
     i = 0
-    while True:
-        ids = tokenizer.encode("".join(chunks))
-        if len(ids) >= target_tokens:
-            break
-        chunks.append(FILLER_PARAGRAPHS[i % len(FILLER_PARAGRAPHS)] + "\n\n")
+    while len(ids) < target_tokens:
+        ids.extend(tokenizer.encode(FILLER_PARAGRAPHS[i % len(FILLER_PARAGRAPHS)] + "\n\n"))
         i += 1
     ids = ids[:target_tokens]
     return tokenizer.decode(ids)

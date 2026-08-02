@@ -82,6 +82,18 @@ _STRIP_SELECTORS = (
     "table.vertical-navbox",
 )
 
+# One combined selector group so stripping is a single SoupSieve pass over the
+# tree instead of one full-tree walk per selector (~30 passes per article).
+# The pilcrow/edit anchors share the same fate so they ride along here too.
+_STRIP_SELECTOR = ", ".join(_STRIP_SELECTORS + ("a.mw-headline-anchor", "a.editsection"))
+
+# Search snippets: only the first few hits get a full HTML→text parse (the far
+# tail of a 50-hit page is rarely read), and only a bounded HTML prefix is
+# parsed — enough context for a 220-char snippet without paying a multi-hundred
+# KB BeautifulSoup parse per hit.
+_SNIPPET_PARSE_CAP = 8
+_SNIPPET_HTML_PREFIX = 96 * 1024
+
 
 @dataclass
 class Article:
@@ -115,13 +127,12 @@ def html_to_text(html: str) -> str:
 
     soup = BeautifulSoup(html, "html.parser")
 
-    for sel in _STRIP_SELECTORS:
-        for el in soup.select(sel):
+    # Single pass: one combined selector group (includes the section-pilcrow
+    # and edit-link anchors) instead of a full-tree walk per selector. A match
+    # nested inside another match is already gone by the time we reach it.
+    for el in soup.select(_STRIP_SELECTOR):
+        if not el.decomposed:
             el.decompose()
-
-    # Drop anchors that exist only as section pilcrows or edit links.
-    for a in soup.select("a.mw-headline-anchor, a.editsection"):
-        a.decompose()
 
     body = soup.select_one("#mw-content-text") or soup.select_one("#bodyContent") or soup.body or soup
 
@@ -277,7 +288,7 @@ def search_zim(zim: OpenZim, query: str, limit: int) -> list[SearchHit]:
                 search = _searcher_for(zim).search(Query().set_query(query))
                 total = int(search.getEstimatedMatches())
                 for path in search.getResults(0, min(limit, total)):
-                    hits.append(_hit_for(zim, path, query))
+                    hits.append(_hit_for(zim, path, query, want_snippet=len(hits) < _SNIPPET_PARSE_CAP))
                 if hits:
                     return hits
             except Exception:  # noqa: BLE001
@@ -287,21 +298,25 @@ def search_zim(zim: OpenZim, query: str, limit: int) -> list[SearchHit]:
                 suggest = SuggestionSearcher(archive).suggest(query)
                 total = int(suggest.getEstimatedMatches())
                 for path in suggest.getResults(0, min(limit, total)):
-                    hits.append(_hit_for(zim, path, query))
+                    hits.append(_hit_for(zim, path, query, want_snippet=len(hits) < _SNIPPET_PARSE_CAP))
             except Exception:  # noqa: BLE001
                 log.debug("suggest search failed on %s", zim.path.name, exc_info=True)
     return hits
 
 
-def _hit_for(zim: OpenZim, path: str, query: str) -> SearchHit:
+def _hit_for(zim: OpenZim, path: str, query: str, *, want_snippet: bool = True) -> SearchHit:
     title = path
     snippet = ""
     try:
         entry = zim.archive.get_entry_by_path(path)
         entry, item = _resolve_entry(zim.archive, entry)
         title = getattr(entry, "title", path)
-        if _is_html(item.mimetype):
-            snippet = _snippet(html_to_text(_decode(bytes(item.content))), query)
+        if want_snippet and _is_html(item.mimetype):
+            # Parse only a bounded HTML prefix: a snippet needs a couple
+            # hundred chars of readable text, not a full multi-hundred-KB
+            # BeautifulSoup pass per hit. html.parser copes with the
+            # truncated tail, and errors="replace" absorbs a split codepoint.
+            snippet = _snippet(html_to_text(_decode(item.content[:_SNIPPET_HTML_PREFIX])), query)
     except Exception:  # noqa: BLE001
         pass
     return SearchHit(

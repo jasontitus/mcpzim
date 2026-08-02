@@ -60,7 +60,10 @@ def run_case(model, processor, case, max_tokens: int = 300) -> dict:
         if text:
             decoded.append(text)
             decoded_n += 1
-            buffer += text
+            # Rolling tail: markers are short, so only the last few hundred
+            # chars ever need scanning — the full-buffer `in` scans grew
+            # quadratically with --max-tokens. `decoded` keeps the full text.
+            buffer = (buffer + text)[-256:]
             # Early-stop on the turn-close marker so we don't keep decoding
             # after the assistant finished — matches ChatSession on iOS.
             if any(m in buffer for m in STOP_MARKERS):

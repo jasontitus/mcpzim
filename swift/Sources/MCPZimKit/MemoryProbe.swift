@@ -77,6 +77,16 @@ public actor MemoryProbe {
         return s
     }
 
+    /// Continuous sampling is bounded: past this count the continuous
+    /// history is decimated pairwise (keeping the max rssMB of each pair)
+    /// so `peak` — the metric the jetsam evals read — stays exact while a
+    /// multi-hour soak can't grow the sample array without bound
+    /// (~36k samples/hour at the default cadence). Tagged one-shot
+    /// samples are never dropped; threshold-band counts become
+    /// approximate past the cap since decimation halves the cadence of
+    /// older history.
+    static let maxContinuousSamples = 50_000
+
     /// Start a background sampling loop at `intervalMs`. Tags each
     /// sample with `"\(prefix).#\(i)"`. The caller should `await stop()`
     /// before summarising.
@@ -88,10 +98,33 @@ public actor MemoryProbe {
             var i = 0
             while !Task.isCancelled {
                 await self.sample("\(tagPrefix).#\(i)")
+                await self.compactIfNeeded(tagPrefix: tagPrefix)
                 i += 1
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    private func compactIfNeeded(tagPrefix: String) {
+        guard samples.count > Self.maxContinuousSamples else { return }
+        let marker = tagPrefix + ".#"
+        var compacted: [MemorySample] = []
+        compacted.reserveCapacity(samples.count / 2 + 16)
+        var pending: MemorySample?
+        for s in samples {
+            guard s.tag.hasPrefix(marker) else {
+                compacted.append(s)
+                continue
+            }
+            if let held = pending {
+                compacted.append(held.rssMB >= s.rssMB ? held : s)
+                pending = nil
+            } else {
+                pending = s
+            }
+        }
+        if let held = pending { compacted.append(held) }
+        samples = compacted
     }
 
     public func stop() {

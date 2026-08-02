@@ -15,8 +15,10 @@ import MLXNN
 // MARK: - Helpers
 
 private func functionalRMSNorm(_ x: MLXArray, eps: Float) -> MLXArray {
-    let meanSquares = mean(x.square(), axis: -1, keepDims: true)
-    return x * (meanSquares + eps).rsqrt()
+    // Fused kernel (weight-less — this norm applies no learned scale):
+    // the hand-composed square→mean→rsqrt→multiply chain ran two
+    // reduction/elementwise passes per norm per layer per decode token.
+    MLXFast.rmsNorm(x, weight: MLXArray.mlxNone, eps: eps)
 }
 
 private func applySoftcap(_ logits: MLXArray, cap: Float) -> MLXArray {

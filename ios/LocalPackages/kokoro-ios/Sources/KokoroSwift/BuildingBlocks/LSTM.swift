@@ -147,10 +147,15 @@ class LSTM: Module {
       currentCell = f * currentCell + i * g
       currentHidden = o * MLX.tanh(currentCell)
 
-      // Insert at beginning to maintain original sequence order
-      allCell.insert(currentCell, at: 0)
-      allHidden.insert(currentHidden, at: 0)
+      // Append + one reverse below — insert(at: 0) shifted the whole
+      // array every step, O(seqLen²) element moves on long utterances.
+      allCell.append(currentCell)
+      allHidden.append(currentHidden)
     }
+
+    // Restore original sequence order in one pass.
+    allHidden.reverse()
+    allCell.reverse()
 
     return (MLX.stacked(allHidden, axis: -2), MLX.stacked(allCell, axis: -2))
   }

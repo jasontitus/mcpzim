@@ -237,6 +237,17 @@ public actor SpatialGraph {
         self.fetch = fetch
     }
 
+    /// The immutable cell owning `globalNodeIdx`, or nil when the node is
+    /// outside every cell. One actor hop hands back the whole cell so hot
+    /// callers (the A* pop loop, which expands up to `popLimit` nodes per
+    /// route) can walk the flat stride-5 edge array directly instead of
+    /// paying an actor hop plus a fresh `[SpatialEdge]` materialisation
+    /// per expansion.
+    public func cell(containingNode globalNodeIdx: Int) async throws -> SZRCCell? {
+        guard let cid = index.cellForNode(globalNodeIdx) else { return nil }
+        return try await ensureCell(cid)
+    }
+
     /// Returns the list of outbound edges for a global node. Fetches +
     /// parses the owning cell on first access.
     public func edgesOfNode(_ globalNodeIdx: Int) async throws -> [SpatialEdge] {
@@ -289,8 +300,15 @@ public actor SpatialGraph {
             accessTime[cid] = clock
             return cell
         }
-        let task = Task { @Sendable in
-            let data = try await self.fetch(cid)
+        // Detached so the fetch I/O + parse CPU run OFF this actor's
+        // executor: an unstructured `Task {}` here inherits actor
+        // isolation, which serialised every cell load behind the actor —
+        // concurrent routes waiting on *different* cells paid the sum of
+        // their fetch latencies instead of the max. `inFlight` still
+        // dedups concurrent same-cell loads.
+        let fetcher = self.fetch
+        let task = Task.detached { @Sendable () async throws -> SZRCCell in
+            let data = try await fetcher(cid)
             let cell = try SZRCCell.parse(data)
             if cell.cellId != cid {
                 throw SZCIError.cellIDMismatch(expected: cid, got: cell.cellId)
@@ -407,10 +425,8 @@ public extension SZCIIndex {
             }
             try requireBytes(namesBytes, perEntry: 1, remaining: raw.count - off,
                              label: "names blob")
-            var namesBlob = [UInt8](); namesBlob.reserveCapacity(namesBytes)
-            for i in 0..<namesBytes {
-                namesBlob.append(raw[off + i])
-            }
+            // Single bulk copy (memcpy path) instead of a byte-append loop.
+            let namesBlob = [UInt8](raw[off ..< off + namesBytes])
 
             return SZCIIndex(
                 version: version,
@@ -484,10 +500,8 @@ public extension SZRCCell {
             }
             try requireBytes(geomBytes, perEntry: 1, remaining: raw.count - off,
                              label: "geom blob")
-            var geomBlob = [UInt8](); geomBlob.reserveCapacity(geomBytes)
-            for i in 0..<geomBytes {
-                geomBlob.append(raw[off + i])
-            }
+            // Single bulk copy (memcpy path) instead of a byte-append loop.
+            let geomBlob = [UInt8](raw[off ..< off + geomBytes])
 
             return SZRCCell(
                 cellId: cellId,

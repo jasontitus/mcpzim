@@ -33,6 +33,75 @@ struct RouteWebView: View {
     /// polyline and the streetzim filename when available).
     let trace: ToolCallTrace
 
+    /// Parsed once at view construction. As computed properties,
+    /// `routeEndpoints` / `turnByTurn` / `resolveSpec` each re-parsed
+    /// `trace.rawResult` (which can carry a ~1500-point polyline) via
+    /// JSONSerialization on every access — up to 4 parses plus a fresh
+    /// downsample + geoJSON string build per body evaluation, re-run on
+    /// every GPS tick. The trace is immutable, so one parse per view
+    /// init is always fresh. (Library-membership checks stay in
+    /// `resolveSpec` — `@Environment` isn't available during init.)
+    private let routeEndpoints: (origin: (lat: Double, lon: Double),
+                                 dest: (lat: Double, lon: Double))?
+    private let turnByTurn: [String]
+    private let zimFromArgsField: String?
+    private let zimFromResultField: String?
+    private let geoJSONCoords: String?
+
+    init(trace: ToolCallTrace) {
+        self.trace = trace
+        var endpoints: (origin: (lat: Double, lon: Double),
+                        dest: (lat: Double, lon: Double))? = nil
+        var turns: [String] = []
+        var zimRes: String? = nil
+        var geo: String? = nil
+        if let data = trace.rawResult.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            if let o = json["origin"] as? [String: Any],
+               let d = json["destination"] as? [String: Any],
+               let oLat = (o["lat"] as? NSNumber)?.doubleValue,
+               let oLon = (o["lon"] as? NSNumber)?.doubleValue,
+               let dLat = (d["lat"] as? NSNumber)?.doubleValue,
+               let dLon = (d["lon"] as? NSNumber)?.doubleValue
+            {
+                endpoints = ((oLat, oLon), (dLat, dLon))
+            } else if let poly = json["polyline"] as? [[Double]],
+                      poly.count >= 2,
+                      let first = poly.first, first.count >= 2,
+                      let last = poly.last, last.count >= 2
+            {
+                endpoints = ((first[0], first[1]), (last[0], last[1]))
+            }
+            turns = json["turn_by_turn"] as? [String] ?? []
+            zimRes = json["zim"] as? String
+            if let raw = json["polyline"] as? [[Double]], !raw.isEmpty {
+                // Cross-Bay Area routes can hit ~1500 polyline points.
+                // MapLibre pre-renders them at each zoom level, and the
+                // in-process GL buffers stacked on top of Gemma +
+                // Kokoro's Metal pools push us past the 6144 MB jetsam
+                // cap. Subsample to ≤ 400 points — plenty of detail for
+                // the zoomed-out overview route line.
+                let downsampled = Self.downsample(raw, target: 400)
+                geo = "[" + downsampled.compactMap { pair -> String? in
+                    guard pair.count >= 2 else { return nil }
+                    return String(format: "[%.6f,%.6f]", pair[1], pair[0])
+                }.joined(separator: ",") + "]"
+            }
+        }
+        var zimArgs: String? = nil
+        if let argData = trace.arguments.data(using: .utf8),
+           let argJSON = try? JSONSerialization.jsonObject(with: argData) as? [String: Any]
+        {
+            zimArgs = argJSON["zim"] as? String
+        }
+        self.routeEndpoints = endpoints
+        self.turnByTurn = turns
+        self.zimFromArgsField = zimArgs
+        self.zimFromResultField = zimRes
+        self.geoJSONCoords = geo
+    }
+
     @Environment(ChatSession.self) private var session
     @State private var presentDirections: Bool = false
     /// Presenting the fullscreen map + its optional drive-mode kickoff
@@ -62,50 +131,10 @@ struct RouteWebView: View {
         session.currentLocation
     }
 
-    /// Origin / destination parsed out of the tool result. Set when the
-    /// router emits `{"origin": {"lat": …}, "destination": {"lat": …}}`;
-    /// falls back to the polyline's first + last points when the routing
-    /// tool didn't carry explicit origin/dest fields (e.g. `show_map`
-    /// single-point traces have no endpoints to drive from).
-    private var routeEndpoints: (origin: (lat: Double, lon: Double),
-                                 dest: (lat: Double, lon: Double))? {
-        guard let data = trace.rawResult.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        if let o = json["origin"] as? [String: Any],
-           let d = json["destination"] as? [String: Any],
-           let oLat = (o["lat"] as? NSNumber)?.doubleValue,
-           let oLon = (o["lon"] as? NSNumber)?.doubleValue,
-           let dLat = (d["lat"] as? NSNumber)?.doubleValue,
-           let dLon = (d["lon"] as? NSNumber)?.doubleValue
-        {
-            return ((oLat, oLon), (dLat, dLon))
-        }
-        if let poly = json["polyline"] as? [[Double]],
-           poly.count >= 2,
-           let first = poly.first, first.count >= 2,
-           let last = poly.last, last.count >= 2
-        {
-            return ((first[0], first[1]), (last[0], last[1]))
-        }
-        return nil
-    }
-
     /// Only show Drive/Walk/Bike for traces that have real origin+dest —
     /// `show_map` one-point pins don't have a route to enter drive mode on.
     private var supportsDriveMode: Bool {
         trace.name != "show_map" && routeEndpoints != nil
-    }
-
-    /// Full turn-by-turn list pulled from the tool's untrimmed result.
-    /// Empty for `show_map` or when the route tool didn't return any
-    /// instructions.
-    private var turnByTurn: [String] {
-        guard let data = trace.rawResult.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let turns = json["turn_by_turn"] as? [String]
-        else { return [] }
-        return turns
     }
 
     var body: some View {
@@ -249,9 +278,7 @@ struct RouteWebView: View {
         //    always render the viewer for the first-loaded ZIM regardless
         //    of what was routed.
         var zimFromArgs: String? = nil
-        if let argData = trace.arguments.data(using: .utf8),
-           let argJSON = try? JSONSerialization.jsonObject(with: argData) as? [String: Any],
-           let z = argJSON["zim"] as? String,
+        if let z = zimFromArgsField,
            session.library.contains(where: { $0.url.lastPathComponent == z && $0.isEnabled })
         {
             zimFromArgs = z
@@ -260,9 +287,7 @@ struct RouteWebView: View {
         // tool RESULT — our `routeFromPlaces` fallback may have tried
         // several and picked a different one than the model's `zim` arg.
         var zimFromResult: String? = nil
-        if let resData = trace.rawResult.data(using: .utf8),
-           let resJSON = try? JSONSerialization.jsonObject(with: resData) as? [String: Any],
-           let z = resJSON["zim"] as? String,
+        if let z = zimFromResultField,
            session.library.contains(where: { $0.url.lastPathComponent == z && $0.isEnabled })
         {
             zimFromResult = z
@@ -290,25 +315,10 @@ struct RouteWebView: View {
         //    `index.html` at the ZIM root by convention.
         let mainPath = "index.html"
 
-        // 3. Parse the polyline out of the tool's untrimmed payload.
-        // `show_map` traces have a single-point polyline — that's
-        // fine, `frameRoute` centres+zooms and we draw a pin instead
-        // of a line.
-        guard let data = trace.rawResult.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = json["polyline"] as? [[Double]], !raw.isEmpty
-        else { return nil }
-        // Cross-Bay Area routes can hit ~1500 polyline points. MapLibre
-        // pre-renders them at each zoom level, and the in-process GL
-        // buffers stacked on top of Gemma + Kokoro's Metal pools push us
-        // past the 6144 MB jetsam cap. Subsample to ≤ 400 points —
-        // plenty of detail for the zoomed-out overview route line.
-        let downsampled = Self.downsample(raw, target: 400)
-        // Polyline as a flat JS array of [lon, lat] pairs for MapLibre.
-        let geoJSONCoords = "[" + downsampled.compactMap { pair -> String? in
-            guard pair.count >= 2 else { return nil }
-            return String(format: "[%.6f,%.6f]", pair[1], pair[0])
-        }.joined(separator: ",") + "]"
+        // 3. Polyline (downsampled + serialized once at init). `show_map`
+        // traces have a single-point polyline — that's fine, `frameRoute`
+        // centres+zooms and we draw a pin instead of a line.
+        guard let geoJSONCoords else { return nil }
 
         return Spec(
             zimName: zimName,

@@ -16,7 +16,47 @@ final class ZimfoRunner {
     /// Filename → reader, for resolving back after a tool answers.
     let readersByName: [String: any ZimReader]
 
+    /// Memoized instance + the library fingerprint it was built from.
+    /// `load()` used to rebuild everything per App Intent — re-scanning
+    /// Documents, re-opening every multi-GB ZIM archive (metadata +
+    /// title/fulltext index reads), re-resolving bookmarks, and
+    /// re-constructing the tool stack — adding seconds of disk I/O to
+    /// every Siri/Shortcuts invocation for an identical library.
+    private static var cached: ZimfoRunner?
+    private static var cachedFingerprint: String?
+
     static func load() async throws -> ZimfoRunner {
+        let fingerprint = libraryFingerprint()
+        if let cached, cachedFingerprint == fingerprint {
+            return cached
+        }
+        let runner = try await buildFresh()
+        cached = runner
+        cachedFingerprint = fingerprint
+        return runner
+    }
+
+    /// Cheap change-detection key: ZIM filenames in Documents plus the
+    /// bookmark blob signatures. No archive opens — just one directory
+    /// listing and a defaults read. (`Data.hashValue` is per-process
+    /// seeded, which is fine for an in-memory, per-process cache.)
+    private static func libraryFingerprint() -> String {
+        var parts: [String] = []
+        let fm = FileManager.default
+        if let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask,
+                                  appropriateFor: nil, create: false),
+           let urls = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+            parts = urls.filter { $0.pathExtension.lowercased() == "zim" }
+                .map { $0.lastPathComponent }
+                .sorted()
+        }
+        if let blobs = UserDefaults.standard.array(forKey: "library.externalBookmarks") as? [Data] {
+            for b in blobs { parts.append("bm:\(b.hashValue)") }
+        }
+        return parts.joined(separator: "|")
+    }
+
+    private static func buildFresh() async throws -> ZimfoRunner {
         var readers: [(name: String, reader: any ZimReader)] = []
         // 1) Anything in the app's sandbox Documents folder (auto-scan).
         let fm = FileManager.default

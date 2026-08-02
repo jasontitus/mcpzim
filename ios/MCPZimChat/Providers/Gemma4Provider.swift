@@ -139,7 +139,10 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     }
     private var container: ModelContainer?
     private var state: ModelLoadState = .notLoaded
-    private var continuations: [AsyncStream<ModelLoadState>.Continuation] = []
+    /// Keyed so `onTermination` can remove a dead subscriber — the old
+    /// append-only array retained every continuation for the app lifetime
+    /// and `set(_:)` fanned out to all of them forever.
+    private var continuations: [UUID: AsyncStream<ModelLoadState>.Continuation] = [:]
     private let queue = DispatchQueue(label: "gemma4.state")
 
     // In-window debug log sink. Set by ChatSession when it constructs the
@@ -337,9 +340,16 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { cont in
+            let id = UUID()
             queue.sync {
                 cont.yield(self.state)
-                self.continuations.append(cont)
+                self.continuations[id] = cont
+            }
+            // Async removal: onTermination can fire from any context,
+            // including re-entrantly during the registration above.
+            cont.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.queue.async { self.continuations[id] = nil }
             }
         }
     }
@@ -347,7 +357,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     private func set(_ s: ModelLoadState) {
         queue.sync {
             self.state = s
-            self.continuations.forEach { $0.yield(s) }
+            self.continuations.values.forEach { $0.yield(s) }
         }
     }
 
@@ -449,7 +459,13 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         await diskFrac.set(frac)
                         self?.set(.downloading(await diskFrac.maxFraction()))
                     }
-                    try? await Task.sleep(nanoseconds: 750_000_000)
+                    // 2.5 s cadence: each tick walks the whole HF cache tree
+                    // with per-file resourceValues, so a 750 ms poll spent a
+                    // multi-minute 2.5 GB download re-scanning metadata in
+                    // competition with the download I/O itself. The Hub
+                    // progressHandler below still delivers fine-grained
+                    // updates between ticks.
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
                 }
             }
             defer { pollTask.cancel() }
@@ -762,6 +778,10 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // output verbatim.
                     var decodedSoFar = ""
                     var tokenIDs: [Int32] = []
+                    // Parallel Int copy for the tokenizer API — the old
+                    // `tokenIDs.map { Int($0) }` allocated a fresh n-element
+                    // array on every generated token.
+                    var tokenIDsInt: [Int] = []
                     // Cache the length of `tokenIDs` at the point where
                     // ChatSession will cut the assistant turn (either a
                     // `<tool_call|>` closing marker, or the stop marker
@@ -777,8 +797,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     chunkLoop: for await event in tokenStream {
                         guard case .token(let id) = event else { continue }
                         tokenIDs.append(Int32(id))
+                        tokenIDsInt.append(Int(id))
                         let fullDecoded = tokenizer.decode(
-                            tokenIds: tokenIDs.map { Int($0) },
+                            tokenIds: tokenIDsInt,
                             skipSpecialTokens: false)
                         let newText: String
                         if fullDecoded.hasPrefix(decodedSoFar) {
@@ -812,7 +833,8 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         // now — ChatSession will truncate the
                         // assistant turn right after this marker.
                         if tokensAtCutoff == nil,
-                           decodedSoFar.contains(toolCallClose)
+                           Self.tailContains(decodedSoFar, marker: toolCallClose,
+                                             newSuffixCount: newText.count)
                         {
                             tokensAtCutoff = tokenIDs.count
                             // Halt the producer the instant we see
@@ -953,6 +975,23 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         var i = 0
         while i < n && a[i] == b[i] { i += 1 }
         return i
+    }
+
+    /// Bounded `contains` for streaming: a marker completed by this chunk
+    /// must END inside the newly appended suffix, so only the last
+    /// `newSuffixCount + marker.count - 1` characters need scanning — the
+    /// old whole-buffer `contains` re-scanned the entire accumulated reply
+    /// on every generated token. The induction holds because every appended
+    /// suffix is checked exactly once.
+    private static func tailContains(
+        _ text: String, marker: String, newSuffixCount: Int
+    ) -> Bool {
+        let window = newSuffixCount + marker.count - 1
+        guard window > 0, !text.isEmpty else { return false }
+        let start = text.index(
+            text.endIndex, offsetBy: -window, limitedBy: text.startIndex
+        ) ?? text.startIndex
+        return text.range(of: marker, range: start..<text.endIndex) != nil
     }
 
     /// Compact one-line dump of a KV cache: layer count, the set of

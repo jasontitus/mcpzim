@@ -12,7 +12,8 @@ import logging
 import math
 import struct
 import threading
-from dataclasses import dataclass
+from array import array
+from dataclasses import dataclass, field
 from typing import Sequence
 
 from .library import OpenZim
@@ -73,6 +74,12 @@ class Graph:
     # Fastest edge in the graph; the A* heuristic divides by this, so it must be
     # >= every edge speed to stay admissible (speeds decode from a full byte).
     max_speed_kmh: float = _SPEED_CEILING_KMH
+    # Lazily-built uniform grid over (lat, lon) for nearest_node; guarded by
+    # _grid_lock because graphs are cached and shared across server threads.
+    _grid: dict[tuple[int, int], array] | None = field(default=None, repr=False, compare=False)
+    _grid_cell_deg: float = field(default=0.0, repr=False, compare=False)
+    _grid_bbox: tuple[int, int, int, int] = field(default=(0, 0, 0, 0), repr=False, compare=False)
+    _grid_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     @classmethod
     def parse(cls, blob: bytes) -> "Graph":
@@ -172,24 +179,100 @@ class Graph:
             return ""
         return self.names[idx]
 
-    def nearest_node(self, lat: float, lon: float) -> int:
-        """Linear scan for the closest node by equirectangular squared distance.
+    def _ensure_grid(self) -> None:
+        """Bucket every node into a uniform lat/lon grid, once, lazily.
 
-        Same argmin as haversine at graph scales (the cos(lat) correction is
-        hoisted out once), but no trig or sqrt inside the loop.
+        Cell size targets a few dozen nodes per cell so a nearest_node query
+        touches a handful of buckets instead of scanning the whole node table
+        (city/country graphs run to millions of nodes; plan_route calls
+        nearest_node twice per request).
         """
-        best_i = -1
-        best_d = math.inf
+        if self._grid is not None:
+            return
+        with self._grid_lock:
+            if self._grid is not None:
+                return
+            lats = self.lat
+            lons = self.lon
+            n = self.num_nodes
+            if n:
+                lat_span = max(lats) - min(lats)
+                lon_span = max(lons) - min(lons)
+                # ~16 nodes per cell on average; clamp so degenerate extents
+                # (single street, one node) still produce a sane cell size.
+                cell = math.sqrt(max(lat_span * lon_span, 1e-12) / max(n / 16.0, 1.0))
+                cell = min(max(cell, 1e-4), 1.0)
+            else:
+                cell = 1.0
+            grid: dict[tuple[int, int], array] = {}
+            for i in range(n):
+                key = (int(math.floor(lats[i] / cell)), int(math.floor(lons[i] / cell)))
+                bucket = grid.get(key)
+                if bucket is None:
+                    bucket = array("I")
+                    grid[key] = bucket
+                bucket.append(i)
+            self._grid_cell_deg = cell
+            if grid:
+                self._grid_bbox = (
+                    min(k[0] for k in grid),
+                    max(k[0] for k in grid),
+                    min(k[1] for k in grid),
+                    max(k[1] for k in grid),
+                )
+            self._grid = grid
+
+    def nearest_node(self, lat: float, lon: float) -> int:
+        """Closest node by equirectangular squared distance via a grid index.
+
+        Same argmin as the old full scan (the cos(lat) correction is hoisted
+        out once), but only nodes in expanding rings of grid cells around the
+        query are examined; rings stop as soon as their minimum possible
+        distance exceeds the best hit.
+        """
+        if self.num_nodes == 0:
+            return -1
+        self._ensure_grid()
+        grid = self._grid
+        assert grid is not None
+        cell = self._grid_cell_deg
         cos_lat = math.cos(math.radians(lat))
         lats = self.lat
         lons = self.lon
-        for i in range(self.num_nodes):
-            dlat = lats[i] - lat
-            dlon = (lons[i] - lon) * cos_lat
-            d = dlat * dlat + dlon * dlon
-            if d < best_d:
-                best_d = d
-                best_i = i
+
+        best_i = -1
+        best_d = math.inf
+        ci = int(math.floor(lat / cell))
+        cj = int(math.floor(lon / cell))
+        # Ring r can only contain points at least (r-1)*cell degrees away in
+        # lat or lon; in the scaled metric that is (r-1)*cell*cos_lat, so once
+        # that bound exceeds best_d no further ring can win. Rings are clipped
+        # to the populated bounding box so far-away queries terminate.
+        min_ci, max_ci, min_cj, max_cj = self._grid_bbox
+        max_ring = max(abs(ci - min_ci), abs(ci - max_ci), abs(cj - min_cj), abs(cj - max_cj))
+        bound_scale = cell * max(cos_lat, 1e-6)
+        for r in range(max_ring + 1):
+            if best_i >= 0:
+                lb = (r - 1) * bound_scale
+                if lb > 0 and lb * lb > best_d:
+                    break
+            lo_i, hi_i = ci - r, ci + r
+            lo_j, hi_j = cj - r, cj + r
+            for gi in range(max(lo_i, min_ci), min(hi_i, max_ci) + 1):
+                on_i_edge = gi == lo_i or gi == hi_i
+                for gj in range(max(lo_j, min_cj), min(hi_j, max_cj) + 1):
+                    if not on_i_edge and gj != lo_j and gj != hi_j:
+                        continue  # interior cell, visited in an earlier ring
+                    bucket = grid.get((gi, gj))
+                    if bucket is None:
+                        continue
+                    for i in bucket:
+                        dlat = lats[i] - lat
+                        dlon = (lons[i] - lon) * cos_lat
+                        d = dlat * dlat + dlon * dlon
+                        if d < best_d:
+                            best_d = d
+                            best_i = i
         return best_i
 
 

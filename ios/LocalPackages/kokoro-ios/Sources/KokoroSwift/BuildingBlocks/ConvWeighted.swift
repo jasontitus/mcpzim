@@ -10,6 +10,13 @@ class ConvWeighted: Module {
   var weightG: MLXArray
   var weightV: MLXArray
   var bias: MLXArray?
+  /// Normalized conv weight, computed ONCE at init: weightV/weightG never
+  /// change after construction in this inference-only port, but the full
+  /// L2-norm reduction + normalize/scale used to be rebuilt on EVERY
+  /// forward call — per audio frame for every conv in the decoder/
+  /// generator hot path. The bias is likewise pre-reshaped to its
+  /// broadcast form instead of re-reshaped per call.
+  private let normalizedWeight: MLXArray
 
   let stride: Int
   let padding: Int
@@ -35,12 +42,13 @@ class ConvWeighted: Module {
 
     self.weightG = weightG
     self.weightV = weightV
-    self.bias = bias
+    self.bias = bias?.reshaped([1, 1, -1])
+    self.normalizedWeight = Self.weightNorm(weightV: weightV, weightG: weightG, dim: 0)
 
     super.init()
   }
-  
-  private func computeNorm(
+
+  private static func computeNorm(
     x: MLXArray,
     p: Int,
     dim: [Int]? = nil,
@@ -66,7 +74,7 @@ class ConvWeighted: Module {
     }
   }
 
-  private func weightNorm(
+  private static func weightNorm(
     weightV: MLXArray,
     weightG: MLXArray,
     dim: Int? = nil
@@ -95,10 +103,9 @@ class ConvWeighted: Module {
     let normalizedWeight = weightV / (normV + 1e-7)
     return normalizedWeight * weightG
   }
-  
+
   public func callAsFunction(_ x: MLXArray, conv: (MLXArray, MLXArray, Int, Int, Int, Int, StreamOrDevice) -> MLXArray) -> MLXArray {
-    let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
-    bias = bias?.reshaped([1, 1, -1])
+    let weight = normalizedWeight
 
     func applyConv(x: MLXArray, weightToUse: MLXArray) -> MLXArray {
       let result = conv(
@@ -125,8 +132,7 @@ class ConvWeighted: Module {
   }
   
   public func callAsFunction(_ x: MLXArray, conv: (MLXArray, MLXArray, Int, Int, Int, Int, Int, StreamOrDevice) -> MLXArray) -> MLXArray {
-    let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
-    bias = bias?.reshaped([1, 1, -1])
+    let weight = normalizedWeight
 
     func applyConv(x: MLXArray, weightToUse: MLXArray) -> MLXArray {
       let result = conv(

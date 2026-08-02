@@ -1095,12 +1095,25 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         // Decode loop. Sample → detokenise → emit → feed back.
         var newTokens = 0
         var sampledTokens = 0
-        var buffered = ""
         var firstVisibleSeconds: Double?
         var firstVisibleAt: TimeInterval?
         var stopReason = "max_tokens"
         let decodeStarted = ProcessInfo.processInfo.systemUptime
         let maxTokens = parameters.maxTokens
+        // Rolling tail for stop-sequence detection: a stop marker completed
+        // by this piece must END inside it, so only the last few dozen
+        // characters ever need scanning — the old whole-buffer `contains`
+        // re-scanned the entire accumulated reply on every sampled token
+        // (O(n²) over a long grounded answer). The tail keeps at least
+        // 2×maxStopLen characters, so a marker spanning pieces still lands
+        // fully inside it.
+        let maxStopLen = parameters.stopSequences.map(\.count).max() ?? 0
+        let stopTailCap = max(128, maxStopLen * 2)
+        var stopTail = ""
+        // Reused detokenise scratch — allocating a fresh 64-byte buffer
+        // (plus a mapped array) per token was pure churn on the hottest
+        // loop.
+        var pieceBuf = [UInt8](repeating: 0, count: 64)
         while newTokens < maxTokens {
             if generationIsCancelled(generationID) { throw CancellationError() }
             let id = llama_sampler_sample(sp, ctx, -1)
@@ -1109,22 +1122,26 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                 break
             }
             sampledTokens += 1
-            // Detokenise the piece — llama.cpp returns raw bytes, we
-            // accumulate into `buffered` and emit on every chunk
-            // since callers expect UTF-8 strings. Occasional partial
-            // multi-byte chars are fine; String(cString:) will round-
-            // trip them on the next chunk.
-            var pieceBuf = [CChar](repeating: 0, count: 64)
+            // Detokenise the piece — llama.cpp returns raw bytes; callers
+            // expect UTF-8 strings. Occasional partial multi-byte chars
+            // are fine; they round-trip on the next chunk.
             let n = pieceBuf.withUnsafeMutableBufferPointer { buf in
-                llama_token_to_piece(
-                    vocab, id, buf.baseAddress, Int32(buf.count),
-                    /*lstrip*/ 0, /*special*/ false)
+                buf.baseAddress!.withMemoryRebound(
+                    to: CChar.self, capacity: buf.count
+                ) { p in
+                    llama_token_to_piece(
+                        vocab, id, p, Int32(buf.count),
+                        /*lstrip*/ 0, /*special*/ false)
+                }
             }
             if n > 0 {
-                let piece = String(
-                    decoding: pieceBuf.prefix(Int(n)).map { UInt8(bitPattern: $0) },
-                    as: UTF8.self)
-                buffered += piece
+                let piece = String(decoding: pieceBuf[0..<Int(n)], as: UTF8.self)
+                if maxStopLen > 0 {
+                    stopTail += piece
+                    if stopTail.count > stopTailCap * 2 {
+                        stopTail = String(stopTail.suffix(stopTailCap))
+                    }
+                }
                 if firstVisibleSeconds == nil {
                     let now = ProcessInfo.processInfo.systemUptime
                     firstVisibleAt = now
@@ -1138,9 +1155,9 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             // Check stop sequences. Post-emit so we don't clip the
             // stop marker on the caller side — mirrors how
             // Gemma4Provider watches for `<turn|>`.
-            if !parameters.stopSequences.isEmpty,
+            if maxStopLen > 0,
                parameters.stopSequences.contains(where: {
-                   buffered.contains($0)
+                   stopTail.contains($0)
                })
             {
                 stopReason = "stop_sequence"

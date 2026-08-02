@@ -31,6 +31,11 @@ final class KokoroDownloader: NSObject {
     /// show overall progress ("120 / 360 MB") without tracking
     /// per-file accounting.
     private(set) var cumulativeBytes: Int64 = 0
+    /// Progress-update coalescing: URLSession fires `didWriteData` many
+    /// times per second on a ~360 MB download, and each accepted callback
+    /// drives an Observation invalidation + progress-view re-render.
+    /// ~8 Hz is indistinguishable to the eye.
+    @ObservationIgnored private var lastProgressPush = Date.distantPast
 
     /// Set from a Task when the caller wants to cancel — we check
     /// this between files. In-flight URLSession tasks can also be
@@ -120,6 +125,9 @@ extension KokoroDownloader: URLSessionDownloadDelegate {
                                  totalBytesExpectedToWrite: Int64) {
         Task { @MainActor [weak self] in
             guard let self, case let .downloading(name, _, total, _) = state else { return }
+            let now = Date()
+            guard now.timeIntervalSince(lastProgressPush) >= 0.12 else { return }
+            lastProgressPush = now
             let effectiveTotal = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : total
             state = .downloading(
                 filename: name,

@@ -1887,7 +1887,12 @@ public enum Generation: Sendable {
     /// Reducer that can be used with `throttle()` to gather elements into a batch
     @Sendable
     public static func collect(_ batch: [Generation]?, _ element: Generation) -> [Generation] {
-        (batch ?? []) + [element]
+        // In-place append: `(batch ?? []) + [element]` copied the whole
+        // running batch per element — O(n²) assembly for large throttled
+        // batches.
+        var batch = batch ?? []
+        batch.append(element)
+        return batch
     }
 }
 
@@ -1922,7 +1927,10 @@ public enum TokenGeneration: Sendable {
     public static func collect(_ batch: [TokenGeneration]?, _ element: TokenGeneration)
         -> [TokenGeneration]
     {
-        (batch ?? []) + [element]
+        // In-place append — see `Generation.collect`.
+        var batch = batch ?? []
+        batch.append(element)
+        return batch
     }
 }
 

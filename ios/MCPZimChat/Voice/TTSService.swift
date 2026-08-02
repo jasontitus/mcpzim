@@ -39,8 +39,12 @@ public enum TTSChunkBoundary: Sendable {
 /// peak ceiling raises quiet output without clipping or applying an unsafe,
 /// fixed boost to already-loud voices.
 enum TTSPlaybackLevel {
-    static func normalized(_ samples: [Float]) -> [Float] {
-        guard !samples.isEmpty else { return samples }
+    /// Gain to bring the chunk to the target level (1.0 = leave as-is).
+    /// One scan pass, no allocation — callers fold the multiply into
+    /// their PCM-buffer write so the audio path makes ONE copy per chunk
+    /// instead of a normalized intermediate array plus the buffer copy.
+    static func gain(for samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 1.0 }
         var sumSquares: Float = 0
         var peak: Float = 0
         for sample in samples {
@@ -48,15 +52,16 @@ enum TTSPlaybackLevel {
             peak = max(peak, abs(sample))
         }
         let rms = (sumSquares / Float(samples.count)).squareRoot()
-        guard rms > 0.002, peak > 0 else { return samples }
+        guard rms > 0.002, peak > 0 else { return 1.0 }
         let targetRMS: Float = 0.12       // approximately -18 dBFS RMS
         let maximumGain: Float = 4.0      // at most +12 dB
         let desiredGain = min(maximumGain, max(1.0, targetRMS / rms))
         let clippingSafeGain = 0.95 / peak
         let gain = min(desiredGain, clippingSafeGain)
-        guard abs(gain - 1.0) > 0.02 else { return samples }
-        return samples.map { $0 * gain }
+        guard abs(gain - 1.0) > 0.02 else { return 1.0 }
+        return gain
     }
+
 }
 
 public protocol TTSService: AnyObject, Sendable {
@@ -414,17 +419,23 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
             let (nativeSamples, _) = try kokoro.generateAudio(
                 voice: embedding, language: language, text: chunk, speed: 1.0
             )
-            let samples = TTSPlaybackLevel.normalized(nativeSamples)
+            // Gain applied during the buffer copy — one pass, no
+            // normalized intermediate array per chunk.
+            let gain = TTSPlaybackLevel.gain(for: nativeSamples)
             Memory.clearCache()
-            guard !samples.isEmpty else { continue }
+            guard !nativeSamples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(samples.count)) else {
+                                             frameCapacity: AVAudioFrameCount(nativeSamples.count)) else {
                 throw TTSError.synthesisFailed("Could not allocate PCM buffer.")
             }
-            buf.frameLength = AVAudioFrameCount(samples.count)
+            buf.frameLength = AVAudioFrameCount(nativeSamples.count)
             if let dst = buf.floatChannelData?[0] {
-                samples.withUnsafeBufferPointer { src in
-                    dst.update(from: src.baseAddress!, count: samples.count)
+                nativeSamples.withUnsafeBufferPointer { src in
+                    if gain == 1.0 {
+                        dst.update(from: src.baseAddress!, count: nativeSamples.count)
+                    } else {
+                        for j in 0..<nativeSamples.count { dst[j] = src[j] * gain }
+                    }
                 }
             }
             if i == lastIdx {
@@ -465,17 +476,23 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
             let (nativeSamples, _) = try kokoro.generateAudio(
                 voice: embedding, language: language, text: sub, speed: 1.0
             )
-            let samples = TTSPlaybackLevel.normalized(nativeSamples)
+            // Gain applied during the buffer copy — one pass, no
+            // normalized intermediate array per chunk.
+            let gain = TTSPlaybackLevel.gain(for: nativeSamples)
             Memory.clearCache()
-            guard !samples.isEmpty else { continue }
+            guard !nativeSamples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(samples.count)) else {
+                                             frameCapacity: AVAudioFrameCount(nativeSamples.count)) else {
                 throw TTSError.synthesisFailed("Could not allocate PCM buffer.")
             }
-            buf.frameLength = AVAudioFrameCount(samples.count)
+            buf.frameLength = AVAudioFrameCount(nativeSamples.count)
             if let dst = buf.floatChannelData?[0] {
-                samples.withUnsafeBufferPointer { src in
-                    dst.update(from: src.baseAddress!, count: samples.count)
+                nativeSamples.withUnsafeBufferPointer { src in
+                    if gain == 1.0 {
+                        dst.update(from: src.baseAddress!, count: nativeSamples.count)
+                    } else {
+                        for j in 0..<nativeSamples.count { dst[j] = src[j] * gain }
+                    }
                 }
             }
             player.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)

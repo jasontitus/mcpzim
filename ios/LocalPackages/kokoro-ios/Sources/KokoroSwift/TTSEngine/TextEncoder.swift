@@ -139,11 +139,11 @@ final class TextEncoder {
     // Transpose back to [batch, channels, seq_len]
     x = MLX.swappedAxes(lstmOutput, 2, 1)
 
-    // Step 4: Ensure output has correct shape by padding if necessary
-    let xPad = MLX.zeros([x.shape[0], x.shape[1], mask.shape[mask.shape.count - 1]])
-    xPad._updateInternal(x)
-
-    // Apply final mask and return
-    return MLX.where(mask, 0.0, xPad)
+    // Step 4: apply the final mask and return. The old code allocated a
+    // same-shape zeros tensor and `_updateInternal`'d x into it — which
+    // replaces the array's contents wholesale (no actual padding ever
+    // happened), so it was a per-utterance allocation + forced eval for
+    // a no-op.
+    return MLX.where(mask, 0.0, x)
   }
 }

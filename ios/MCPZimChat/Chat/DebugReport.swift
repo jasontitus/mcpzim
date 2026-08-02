@@ -144,33 +144,41 @@ extension ChatSession {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let json = (try? encoder.encode(report)) ?? Data()
-        let b64 = json.base64EncodedString()
         let hash = shortHash(json)
 
-        let chunkSize = 500
-        let total = (b64.count + chunkSize - 1) / chunkSize
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        // Logger's OSLogMessage interpolation can't be concatenated
-        // with `+`, so build the lines as plain Strings and pass
-        // them through as a single `%{public}@` format specifier.
-        let beginLine =
-            "[DebugReport BEGIN hash=\(hash) total=\(total) "
-            + "size=\(json.count) time=\(timestamp)]"
-        reportLog.notice("\(beginLine, privacy: .public)")
-        var idx = 0
-        var start = b64.startIndex
-        while start < b64.endIndex, idx < total {
-            let end = b64.index(start, offsetBy: chunkSize,
-                                limitedBy: b64.endIndex) ?? b64.endIndex
-            let chunk = String(b64[start..<end])
-            idx += 1
-            let seqLine =
-                "[DebugReport seq=\(idx)/\(total) hash=\(hash)] \(chunk)"
-            reportLog.notice("\(seqLine, privacy: .public)")
-            start = end
+        // Base64 + the chunked os_log loop scale with conversation size
+        // (a long session with tool payloads can exceed the 250 ms
+        // main-thread hang bar on the user's "send report" tap) — run
+        // them detached at utility QoS. The encode above stays sync
+        // because the returned hash derives from it; the log lines
+        // remain ordered because one task emits them all.
+        Task.detached(priority: .utility) { [json, hash] in
+            let b64 = json.base64EncodedString()
+            let chunkSize = 500
+            let total = (b64.count + chunkSize - 1) / chunkSize
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            // Logger's OSLogMessage interpolation can't be concatenated
+            // with `+`, so build the lines as plain Strings and pass
+            // them through as a single `%{public}@` format specifier.
+            let beginLine =
+                "[DebugReport BEGIN hash=\(hash) total=\(total) "
+                + "size=\(json.count) time=\(timestamp)]"
+            reportLog.notice("\(beginLine, privacy: .public)")
+            var idx = 0
+            var start = b64.startIndex
+            while start < b64.endIndex, idx < total {
+                let end = b64.index(start, offsetBy: chunkSize,
+                                    limitedBy: b64.endIndex) ?? b64.endIndex
+                let chunk = String(b64[start..<end])
+                idx += 1
+                let seqLine =
+                    "[DebugReport seq=\(idx)/\(total) hash=\(hash)] \(chunk)"
+                reportLog.notice("\(seqLine, privacy: .public)")
+                start = end
+            }
+            let endLine = "[DebugReport END hash=\(hash) chunks=\(idx)]"
+            reportLog.notice("\(endLine, privacy: .public)")
         }
-        let endLine = "[DebugReport END hash=\(hash) chunks=\(idx)]"
-        reportLog.notice("\(endLine, privacy: .public)")
 
         #if DEBUG
         // Developer builds may optionally POST the same JSON as a

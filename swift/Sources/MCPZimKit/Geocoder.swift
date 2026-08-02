@@ -130,7 +130,8 @@ public enum Geocoder {
         for variant in variants {
             let bucket = String(subBucketFor(name: variant, nBuckets: nBuckets), radix: 16)
             let branch = "\(prefix)-\(bucket)"
-            for leaf in leaves where leaf == branch || leaf.hasPrefix(branch + "-") {
+            let branchPrefix = branch + "-"
+            for leaf in leaves where leaf == branch || leaf.hasPrefix(branchPrefix) {
                 if seenLeaves.insert(leaf).inserted { prioritized.append(leaf) }
             }
         }
@@ -160,16 +161,32 @@ public enum Geocoder {
     public static func rank(records: [[String: Any]], query: String, limit: Int, kinds: Set<String>? = nil) -> [Place] {
         let q = query.lowercased()
         if q.isEmpty { return [] }
-        var scored: [(offset: Int, length: Int, place: Place)] = []
-        for rec in records {
+        // Score first, build `Place`s only for the winners: a broad substring
+        // query can match thousands of records and only `limit` survive the
+        // sort — constructing a full Place (11 field extractions) per match
+        // was the bulk of the per-query allocation.
+        var scored: [(offset: Int, length: Int, index: Int)] = []
+        for (i, rec) in records.enumerated() {
             guard let name = rec["n"] as? String, !name.isEmpty else { continue }
             let kind = (rec["t"] as? String) ?? ""
             if let wanted = kinds, !wanted.contains(kind) { continue }
             let lower = name.lowercased()
             guard let range = lower.range(of: q) else { continue }
-            let place = Place(
-                name: name,
-                kind: kind,
+            scored.append((
+                offset: lower.distance(from: lower.startIndex, to: range.lowerBound),
+                length: name.count,
+                index: i
+            ))
+        }
+        scored.sort { a, b in
+            if a.offset != b.offset { return a.offset < b.offset }
+            return a.length < b.length
+        }
+        return scored.prefix(limit).map { entry in
+            let rec = records[entry.index]
+            return Place(
+                name: (rec["n"] as? String) ?? "",
+                kind: (rec["t"] as? String) ?? "",
                 lat: (rec["a"] as? Double) ?? 0,
                 lon: (rec["o"] as? Double) ?? 0,
                 subtype: (rec["s"] as? String) ?? "",
@@ -180,17 +197,7 @@ public enum Geocoder {
                 phone: Self.nonEmpty(rec["p"] as? String),
                 brand: Self.nonEmpty(rec["brand"] as? String)
             )
-            scored.append((
-                offset: lower.distance(from: lower.startIndex, to: range.lowerBound),
-                length: name.count,
-                place: place
-            ))
         }
-        scored.sort { a, b in
-            if a.offset != b.offset { return a.offset < b.offset }
-            return a.length < b.length
-        }
-        return scored.prefix(limit).map { $0.place }
     }
 
     /// Collapse an empty string to nil so optional Place fields stay nil

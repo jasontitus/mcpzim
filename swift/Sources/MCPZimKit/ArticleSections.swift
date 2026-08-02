@@ -66,19 +66,24 @@ public enum ArticleSections {
         // occurrence, record its heading text and start offset, then
         // slice the body between successive headings.
         let headingPattern = #"<h([23])\b[^>]*>(.*?)</h\1>"#
-        guard let regex = try? NSRegularExpression(
-            pattern: headingPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]
+        guard let regex = RegexCache.shared.compiled(
+            headingPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else {
             return [ArticleSection(title: "", level: 0, text: stripHTML(html))]
         }
         let fullRange = NSRange(html.startIndex..<html.endIndex, in: html)
         let matches = regex.matches(in: html, range: fullRange)
 
+        // Markers keep native String.Index positions: the old Int-offset
+        // round-trip (`distance(from: startIndex)` at capture, then
+        // `index(startIndex, offsetBy:)` at slice time) walked the whole
+        // string from the top per section — O(sections × length) per
+        // article parse on the article-fetch hot path.
         struct Marker {
             let level: Int
             let title: String
-            let headingStart: Int
-            let headingEnd: Int
+            let headingStart: String.Index
+            let headingEnd: String.Index
         }
         var markers: [Marker] = []
         for m in matches {
@@ -92,25 +97,23 @@ public enum ArticleSections {
             markers.append(Marker(
                 level: level,
                 title: title,
-                headingStart: html.distance(from: html.startIndex, to: headingRange.lowerBound),
-                headingEnd: html.distance(from: html.startIndex, to: headingRange.upperBound)
+                headingStart: headingRange.lowerBound,
+                headingEnd: headingRange.upperBound
             ))
         }
 
         var sections: [ArticleSection] = []
         // Lead = everything before the first h2/h3.
-        let leadEndOffset = markers.first?.headingStart ?? html.count
-        let leadEndIdx = html.index(html.startIndex, offsetBy: leadEndOffset)
+        let leadEndIdx = markers.first?.headingStart ?? html.endIndex
         let leadText = stripHTML(String(html[..<leadEndIdx]))
         if !leadText.isEmpty {
             sections.append(ArticleSection(title: "", level: 0, text: leadText))
         }
         // Named sections.
         for (i, marker) in markers.enumerated() {
-            let bodyStartIdx = html.index(html.startIndex, offsetBy: marker.headingEnd)
-            let nextHeadingStart = (i + 1 < markers.count)
-                ? markers[i + 1].headingStart : html.count
-            let bodyEndIdx = html.index(html.startIndex, offsetBy: nextHeadingStart)
+            let bodyStartIdx = marker.headingEnd
+            let bodyEndIdx = (i + 1 < markers.count)
+                ? markers[i + 1].headingStart : html.endIndex
             let raw = String(html[bodyStartIdx..<bodyEndIdx])
             let text = stripHTML(raw)
             if text.isEmpty { continue }

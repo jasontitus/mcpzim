@@ -125,6 +125,14 @@ public actor DefaultZimService: ZimService {
     private var graphs: [String: SZRGGraph] = [:]
     private var spatialGraphs: [String: SpatialGraph] = [:]
     private var chunks: [String: [String: [[String: Any]]]] = [:]
+    /// LRU bookkeeping for `chunks` (most-recently-used last) plus the total
+    /// record count currently pinned. The cache used to be unbounded — every
+    /// prefix a session's geocode/nearPlaces calls ever touched stayed
+    /// resident forever, the exact monotonic growth observed jetsamming the
+    /// app at 5.4 GB RSS. Eviction keeps repeat-query speed while bounding
+    /// the pin to one full-scan's worth of records.
+    private var chunkLRU: [(zim: String, prefix: String)] = []
+    private var cachedChunkRecords = 0
     private var manifests: [String: [String: Int]] = [:]
     /// zim → parsed category-index/manifest.json.
     private var categoryManifests: [String: [String: Any]] = [:]
@@ -364,7 +372,14 @@ public actor DefaultZimService: ZimService {
         guard let entry = try? reader.read(path: path),
               let html = String(data: entry.content, encoding: .utf8)
         else { return "" }
-        let lead = ArticleSections.parse(html: html).first?.text ?? ""
+        // Parse only a bounded prefix: `parse` strip-HTMLs EVERY section of
+        // the body, and this runs per candidate hit on the search hot path
+        // (overfetch ≈ limit×2 per variant). The lead lives at the top of
+        // the document; 64 K characters is far more than any lead needs for
+        // a `maxChars`-sized snippet.
+        let cap = 64 * 1024
+        let head = html.count > cap ? String(html.prefix(cap)) : html
+        let lead = ArticleSections.parse(html: head).first?.text ?? ""
         if lead.isEmpty { return "" }
         let singleLine = lead
             .replacingOccurrences(of: "\n", with: " ")
@@ -912,23 +927,31 @@ public actor DefaultZimService: ZimService {
         // the count was inflated. Collapse by name + ~11 m coordinate cell,
         // keeping the nearest instance (we iterate distance-ascending). Two
         // same-name venues a block apart stay distinct (different cell).
+        struct DedupKey: Hashable {
+            let name: String
+            let cellLat: Int32
+            let cellLon: Int32
+        }
         let sorted = hits.sorted { $0.1 < $1.1 }
-        var seen = Set<String>()
-        var deduped: [(Place, Double)] = []
-        for (p, d) in sorted {
-            let cellLat = Int((p.lat * 1e4).rounded())
-            let cellLon = Int((p.lon * 1e4).rounded())
-            let key = "\(p.name.lowercased())|\(cellLat)|\(cellLon)"
-            if seen.insert(key).inserted { deduped.append((p, d)) }
-        }
+        var seen = Set<DedupKey>()
+        seen.reserveCapacity(sorted.count)
+        var totalDeduped = 0
         var breakdown: [String: Int] = [:]
-        for (p, _) in deduped {
-            let key = p.subtype.isEmpty ? p.kind : p.subtype
-            breakdown[key, default: 0] += 1
+        let topCap = max(1, limit)
+        var top: [(Place, Double)] = []
+        for (p, d) in sorted {
+            let key = DedupKey(
+                name: p.name.lowercased(),
+                cellLat: Int32((p.lat * 1e4).rounded()),
+                cellLon: Int32((p.lon * 1e4).rounded())
+            )
+            guard seen.insert(key).inserted else { continue }
+            totalDeduped += 1
+            breakdown[p.subtype.isEmpty ? p.kind : p.subtype, default: 0] += 1
+            if top.count < topCap { top.append((p, d)) }
         }
-        let top = Array(deduped.prefix(max(1, limit)))
         return NearPlacesResult(
-            totalInRadius: deduped.count,
+            totalInRadius: totalDeduped,
             breakdown: breakdown,
             results: top
         )
@@ -1052,13 +1075,14 @@ public actor DefaultZimService: ZimService {
 
     private func loadCategoryChunk(pair: (name: String, reader: ZimReader), slug: String) -> [[String: Any]]? {
         let cacheKey = "__cat__:\(slug)"
-        if let cached = chunks[pair.name]?[cacheKey] { return cached }
+        if let cached = chunks[pair.name]?[cacheKey] {
+            touchChunk(zim: pair.name, prefix: cacheKey)
+            return cached
+        }
         guard let entry = try? pair.reader.read(path: "category-index/\(slug).json"),
               let decoded = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]]
         else { return nil }
-        var byPrefix = chunks[pair.name] ?? [:]
-        byPrefix[cacheKey] = decoded
-        chunks[pair.name] = byPrefix
+        cacheChunk(zim: pair.name, prefix: cacheKey, records: decoded)
         return decoded
     }
 
@@ -1620,20 +1644,55 @@ public actor DefaultZimService: ZimService {
         pair: (name: String, reader: ZimReader), prefix: String,
         cache: Bool = true
     ) throws -> [[String: Any]] {
-        if let cached = chunks[pair.name]?[prefix] { return cached }
+        if let cached = chunks[pair.name]?[prefix] {
+            touchChunk(zim: pair.name, prefix: prefix)
+            return cached
+        }
         log("loading search-data/\(prefix).json from \(pair.name)…")
         guard let entry = try pair.reader.read(path: "search-data/\(prefix).json") else {
             return []
         }
         let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]] ?? []
         // Sub-chunk leaf scans pass `cache: false`: a hot prefix can have
-        // dozens of multi-MB leaves, and pinning them all in the unbounded
-        // chunk cache would blow phone RAM for a one-off geocode.
+        // dozens of multi-MB leaves, and even the LRU-bounded cache has no
+        // business churning through them for a one-off geocode.
         if cache {
-            var byPrefix = chunks[pair.name] ?? [:]
-            byPrefix[prefix] = parsed
-            chunks[pair.name] = byPrefix
+            cacheChunk(zim: pair.name, prefix: prefix, records: parsed)
         }
         return parsed
+    }
+
+    // MARK: - Chunk-cache LRU
+
+    /// Budget on total records the chunk cache may pin: one full-scan's
+    /// worth. A second ZIM's scan (or a long geocode session) evicts the
+    /// least-recently-used chunks instead of accumulating without bound.
+    static let maxCachedChunkRecords = maxFullScanRecords
+
+    private func touchChunk(zim: String, prefix: String) {
+        guard let idx = chunkLRU.firstIndex(where: { $0.zim == zim && $0.prefix == prefix }),
+              idx != chunkLRU.count - 1
+        else { return }
+        let key = chunkLRU.remove(at: idx)
+        chunkLRU.append(key)
+    }
+
+    private func cacheChunk(zim: String, prefix: String, records: [[String: Any]]) {
+        if chunks[zim]?[prefix] != nil {
+            touchChunk(zim: zim, prefix: prefix)
+            return
+        }
+        chunks[zim, default: [:]][prefix] = records
+        chunkLRU.append((zim, prefix))
+        // Empty chunks still count 1 so a flood of misses can't grow the
+        // bookkeeping arrays unboundedly.
+        cachedChunkRecords += max(records.count, 1)
+        while cachedChunkRecords > Self.maxCachedChunkRecords, chunkLRU.count > 1 {
+            let victim = chunkLRU.removeFirst()
+            if let evicted = chunks[victim.zim]?.removeValue(forKey: victim.prefix) {
+                cachedChunkRecords -= max(evicted.count, 1)
+                log("chunk cache evicted \(victim.zim)/\(victim.prefix) (\(evicted.count) records)")
+            }
+        }
     }
 }

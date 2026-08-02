@@ -607,8 +607,8 @@ public enum WikiLinks {
 
     private static func parseLinks(source: String, max: Int) -> [Link] {
         let pattern = #"<a\b[^>]*?href="([^"]*)"[^>]*>(.*?)</a>"#
-        guard let re = try? NSRegularExpression(
-            pattern: pattern,
+        guard let re = RegexCache.shared.compiled(
+            pattern,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return [] }
 
@@ -653,19 +653,18 @@ public enum WikiLinks {
     /// boilerplate links live — are not `<p>` and so never reach the
     /// extractor.
     private static func proseParagraphs(_ html: String) -> String {
-        guard let re = try? NSRegularExpression(
-            pattern: #"<p\b[^>]*>(.*?)</p>"#,
+        guard let re = RegexCache.shared.compiled(
+            #"<p\b[^>]*>(.*?)</p>"#,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return "" }
         let range = NSRange(html.startIndex..., in: html)
-        var out = ""
+        var parts: [Substring] = []
         for m in re.matches(in: html, range: range) {
             if let r = Range(m.range(at: 1), in: html) {
-                out += html[r]
-                out += " "
+                parts.append(html[r])
             }
         }
-        return out
+        return parts.joined(separator: " ")
     }
 
     private static func isArticleLink(_ href: String) -> Bool {
@@ -697,8 +696,12 @@ public enum WikiLinks {
 
     private static func decodeAndStrip(_ s: String) -> String {
         // Drop any nested tags (links sometimes wrap <i>/<b>/<span>).
-        var t = s.replacingOccurrences(
-            of: "<[^>]+>", with: "", options: .regularExpression)
+        // Compiled once — this runs per link inside the parseLinks loop.
+        var t = s
+        if let re = RegexCache.shared.compiled("<[^>]+>") {
+            t = re.stringByReplacingMatches(
+                in: t, range: NSRange(t.startIndex..., in: t), withTemplate: "")
+        }
         let entities = [
             "&amp;": "&", "&lt;": "<", "&gt;": ">",
             "&quot;": "\"", "&#39;": "'", "&apos;": "'", "&nbsp;": " ",

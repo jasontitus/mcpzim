@@ -362,14 +362,21 @@ public struct SZRGGraph: Sendable {
         Int64(bitPattern: n >> 1) ^ -(Int64(bitPattern: n & 1))
     }
 
-    /// Linear-scan nearest node by haversine distance. Good enough for the
-    /// graph sizes streetzim ships (city or state scale); if profiling reveals
-    /// this as a hotspot, swap in a k-d tree on `(lat, lon)`.
+    /// Linear-scan nearest node by equirectangular squared distance — the
+    /// same argmin as haversine at street-graph scales (the cos(lat)
+    /// correction is hoisted out once), with no trig or sqrt per node.
+    /// plan_driving_route calls this twice per request; if the plain scan
+    /// still profiles hot on country-scale graphs, swap in a k-d tree.
     public func nearestNode(lat: Double, lon: Double) -> Int {
         var best = -1
         var bestD = Double.infinity
+        let cosLat = cos(lat * .pi / 180)
+        let lats = self.lat
+        let lons = self.lon
         for i in 0..<numNodes {
-            let d = haversineMeters(lat, lon, self.lat[i], self.lon[i])
+            let dLat = lats[i] - lat
+            let dLon = (lons[i] - lon) * cosLat
+            let d = dLat * dLat + dLon * dLon
             if d < bestD { bestD = d; best = i }
         }
         return best

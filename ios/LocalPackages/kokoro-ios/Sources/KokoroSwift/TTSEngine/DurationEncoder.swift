@@ -119,10 +119,17 @@ final class DurationEncoder {
         // Transpose back to [batch, features, seq_len]
         x = lstmOutput.transposed(0, 2, 1)
         
-        // Pad output to match original sequence length if needed
-        let xPad = MLXArray.zeros([x.shape[0], x.shape[1], m.shape[m.shape.count - 1]])
-        xPad[0 ..< x.shape[0], 0 ..< x.shape[1], 0 ..< x.shape[2]] = x
-        x = xPad
+        // Pad output to match original sequence length if needed. In the
+        // common case the LSTM preserves seq_len exactly — the old
+        // unconditional zeros-allocate + slice-write copied the whole
+        // tensor per LSTM layer (and the slice assignment forced an
+        // eval) for a no-op.
+        let targetLen = m.shape[m.shape.count - 1]
+        if x.shape[2] != targetLen {
+          let xPad = MLXArray.zeros([x.shape[0], x.shape[1], targetLen])
+          xPad[0 ..< x.shape[0], 0 ..< x.shape[1], 0 ..< x.shape[2]] = x
+          x = xPad
+        }
       }
     }
 

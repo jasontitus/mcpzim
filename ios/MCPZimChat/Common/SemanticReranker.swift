@@ -27,9 +27,13 @@ actor SemanticReranker {
     private var loadAttempted = false
     private var embedding: NLContextualEmbedding?
     /// In-memory cache of per-hit embeddings keyed by `zim:path`.
-    /// Snippets only change when the ZIM rebuilds so this is safe to
-    /// keep for the app's lifetime.
+    /// Snippets only change when the ZIM rebuilds so entries never go
+    /// stale — but a ZIM holds hundreds of thousands of articles and each
+    /// vector is ~4 KB, so an unbounded map could grow into tens of MB on
+    /// a 4–8 GB phone over a long search session. Flushed wholesale at the
+    /// cap (same policy as `embedTextCache`; ~8 MB worst case).
     private var cache: [String: [Double]] = [:]
+    private static let hitCacheCap = 2048
 
     /// Optional logging sink — wired up from ChatSession so reranker
     /// activity shows up in the debug pane ("reranked 10 → [#3 first]").
@@ -95,6 +99,9 @@ actor SemanticReranker {
                 guard let fresh = embed(capped, with: embedding) else {
                     scored.append(Scored(hit: hit, score: -.infinity))
                     continue
+                }
+                if cache.count >= Self.hitCacheCap {
+                    cache.removeAll(keepingCapacity: true)
                 }
                 cache[key] = fresh
                 vec = fresh

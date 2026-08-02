@@ -72,7 +72,10 @@ public final class FoundationModelsProvider: ModelProvider, @unchecked Sendable 
     /// load().
     private var session: LanguageModelSession?
     private var state: ModelLoadState = .notLoaded
-    private var continuations: [AsyncStream<ModelLoadState>.Continuation] = []
+    /// Keyed so `onTermination` can remove a dead subscriber — the old
+    /// append-only array retained every continuation for the app lifetime
+    /// and `set(_:)` fanned out to all of them forever.
+    private var continuations: [UUID: AsyncStream<ModelLoadState>.Continuation] = [:]
     private let queue = DispatchQueue(label: "foundation.state")
 
     /// Debug pane sink, mirroring the Gemma provider pattern.
@@ -237,9 +240,16 @@ public final class FoundationModelsProvider: ModelProvider, @unchecked Sendable 
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { cont in
+            let id = UUID()
             queue.sync {
                 cont.yield(self.state)
-                self.continuations.append(cont)
+                self.continuations[id] = cont
+            }
+            // Async removal: onTermination can fire from any context,
+            // including re-entrantly during the registration above.
+            cont.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.queue.async { self.continuations[id] = nil }
             }
         }
     }
@@ -247,7 +257,7 @@ public final class FoundationModelsProvider: ModelProvider, @unchecked Sendable 
     private func set(_ s: ModelLoadState) {
         queue.sync {
             self.state = s
-            self.continuations.forEach { $0.yield(s) }
+            self.continuations.values.forEach { $0.yield(s) }
         }
     }
 

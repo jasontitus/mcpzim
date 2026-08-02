@@ -32,8 +32,11 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     /// Subscribers notified on every new fix. ChatSession registers
     /// one at launch so `session.currentLocation` tracks the singleton
     /// without any polling / timeout. `@MainActor` guarantees the
-    /// subscriber doesn't see stale state.
-    nonisolated(unsafe) private var subscribers: [(CLLocationCoordinate2D) -> Void] = []
+    /// subscriber doesn't see stale state. Token-keyed so repeated
+    /// registrations (eval harnesses build many sessions per process)
+    /// can be removed instead of accumulating dead closures that every
+    /// GPS fix fans out to forever.
+    nonisolated(unsafe) private var subscribers: [(id: UUID, cb: (CLLocationCoordinate2D) -> Void)] = []
 
     /// Tests (or "offline dev" flows) can set this to bypass the real
     /// `CLLocationManager` and return a canned coordinate.
@@ -66,11 +69,18 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     }
 
     /// Subscribe to every new CL fix. The subscriber is called on the
-    /// main actor via `Task { @MainActor in ... }`. There's no
-    /// unsubscribe because callers are expected to live for the app
-    /// lifetime (ChatSession).
-    static func subscribe(_ cb: @escaping (CLLocationCoordinate2D) -> Void) {
-        DispatchQueue.main.async { shared.subscribers.append(cb) }
+    /// main actor via `Task { @MainActor in ... }`. App-lifetime callers
+    /// (the on-device ChatSession) may discard the token; short-lived
+    /// callers (eval harness sessions) pass it to `unsubscribe`.
+    @discardableResult
+    static func subscribe(_ cb: @escaping (CLLocationCoordinate2D) -> Void) -> UUID {
+        let id = UUID()
+        DispatchQueue.main.async { shared.subscribers.append((id, cb)) }
+        return id
+    }
+
+    static func unsubscribe(_ id: UUID) {
+        DispatchQueue.main.async { shared.subscribers.removeAll { $0.id == id } }
     }
 
     /// Optional debug hook wired by the host app. Every auth-state
@@ -270,7 +280,7 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
             for c in waiters { c.resume(returning: loc.coordinate) }
             // Push to every ChatSession / intent subscriber so their
             // `currentLocation` state stays fresh without polling.
-            for cb in self.subscribers { cb(loc.coordinate) }
+            for (_, cb) in self.subscribers { cb(loc.coordinate) }
         }
     }
 

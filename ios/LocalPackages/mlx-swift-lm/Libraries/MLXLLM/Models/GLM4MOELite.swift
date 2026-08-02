@@ -408,7 +408,12 @@ class GLM4MoELiteMoE: Module, UnaryLayer {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         let (inds, scores) = gate(x)
         var y = switchMLP(x, inds)
-        y = (y * scores[.ellipsis, .newAxis]).sum(axis: -2).asType(y.dtype)
+        // Cast the small scores vector down BEFORE the broadcast multiply:
+        // fp32 scores silently promoted the whole [B, L, K, hidden]
+        // combination tensor to fp32 (2× bandwidth per MoE layer per
+        // token), with the trailing asType only converting the result
+        // back after the damage was done.
+        y = (y * scores.asType(y.dtype)[.ellipsis, .newAxis]).sum(axis: -2)
         if let sharedExperts {
             y = y + sharedExperts(x)
         }

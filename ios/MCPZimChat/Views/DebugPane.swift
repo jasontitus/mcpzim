@@ -18,11 +18,16 @@ struct DebugPaneView: View {
     @State private var justCopied = false
     @State private var lastReportHash: String? = nil
 
-    private var dateFormatter: DateFormatter {
+    /// Static: as a computed property this constructed a fresh
+    /// DateFormatter (notoriously expensive to init) per row of the
+    /// ForEach over up to `maxDebugEntries` entries on every body pass.
+    private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
         df.dateFormat = "HH:mm:ss.SSS"
         return df
-    }
+    }()
+    private var dateFormatter: DateFormatter { Self.dateFormatter }
 
     var body: some View {
         // When the master toggle is off we want the chat to reach all

@@ -549,9 +549,13 @@ public class PaliGemma: Module, VLMModel, KVCacheDimensionProvider {
         }
 
         let inputEmbedding = languageModel.model.embedTokens(inputIds)
+        // false: only the first returned value is consumed (it comes from
+        // the last layer directly, not from the collected states) — `true`
+        // made the encoder append every one of its ~27 per-layer outputs
+        // per image forward just to drop them here.
         let (hiddenState, _, _) = self.visionModel(
             pixelValues.transposed(0, 2, 3, 1).asType(inputEmbedding.dtype),
-            outputHiddenStates: true
+            outputHiddenStates: false
         )
 
         var imageFeatures = hiddenState[.newAxis, .ellipsis].asType(inputEmbedding.dtype)

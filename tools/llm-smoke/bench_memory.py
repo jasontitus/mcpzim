@@ -93,14 +93,18 @@ FILLER_PARAGRAPHS = [
 def build_preamble(tokenizer, target_tokens: int) -> str:
     """Build a preamble of approximately `target_tokens` tokens by
     stitching BASE_INSTRUCTIONS with FILLER_PARAGRAPHS repeatedly, then
-    decoding a truncated tokenisation so the length is exact (±~20)."""
-    chunks = [BASE_INSTRUCTIONS]
+    decoding a truncated tokenisation so the length is exact (±~20).
+
+    Encodes incrementally — each appended paragraph is tokenised once —
+    instead of re-encoding the whole accumulated string per iteration
+    (which was O(target²) tokenizer work and dominated the bench's wall
+    time at the 40k target). Paragraphs join on "\\n\\n" so per-paragraph
+    encoding matches whole-string encoding to within BPE edge effects,
+    which the truncation tolerance already absorbs."""
+    ids = list(tokenizer.encode(BASE_INSTRUCTIONS))
     i = 0
-    while True:
-        ids = tokenizer.encode("".join(chunks))
-        if len(ids) >= target_tokens:
-            break
-        chunks.append(FILLER_PARAGRAPHS[i % len(FILLER_PARAGRAPHS)] + "\n\n")
+    while len(ids) < target_tokens:
+        ids.extend(tokenizer.encode(FILLER_PARAGRAPHS[i % len(FILLER_PARAGRAPHS)] + "\n\n"))
         i += 1
     # Truncate to the exact target. Decoding may drop a few tokens due to
     # BPE edge effects — close enough for a memory benchmark.

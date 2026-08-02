@@ -405,6 +405,11 @@ def extract_tool_call(text: str) -> Optional[tuple[str, dict]]:
 # ---------------------------------------------------------------------------
 # Run
 
+# Serialized once — TOOLS is module-constant data and this string was
+# rebuilt per case inside the case loop.
+TOOLS_JSON = json.dumps(TOOLS, ensure_ascii=False)
+
+
 def build_prompt(tokenizer, user_text: str) -> str:
     """Render a chat-templated prompt with tool schemas.
 
@@ -414,7 +419,7 @@ def build_prompt(tokenizer, user_text: str) -> str:
     top-level `tools=` arg). Fall back to inlining the JSON schema into the
     system message so every family at least *sees* the tools.
     """
-    tools_json = json.dumps(TOOLS, ensure_ascii=False)
+    tools_json = TOOLS_JSON
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": user_text},

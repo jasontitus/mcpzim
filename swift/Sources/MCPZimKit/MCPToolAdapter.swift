@@ -108,10 +108,18 @@ extension RouteSnapshot {
         guard polyline.count >= 2 else {
             return (totalDistanceMeters, totalDurationSeconds, 0)
         }
+        // Only the argmin matters here, so rank by equirectangular squared
+        // distance with the fixed GPS origin's cos hoisted out — the old
+        // per-vertex haversine re-ran sin/cos/asin against the constant
+        // origin for every vertex of a city-drive polyline on each
+        // "how much longer?" call.
         var bestIdx = 0
         var bestD = Double.infinity
+        let cosLat = cos(current.lat * .pi / 180)
         for (i, p) in polyline.enumerated() {
-            let d = Self.haversineMetersApprox(current.lat, current.lon, p.lat, p.lon)
+            let dLat = p.lat - current.lat
+            let dLon = (p.lon - current.lon) * cosLat
+            let d = dLat * dLat + dLon * dLon
             if d < bestD { bestD = d; bestIdx = i }
         }
         let covered = bestIdx < cumulativeDistanceMeters.count
@@ -243,7 +251,20 @@ public actor MCPToolAdapter {
         )
     }
 
+    /// Built once and cached: hosts read `registry`/`toolList` every LLM
+    /// turn, and rebuilding re-serialised every dynamic schema
+    /// (JSONSerialization with .sortedKeys) for data that is immutable
+    /// after init.
+    private var registryCache: MCPToolRegistry?
+
     public var registry: MCPToolRegistry {
+        if let cached = registryCache { return cached }
+        let built = buildRegistry()
+        registryCache = built
+        return built
+    }
+
+    private func buildRegistry() -> MCPToolRegistry {
         // Phase-B tool cull (2026-04-23): the model's declared menu is now
         // 10 tools (down from 21). Pruned tools kept their dispatch
         // handlers, so existing transcripts / retained conversations that
@@ -1043,9 +1064,15 @@ public actor MCPToolAdapter {
         // conversation can move to a related subject ("the architect", "the war
         // it's named after"), not just drill into its own sections.
         // `ConversationThreads.articleThreads` reads this `related` array.
-        // Best-effort: a failed re-read just omits the links, never the overview.
+        // Best-effort: a failed read just omits the links, never the overview.
+        // One shared body fetch feeds both the links and the hatnote scan
+        // below — this used to be two independent whole-article reads.
+        let articleHTML = try? await service.article(
+            path: resolved.path, zim: resolved.zim
+        ).text
         let related = (try? await Self.relatedLinks(
-            service: service, path: resolved.path, zim: resolved.zim
+            service: service, path: resolved.path, zim: resolved.zim,
+            html: articleHTML
         )) ?? []
         var result: [String: Any] = [
             "zim": resolved.zim,
@@ -1070,7 +1097,7 @@ public actor MCPToolAdapter {
         // the host can offer a switch. Best effort: no hatnotes → no key.
         if let alts = try? await Self.disambiguationAlternates(
             service: service, title: resolved.title, zim: resolved.zim,
-            path: resolved.path
+            path: resolved.path, html: articleHTML
         ), !alts.isEmpty {
             result["disambiguation"] = alts
         }
@@ -1422,25 +1449,37 @@ public actor MCPToolAdapter {
     /// article body itself. `[{title, path}]`, capped, self excluded.
     static func disambiguationAlternates(
         service: any ZimService, title: String, zim: String?,
-        path: String, max: Int = 3
+        path: String, max: Int = 3, html: String? = nil
     ) async throws -> [[String: Any]] {
-        let page = try await service.article(path: path, zim: zim)
+        let body: String
+        if let html {
+            body = html
+        } else {
+            body = try await service.article(path: path, zim: zim).text
+        }
         let selfKey = title.lowercased()
-        return ArticleHeuristics.disambiguationHatnotes(html: page.text, max: max + 1)
+        return ArticleHeuristics.disambiguationHatnotes(html: body, max: max + 1)
             .filter { $0.title.lowercased() != selfKey }
             .prefix(max)
             .map { ["title": $0.title, "path": $0.path] }
     }
 
     /// Parse the raw article HTML for outbound wikilinks and shape them into the
-    /// `[{title, path}]` array the drift extractor consumes. Reads the article
-    /// once more (the section path is already resolved) — cheap relative to the
-    /// LLM turn and keeps `article_overview`'s primary path unchanged.
+    /// `[{title, path}]` array the drift extractor consumes. Pass `html` when
+    /// the caller already holds the body — `article_overview` used to re-read
+    /// the full article here AND in `disambiguationAlternates`, two extra
+    /// whole-body fetches per overview call.
     private static func relatedLinks(
-        service: any ZimService, path: String, zim: String, max: Int = 20
+        service: any ZimService, path: String, zim: String, max: Int = 20,
+        html: String? = nil
     ) async throws -> [[String: Any]] {
-        let article = try await service.article(path: path, zim: zim)
-        return WikiLinks.parse(html: article.text, max: max).map {
+        let body: String
+        if let html {
+            body = html
+        } else {
+            body = try await service.article(path: path, zim: zim).text
+        }
+        return WikiLinks.parse(html: body, max: max).map {
             ["title": $0.title, "path": $0.path]
         }
     }
@@ -2238,11 +2277,17 @@ public actor MCPToolAdapter {
         let cap = 10
         var candidates: [(idx: Int, wiki: String)] = []
         candidates.reserveCapacity(min(cap, result.results.count))
+        // Single pass gathers the capped candidate list AND the
+        // wiki-tagged total for the diagnostic log below (this used to
+        // re-filter + allocate the whole result set just to count).
+        var totalWikiTagged = 0
         for (idx, pair) in result.results.enumerated() {
             let w = pair.place.wiki ?? ""
             if !w.isEmpty {
-                candidates.append((idx, w))
-                if candidates.count >= cap { break }
+                totalWikiTagged += 1
+                if candidates.count < cap {
+                    candidates.append((idx, w))
+                }
             }
         }
         // Diagnostic log — `print()` to stderr doesn't reach
@@ -2250,7 +2295,6 @@ public actor MCPToolAdapter {
         // host's streamer captures. Tells us whether "no wiki on pins"
         // is because the streetzim records didn't carry the tag vs
         // the article not resolving against a loaded Wikipedia ZIM.
-        let totalWikiTagged = result.results.filter { !($0.place.wiki?.isEmpty ?? true) }.count
         let sampleNames = result.results.prefix(3)
             .map { $0.place.name.isEmpty ? "(unnamed)" : $0.place.name }
             .joined(separator: ", ")
