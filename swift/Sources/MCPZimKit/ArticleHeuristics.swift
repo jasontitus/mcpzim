@@ -39,9 +39,8 @@ public enum ArticleHeuristics {
     /// Fetch the full ordered section list for an article given a title.
     /// Combines `articleByTitle` (fuzzy title → path resolution, handles
     /// redirects and the `en:Foo` OSM tag form) with `articleSections`
-    /// (full outline parse). Two reads — libzim caches entries so the
-    /// second is cheap, but if this ever shows up in profiling it's the
-    /// obvious thing to collapse into one service primitive.
+    /// (full outline parse). Two service calls, but the default service's
+    /// article LRU makes the second a cache hit — one read, one parse.
     public static func sectionsByTitle(
         service: any ZimService,
         title: String,
@@ -183,25 +182,29 @@ public enum ArticleHeuristics {
     /// Strip inline citation markers that look fine on screen but read
     /// badly through TTS. Keeps the sentence punctuation intact.
     /// Examples removed: [1], [12], [a], [citation needed], [note 3], [nb 2].
+    /// Patterns run through the shared compiled-regex cache — this is
+    /// called once per section on the narration/excerpt paths, and
+    /// `replacingOccurrences(options: .regularExpression)` recompiles
+    /// per call.
     public static func stripCitations(_ text: String) -> String {
-        let patterns = [
-            #"\[\s*\d{1,3}\s*\]"#,                          // [1], [12]
-            #"\[\s*[a-zA-Z]\s*\]"#,                         // [a], [B]
-            #"\[\s*citation needed\s*\]"#,                  // [citation needed]
-            #"\[\s*(?:note|nb|sic|clarification needed)[^\]]*\]"#,
+        let passes: [(pattern: String, template: String, options: NSRegularExpression.Options)] = [
+            (#"\[\s*\d{1,3}\s*\]"#, "", .caseInsensitive),  // [1], [12]
+            (#"\[\s*[a-zA-Z]\s*\]"#, "", .caseInsensitive), // [a], [B]
+            (#"\[\s*citation needed\s*\]"#, "", .caseInsensitive),
+            (#"\[\s*(?:note|nb|sic|clarification needed)[^\]]*\]"#, "", .caseInsensitive),
+            (#"[ \t]{2,}"#, " ", []),
+            (#" +([.,;:!?])"#, "$1", []),
         ]
         var out = text
-        for p in patterns {
-            out = out.replacingOccurrences(
-                of: p, with: "", options: [.regularExpression, .caseInsensitive]
+        for pass in passes {
+            guard let re = RegexCache.shared.compiled(
+                pass.pattern, options: pass.options
+            ) else { continue }
+            out = re.stringByReplacingMatches(
+                in: out, range: NSRange(out.startIndex..., in: out),
+                withTemplate: pass.template
             )
         }
-        out = out.replacingOccurrences(
-            of: #"[ \t]{2,}"#, with: " ", options: .regularExpression
-        )
-        out = out.replacingOccurrences(
-            of: #" +([.,;:!?])"#, with: "$1", options: .regularExpression
-        )
         return out
     }
 

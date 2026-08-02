@@ -133,6 +133,15 @@ public actor DefaultZimService: ZimService {
     /// the pin to one full-scan's worth of records.
     private var chunkLRU: [(zim: String, prefix: String)] = []
     private var cachedChunkRecords = 0
+    /// Parsed fan-out leaf shards, budgeted separately from `chunks` —
+    /// see `loadLeafChunk`.
+    private struct LeafKey: Hashable {
+        let zim: String
+        let leaf: String
+    }
+    private var leafChunks: [LeafKey: (records: [[String: Any]], bytes: Int)] = [:]
+    private var leafLRU: [LeafKey] = []
+    private var cachedLeafBytes = 0
     private var manifests: [String: [String: Int]] = [:]
     /// zim → parsed category-index/manifest.json.
     private var categoryManifests: [String: [String: Any]] = [:]
@@ -142,6 +151,17 @@ public actor DefaultZimService: ZimService {
     /// lazily from `streetzim-meta.json`. `nil` entry means "tried and
     /// the file wasn't there" — older streetzims don't ship the meta.
     private var bboxes: [String: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double)?] = [:]
+    /// Last few article bodies + parsed sections — see `ArticleCache`.
+    private let articleCache = ArticleCache()
+    /// Search-snippet LRU: one rendered lead line per (zim, path,
+    /// maxChars). Search over-fetches candidates (limit×2 per variant)
+    /// and the title / FTS / kind-fallback passes overlap heavily
+    /// within a turn, so the same lead was stripped many times per
+    /// query. Values are ≤ maxChars characters — the whole cache is
+    /// bytes, not MB.
+    private var snippetCache: [String: String] = [:]
+    private var snippetLRU: [String] = []
+    private static let maxCachedSnippets = 64
 
     /// Optional log sink the host sets to surface slow-step progress in the
     /// UI debug pane. Thread-safe on the actor.
@@ -262,7 +282,7 @@ public actor DefaultZimService: ZimService {
                 let key = "\(pair.name)\t\(h.path)"
                 if seen.contains(key) { continue }
                 seen.insert(key)
-                let snippet = leadSnippet(from: pair.reader, path: h.path, maxChars: 220)
+                let snippet = leadSnippet(from: pair.reader, zim: pair.name, path: h.path, maxChars: 220)
                 results.append(SearchHitResult(
                     zim: pair.name, kind: pair.reader.kind,
                     path: h.path, title: h.title, snippet: snippet
@@ -277,7 +297,7 @@ public actor DefaultZimService: ZimService {
                     let key = "\(pair.name)\t\(h.path)"
                     if seen.contains(key) { continue }
                     seen.insert(key)
-                    let snippet = leadSnippet(from: pair.reader, path: h.path, maxChars: 220)
+                    let snippet = leadSnippet(from: pair.reader, zim: pair.name, path: h.path, maxChars: 220)
                     results.append(SearchHitResult(
                         zim: pair.name, kind: pair.reader.kind,
                         path: h.path, title: h.title, snippet: snippet
@@ -368,18 +388,35 @@ public actor DefaultZimService: ZimService {
     /// Grab the opening of an article body and collapse it to a
     /// single plain-text line. Used to populate search snippets —
     /// keeps the model from picking a tangentially-named hit.
-    private func leadSnippet(from reader: ZimReader, path: String, maxChars: Int) -> String {
-        guard let entry = try? reader.read(path: path),
-              let html = String(data: entry.content, encoding: .utf8)
-        else { return "" }
-        // Parse only a bounded prefix: `parse` strip-HTMLs EVERY section of
-        // the body, and this runs per candidate hit on the search hot path
-        // (overfetch ≈ limit×2 per variant). The lead lives at the top of
-        // the document; 64 K characters is far more than any lead needs for
-        // a `maxChars`-sized snippet.
-        let cap = 64 * 1024
-        let head = html.count > cap ? String(html.prefix(cap)) : html
-        let lead = ArticleSections.parse(html: head).first?.text ?? ""
+    private func leadSnippet(from reader: ZimReader, zim: String, path: String, maxChars: Int) -> String {
+        let cacheKey = "\(zim)\t\(path)\t\(maxChars)"
+        if let cached = snippetCache[cacheKey] {
+            touchSnippet(cacheKey)
+            return cached
+        }
+        let snippet = renderLeadSnippet(from: reader, path: path, maxChars: maxChars)
+        cacheSnippet(cacheKey, snippet)
+        return snippet
+    }
+
+    private func renderLeadSnippet(from reader: ZimReader, path: String, maxChars: Int) -> String {
+        guard let entry = try? reader.read(path: path) else { return "" }
+        // Lead-only fast path: the lead lives before the first <h2>/<h3>,
+        // so strip just that prefix instead of parsing (and strip-HTMLing)
+        // EVERY section of the body — this runs per candidate hit on the
+        // search hot path (overfetch ≈ limit×2 per variant).
+        var lead = Self.leadPrefixHTML(of: entry.content)
+            .map(ArticleSections.stripHTML) ?? ""
+        if lead.isEmpty {
+            // No prose before the first heading (or undecodable prefix):
+            // fall back to the bounded full parse, whose first section is
+            // then the first named one — matching the pre-fast-path output.
+            guard let html = String(data: entry.content, encoding: .utf8)
+            else { return "" }
+            let cap = 64 * 1024
+            let head = html.count > cap ? String(html.prefix(cap)) : html
+            lead = ArticleSections.parse(html: head).first?.text ?? ""
+        }
         if lead.isEmpty { return "" }
         let singleLine = lead
             .replacingOccurrences(of: "\n", with: " ")
@@ -388,22 +425,103 @@ public actor DefaultZimService: ZimService {
         return String(singleLine.prefix(maxChars)) + "…"
     }
 
+    /// Raw-UTF-8 scan for the first `<h2`/`<h3`, returning the decoded
+    /// prefix before it (capped — a `maxChars`-sized snippet never needs
+    /// more). Nil when the prefix isn't valid UTF-8.
+    static func leadPrefixHTML(of content: Data, capBytes: Int = 64 * 1024) -> String? {
+        content.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> String? in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let limit = min(bytes.count, capBytes)
+            var cut = limit
+            if limit >= 3 {
+                let lt = UInt8(ascii: "<")
+                for i in 0..<(limit - 2) where bytes[i] == lt {
+                    let tag = bytes[i + 1] | 0x20   // ASCII lowercase
+                    guard tag == UInt8(ascii: "h"),
+                          bytes[i + 2] == UInt8(ascii: "2")
+                              || bytes[i + 2] == UInt8(ascii: "3")
+                    else { continue }
+                    cut = i
+                    break
+                }
+            }
+            // Never split a multi-byte UTF-8 sequence at the byte cap.
+            while cut > 0, cut < bytes.count, bytes[cut] & 0xC0 == 0x80 {
+                cut -= 1
+            }
+            guard cut > 0 else { return "" }
+            return String(bytes: bytes[0..<cut], encoding: .utf8)
+        }
+    }
+
+    private func touchSnippet(_ key: String) {
+        guard let idx = snippetLRU.firstIndex(of: key),
+              idx != snippetLRU.count - 1
+        else { return }
+        snippetLRU.append(snippetLRU.remove(at: idx))
+    }
+
+    private func cacheSnippet(_ key: String, _ snippet: String) {
+        if snippetCache.updateValue(snippet, forKey: key) == nil {
+            snippetLRU.append(key)
+            while snippetLRU.count > Self.maxCachedSnippets {
+                snippetCache.removeValue(forKey: snippetLRU.removeFirst())
+            }
+        } else {
+            touchSnippet(key)
+        }
+    }
+
     public func article(path: String, zim: String?) async throws -> ArticleResult {
         let targets = readers.filter { zim == nil || $0.name == zim }
         if targets.isEmpty { throw ZimServiceError.unknownZim(zim ?? "<any>") }
         for pair in targets {
-            if let entry = try? pair.reader.read(path: path) {
+            if let cached = await cachedArticle(pair: pair, path: path) {
                 return ArticleResult(
                     zim: pair.name,
-                    path: entry.path,
-                    title: entry.title,
-                    mimetype: entry.mimetype,
-                    text: String(data: entry.content, encoding: .utf8) ?? "",
-                    bytes: entry.content.count
+                    path: cached.path,
+                    title: cached.title,
+                    mimetype: cached.mimetype,
+                    text: cached.html,
+                    bytes: cached.bytes
                 )
             }
         }
         throw ZimServiceError.notFound(path)
+    }
+
+    /// Cache-through read of one article body; nil when `path` isn't
+    /// in this reader.
+    private func cachedArticle(
+        pair: (name: String, reader: ZimReader), path: String
+    ) async -> ArticleCache.Entry? {
+        if let hit = await articleCache.entry(zim: pair.name, path: path) {
+            return hit
+        }
+        guard let entry = try? pair.reader.read(path: path) else { return nil }
+        let stored = ArticleCache.Entry(
+            path: entry.path,
+            title: entry.title,
+            mimetype: entry.mimetype,
+            html: String(data: entry.content, encoding: .utf8) ?? "",
+            bytes: entry.content.count,
+            sections: nil
+        )
+        await articleCache.store(zim: pair.name, path: path, entry: stored)
+        return stored
+    }
+
+    /// Parsed sections for an already-fetched body, reusing (and
+    /// back-filling) the article cache — so a fetch+parse pair like
+    /// `sectionsByTitle` costs one read and one parse instead of two
+    /// of each.
+    private func cachedSections(zim: String, path: String, html: String) async -> [ArticleSection] {
+        if let cached = await articleCache.entry(zim: zim, path: path)?.sections {
+            return cached
+        }
+        let sections = ArticleSections.parse(html: html)
+        await articleCache.setSections(sections, zim: zim, path: path)
+        return sections
     }
 
     /// Parse an article into ordered sections and return their
@@ -411,7 +529,7 @@ public actor DefaultZimService: ZimService {
     /// asking it to pick sections to read).
     public func articleSections(path: String, zim: String?) async throws -> (zim: String, title: String, sections: [ArticleSection]) {
         let article = try await article(path: path, zim: zim)
-        let sections = ArticleSections.parse(html: article.text)
+        let sections = await cachedSections(zim: article.zim, path: path, html: article.text)
         return (article.zim, article.title, sections)
     }
 
@@ -517,9 +635,9 @@ public actor DefaultZimService: ZimService {
         let probes = candidates.map { ($0, wikiPaths) } + bundled.map { ($0, bundlePaths) }
         for (pair, pathSet) in probes {
             for candidate in pathSet {
-                if let entry = try? pair.reader.read(path: candidate) {
-                    let html = String(data: entry.content, encoding: .utf8) ?? ""
-                    let sections = ArticleSections.parse(html: html)
+                if let entry = await cachedArticle(pair: pair, path: candidate) {
+                    let sections = await cachedSections(
+                        zim: pair.name, path: candidate, html: entry.html)
                     let wantSection = section ?? "lead"
                     let found = ArticleSections.find(wantSection, in: sections)
                         ?? sections.first
@@ -684,9 +802,10 @@ public actor DefaultZimService: ZimService {
                 // Sub-chunk bucketing hashes the full NAME, so a query
                 // can't route to one leaf — pre-filter each leaf by
                 // substring and rank the survivors once. Early-exit
-                // when we already hold plenty of candidates; leaves are
-                // loaded uncached so a hot-prefix scan can't pin
-                // hundreds of MB in the chunk cache.
+                // when we already hold plenty of candidates; leaves go
+                // through their own small byte-budgeted LRU (not the
+                // chunk cache) so a hot-prefix scan can't pin hundreds
+                // of MB.
                 var matching: [[String: Any]] = []
                 let q = attempt.lowercased()
                 let orderedLeaves = Geocoder.prioritizeSubChunkLeaves(
@@ -697,12 +816,11 @@ public actor DefaultZimService: ZimService {
                     } else {
                         // JSONSerialization creates a large temporary object
                         // graph for each multi-MB shard. Drain it per leaf and
-                        // retain only matching records; without this pool a
-                        // 256-leaf `st` scan peaked +1.45 GB on iPhone even
-                        // though loadChunk(cache:false) did not cache shards.
+                        // retain only matching records plus the (budgeted)
+                        // cached shard; without this pool a 256-leaf `st`
+                        // scan peaked +1.45 GB on iPhone.
                         let leafMatches: [[String: Any]] = try autoreleasepool {
-                            let records = try loadChunk(
-                                pair: pair, prefix: leaf, cache: false)
+                            let records = try loadLeafChunk(pair: pair, leaf: leaf)
                             return records.filter {
                                 (($0["n"] as? String) ?? "")
                                     .lowercased().contains(q)
@@ -1641,8 +1759,7 @@ public actor DefaultZimService: ZimService {
     }
 
     private func loadChunk(
-        pair: (name: String, reader: ZimReader), prefix: String,
-        cache: Bool = true
+        pair: (name: String, reader: ZimReader), prefix: String
     ) throws -> [[String: Any]] {
         if let cached = chunks[pair.name]?[prefix] {
             touchChunk(zim: pair.name, prefix: prefix)
@@ -1653,11 +1770,41 @@ public actor DefaultZimService: ZimService {
             return []
         }
         let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]] ?? []
-        // Sub-chunk leaf scans pass `cache: false`: a hot prefix can have
-        // dozens of multi-MB leaves, and even the LRU-bounded cache has no
-        // business churning through them for a one-off geocode.
-        if cache {
-            cacheChunk(zim: pair.name, prefix: prefix, records: parsed)
+        cacheChunk(zim: pair.name, prefix: prefix, records: parsed)
+        return parsed
+    }
+
+    /// Fan-out leaf loader with its own LRU, kept apart from the chunk
+    /// cache: hot prefixes are by construction the most-geocoded names,
+    /// so re-decompressing + re-parsing dozens of multi-MB leaves per
+    /// geocode was pure repeat cost — but one hot prefix can also span
+    /// hundreds of leaves (the "453 chunks, 5.4 GB, jetsam" war story),
+    /// so the budget stays small. Raw shard bytes stand in for parsed
+    /// footprint.
+    private func loadLeafChunk(
+        pair: (name: String, reader: ZimReader), leaf: String
+    ) throws -> [[String: Any]] {
+        let key = LeafKey(zim: pair.name, leaf: leaf)
+        if let cached = leafChunks[key] {
+            touchLeaf(key)
+            return cached.records
+        }
+        log("loading search-data/\(leaf).json from \(pair.name)…")
+        guard let entry = try pair.reader.read(path: "search-data/\(leaf).json") else {
+            return []
+        }
+        let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]] ?? []
+        leafChunks[key] = (records: parsed, bytes: entry.content.count)
+        leafLRU.append(key)
+        cachedLeafBytes += entry.content.count
+        while cachedLeafBytes > Self.maxCachedLeafBytes
+            || leafLRU.count > Self.maxCachedLeaves,
+            leafLRU.count > 1
+        {
+            let victim = leafLRU.removeFirst()
+            if let evicted = leafChunks.removeValue(forKey: victim) {
+                cachedLeafBytes -= evicted.bytes
+            }
         }
         return parsed
     }
@@ -1668,6 +1815,19 @@ public actor DefaultZimService: ZimService {
     /// worth. A second ZIM's scan (or a long geocode session) evicts the
     /// least-recently-used chunks instead of accumulating without bound.
     static let maxCachedChunkRecords = maxFullScanRecords
+
+    /// Raw-byte + leaf-count budgets for the fan-out leaf cache — small
+    /// enough that even a session of hot-prefix geocodes stays tens of
+    /// MB, not the multi-GB an unbounded shard cache once reached.
+    static let maxCachedLeafBytes = 24 * 1024 * 1024
+    static let maxCachedLeaves = 64
+
+    private func touchLeaf(_ key: LeafKey) {
+        guard let idx = leafLRU.firstIndex(of: key),
+              idx != leafLRU.count - 1
+        else { return }
+        leafLRU.append(leafLRU.remove(at: idx))
+    }
 
     private func touchChunk(zim: String, prefix: String) {
         guard let idx = chunkLRU.firstIndex(where: { $0.zim == zim && $0.prefix == prefix }),

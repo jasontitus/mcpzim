@@ -146,6 +146,20 @@ public enum ArticleSections {
 
     // MARK: - HTML → text
 
+    /// Regex-replace through the shared compiled cache —
+    /// `replacingOccurrences(options: .regularExpression)` recompiles
+    /// its pattern on every call, and the stripper runs a dozen such
+    /// passes per section body AND per heading title.
+    private static func regexReplace(
+        _ s: String, _ pattern: String, _ template: String,
+        options: NSRegularExpression.Options = []
+    ) -> String {
+        guard let re = RegexCache.shared.compiled(pattern, options: options)
+        else { return s }
+        return re.stringByReplacingMatches(
+            in: s, range: NSRange(s.startIndex..., in: s), withTemplate: template)
+    }
+
     /// Strip HTML tags + decode the handful of entities we actually
     /// see in Kiwix Wikipedia output. Intentionally not a full HTML
     /// parser — the ZIM output is regular enough that this covers
@@ -164,10 +178,11 @@ public enum ArticleSections {
         // one-line subsidiary blurb, and two hatnote sentences (real
         // capture 2026-08-02). Disambiguation offers read hatnotes from the
         // RAW html separately, so stripping them from prose loses nothing.
-        out = out.replacingOccurrences(
-            of: #"(?s)<div[^>]*class="[^"]*\b(?:hatnote|shortdescription)\b[^"]*"[^>]*>.*?</div>"#,
-            with: " ",
-            options: [.regularExpression, .caseInsensitive])
+        out = regexReplace(
+            out,
+            #"(?s)<div[^>]*class="[^"]*\b(?:hatnote|shortdescription)\b[^"]*"[^>]*>.*?</div>"#,
+            " ",
+            options: .caseInsensitive)
         // Drop known-noisy blocks whole, before tag-stripping, so
         // their inner text doesn't pollute prose.
         out = removeBlock(out, tag: "script")
@@ -186,9 +201,7 @@ public enum ArticleSections {
         let blockBreaks = ["</p>", "</li>", "</h2>", "</h3>", "</h4>", "</div>", "<br>", "<br/>", "<br />"]
         for b in blockBreaks { out = out.replacingOccurrences(of: b, with: "\n") }
         // Strip tags.
-        out = out.replacingOccurrences(
-            of: "<[^>]+>", with: " ", options: .regularExpression
-        )
+        out = regexReplace(out, "<[^>]+>", " ")
         // Decode the common entities. Full HTML entity decode is
         // overkill; this catches the ones Kiwix emits.
         let entities: [(String, String)] = [
@@ -202,27 +215,18 @@ public enum ArticleSections {
         // tidy the parentheticals they empty out — see stripSpeechArtifacts.
         out = stripSpeechArtifacts(out)
         // Collapse whitespace.
-        out = out.replacingOccurrences(
-            of: "[ \\t]+", with: " ", options: .regularExpression
-        )
-        out = out.replacingOccurrences(
-            of: " *\n *", with: "\n", options: .regularExpression
-        )
-        out = out.replacingOccurrences(
-            of: "\n{3,}", with: "\n\n", options: .regularExpression
-        )
+        out = regexReplace(out, "[ \\t]+", " ")
+        out = regexReplace(out, " *\n *", "\n")
+        out = regexReplace(out, "\n{3,}", "\n\n")
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Remove `<tag>…</tag>` blocks (outermost pairs). Crude but fine
     /// for tags that never nest (script/style/nav/video/audio).
     private static func removeBlock(_ html: String, tag: String) -> String {
-        let pattern = "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>"
-        return html.replacingOccurrences(
-            of: pattern,
-            with: " ",
-            options: [.regularExpression, .caseInsensitive]
-        )
+        regexReplace(
+            html, "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>", " ",
+            options: .caseInsensitive)
     }
 
     /// Depth-aware `<tag>…</tag>` removal for tags that NEST. The maxi
@@ -233,8 +237,8 @@ public enum ArticleSections {
     /// looping physicist names from the General-relativity sidebar).
     private static func removeNestedBlock(_ html: String, tag: String) -> String {
         let ns = html as NSString
-        guard let re = try? NSRegularExpression(
-            pattern: "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]
+        guard let re = RegexCache.shared.compiled(
+            "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]
         ) else { return html }
         var out = ""
         var depth = 0
@@ -271,8 +275,8 @@ public enum ArticleSections {
     /// eat "geography".
     private static func removeSpansByClass(_ html: String, _ classTokens: Set<String>) -> String {
         let ns = html as NSString
-        guard let re = try? NSRegularExpression(
-            pattern: "<(/?)span\\b([^>]*)>", options: [.caseInsensitive])
+        guard let re = RegexCache.shared.compiled(
+            "<(/?)span\\b([^>]*)>", options: [.caseInsensitive])
         else { return html }
         let tags = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
         var removals: [NSRange] = []
@@ -317,9 +321,9 @@ public enum ArticleSections {
         let ipa = "[\\x{0250}-\\x{02FF}\\x{0300}-\\x{036F}\\x{1D00}-\\x{1D7F}\\x{00E6}\\x{00F8}\\x{0153}]"
         var out = text.replacingOccurrences(of: "\u{24D8}", with: " ")  // ⓘ
         func rx(_ pattern: String, _ replacement: String, ci: Bool = false) {
-            out = out.replacingOccurrences(
-                of: pattern, with: replacement,
-                options: ci ? [.regularExpression, .caseInsensitive] : [.regularExpression])
+            out = regexReplace(
+                out, pattern, replacement,
+                options: ci ? [.caseInsensitive] : [])
         }
         rx("\\(\\s*listen\\s*\\)", "", ci: true)            // "(listen)"
         rx("english pronunciation:?", "", ci: true)         // label
