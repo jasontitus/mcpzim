@@ -442,6 +442,36 @@ public enum IntentRouter {
             ])
         }
 
+        // Date/event factoid OPENERS name their subject and want one fact:
+        // "When did Bulgaria join NATO?" as a session's first turn missed
+        // every fast path and fell into the LLM tool loop — which on-device
+        // costs ~15 s of prefill PER tool round-trip, wandered to
+        // "Bulgaria–North Macedonia relations" first, and hit the circuit
+        // breaker with no answer delivered (real capture 2026-08-02). The
+        // grounded overview path answers the same shape mid-discussion in
+        // ~3 s: route the opener there too — the full question rides along,
+        // and the key-fact extractor quotes the dated sentence.
+        if let m = match(lower, pattern:
+            #"^(?:when|what\s+year|what\s+date)\s+(?:did|was|were|does|do|has|have|is)\s+(.+?)\s+(?:join|start|begin|end|becom|become|became|gain|declar|win|won|lose|lost|fall|fell|found|independen|launch|open|close|die|born|built|build|made|create|complet|establish|invent|discover|elect|crown|marri|assassinat|kill|releas|publish|form|sign|enter|leave|left|adopt)"#)
+        {
+            let subject = m[0].trimmingCharacters(in: .whitespaces)
+            let firstWord = subject
+                .split(separator: " ", maxSplits: 1)
+                .first.map(String.init) ?? ""
+            let factoidNavPronouns: Set<String> = [
+                "my", "our", "your", "here", "now", "next",
+                "this", "that", "these", "those", "it", "he", "she",
+                "they", "his", "her", "their", "him", "them", "i", "we",
+            ]
+            if !subject.isEmpty, !factoidNavPronouns.contains(firstWord) {
+                return DirectIntent(toolName: "article_overview", args: [
+                    "title": .string(Self.stripPossessiveFacet(from: subject))
+                ])
+            }
+            // Pronoun subject ("when did it join…") falls through — the
+            // focus-aware continuation path owns those.
+        }
+
         // "tell me about X" / "what is X" / "who is/was X" /
         // "give me an overview of X" → article_overview. Runs LAST
         // so that `what_is_here`, directions, `compare`, and places

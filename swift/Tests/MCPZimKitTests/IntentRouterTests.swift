@@ -1321,3 +1321,22 @@ final class IntentRouterTests: XCTestCase {
             sections, question: "When was the revolution?").isEmpty)
     }
 }
+
+// MARK: - Factoid openers route to grounded overview (capture 2026-08-02)
+
+extension IntentRouterTests {
+    func testDateFactoidOpenerRoutesToOverview() {
+        let i = IntentRouter.classify("When did Bulgaria join nato?")
+        XCTAssertEqual(i?.toolName, "article_overview")
+        XCTAssertEqual(i?.anyArgs["title"] as? String, "bulgaria")
+        let i2 = IntentRouter.classify("What year was the Eiffel Tower built?")
+        XCTAssertEqual(i2?.toolName, "article_overview")
+        XCTAssertEqual(i2?.anyArgs["title"] as? String, "the eiffel tower")
+    }
+
+    func testPronounFactoidOpenerNotHijacked() {
+        // "When did it join nato?" must stay with the continuation path.
+        let i = IntentRouter.classify("When did it join nato?")
+        XCTAssertNotEqual(i?.anyArgs["title"] as? String, "it")
+    }
+}
