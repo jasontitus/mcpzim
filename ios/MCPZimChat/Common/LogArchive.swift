@@ -89,7 +89,7 @@ public final class LogArchive: @unchecked Sendable {
         // this fires on every launch — seek to the last 16 KB instead of
         // loading the whole file to inspect 3 lines. A mid-codepoint
         // start only garbles the first (discarded) line.
-        guard let fh = try? FileHandle(forReading: prev) else { return nil }
+        guard let fh = try? FileHandle(forReadingFrom: prev) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
         let tailCap: UInt64 = 16 * 1024
