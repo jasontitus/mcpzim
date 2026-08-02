@@ -1,5 +1,8 @@
 # Performance fixes applied — 2026-08-02
 
+> Per-finding ledger (every finding → applied / deferred / dismissed,
+> with rationale and evidence): `docs/DS4_REVIEW_DISPOSITION.md`.
+
 The safe tier of the DS4 sweep review (`DS4_REVIEW_PERF.md`, repo root —
 376 files, ~80 findings across 37 batches), applied on
 `claude/review-bugs-performance-s61ch3`. This pass covers every
