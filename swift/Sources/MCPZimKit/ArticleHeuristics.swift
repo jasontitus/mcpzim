@@ -655,7 +655,13 @@ public enum ArticleHeuristics {
             out += cleanedTitle + ".\n\n"
         }
         for s in sections {
-            let body = stripCitations(s.text).trimmingCharacters(in: .whitespacesAndNewlines)
+            // The lead often opens with the article's own title repeated
+            // (infobox caption + heading spans) — spoken aloud that's
+            // "Cessna. Cessna. Cessna…" before the first real sentence
+            // (real capture 2026-08-02). The stripper is conservative:
+            // only leading lines that normalize to the title are dropped.
+            let deduped = stripLeadingTitleRepetition(s.text, title: cleanedTitle)
+            let body = stripCitations(deduped).trimmingCharacters(in: .whitespacesAndNewlines)
             if body.isEmpty { continue }
             if s.title.isEmpty {
                 out += body + "\n\n"

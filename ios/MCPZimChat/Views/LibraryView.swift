@@ -233,6 +233,7 @@ struct LibraryView: View {
             }
 
             Section("About & privacy") {
+                LabeledContent("Version", value: Self.appVersionString)
                 Link(destination: URL(string: "https://tiltastech-zimfo.web.app/privacy")!) {
                     Label("Privacy policy", systemImage: "hand.raised")
                 }
@@ -357,6 +358,17 @@ struct LibraryView: View {
             }
         }.reduce(into: [String]()) { acc, x in if !acc.contains(x) { acc.append(x) } }
         + ["search", "get_article"]
+    }
+
+    /// "1.0 (20260802151334)" — marketing version + the datestamped build
+    /// number the TestFlight pipeline stamps, so a tester's settings page
+    /// identifies the exact upload. Dev builds show the project default.
+    static var appVersionString: String {
+        let short = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(short) (\(build))"
     }
 }
 

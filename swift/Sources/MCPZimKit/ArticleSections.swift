@@ -158,6 +158,16 @@ public enum ArticleSections {
         // cluster, the ⓘ "listen" button, and inline coordinate spans
         // before they reach TTS as symbol-by-symbol gibberish.
         out = removeSpansByClass(out, ["ipa", "rt-commentedtext", "ext-phonos", "geo", "coordinates"])
+        // Hatnotes ("This article is about… / Not to be confused with…")
+        // and the Wikidata short-description are metadata, not prose — left
+        // in, a read-aloud of Cessna opened with three title repeats, a
+        // one-line subsidiary blurb, and two hatnote sentences (real
+        // capture 2026-08-02). Disambiguation offers read hatnotes from the
+        // RAW html separately, so stripping them from prose loses nothing.
+        out = out.replacingOccurrences(
+            of: #"(?s)<div[^>]*class="[^"]*\b(?:hatnote|shortdescription)\b[^"]*"[^>]*>.*?</div>"#,
+            with: " ",
+            options: [.regularExpression, .caseInsensitive])
         // Drop known-noisy blocks whole, before tag-stripping, so
         // their inner text doesn't pollute prose.
         out = removeBlock(out, tag: "script")

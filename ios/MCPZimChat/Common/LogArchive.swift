@@ -51,6 +51,16 @@ public final class LogArchive: @unchecked Sendable {
             currentURL = url
             handle = try? FileHandle(forWritingTo: url)
 
+            // First line of every session log identifies the exact build —
+            // pasted logs and crash-tail forensics are only comparable
+            // across sessions when the build they came from is knowable.
+            let info = Bundle.main
+            let short = info.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+            let build = info.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+            if let data = "=== Zimfo \(short) (\(build)) ===\n".data(using: .utf8) {
+                try? handle?.write(contentsOf: data)
+            }
+
             pruneOldFilesLocked(keeping: maxFiles)
         }
     }
