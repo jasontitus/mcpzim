@@ -38,6 +38,12 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     private var speaking = false
     private var stopRequested = false
     private var hasQueuedAudio = false
+    /// Wall-clock estimate of when the player's queued audio drains. Buffers
+    /// play back-to-back in AVAudioPlayerNode's FIFO, so scheduling a chunk
+    /// after this instant means the listener heard silence in between —
+    /// that difference is the per-chunk dead-air (`gapSeconds`) metric.
+    private var queueDrainsAt: Date?
+    private var lastChunkMetrics: TTSChunkPlaybackMetrics?
 
     public init(voice: String = "F1") {
         let selectedVoice = Supertonic3Voice(name: voice) ?? .f1
@@ -106,12 +112,36 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         }
 
         if !engine.isRunning { try engine.start() }
-        player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        let audioSeconds = Double(samples.count) / format.sampleRate
+        let trimmedSeconds =
+            Double(result.samples.count - samples.count) / format.sampleRate
+        let now = Date()
         stateLock.withLock {
+            // Gap/queue-ahead relative to the previous chunks of this stream.
+            // A drained (or brand-new) queue starts playing immediately.
+            let drainAt = hasQueuedAudio ? queueDrainsAt : nil
+            let gap = drainAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
+            let ahead = drainAt.map { max(0, $0.timeIntervalSince(now)) } ?? 0
+            let startsAt = drainAt.map { max($0, now) } ?? now
+            queueDrainsAt = startsAt.addingTimeInterval(audioSeconds)
+            lastChunkMetrics = TTSChunkPlaybackMetrics(
+                audioSeconds: audioSeconds,
+                gapSeconds: gap,
+                queueAheadSeconds: ahead,
+                trimmedSeconds: trimmedSeconds)
             speaking = true
             hasQueuedAudio = true
         }
+        player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
         if !player.isPlaying { player.play() }
+    }
+
+    public func takeStreamingChunkMetrics() -> TTSChunkPlaybackMetrics? {
+        stateLock.withLock {
+            let metrics = lastChunkMetrics
+            lastChunkMetrics = nil
+            return metrics
+        }
     }
 
     /// Supertonic predicts each short encoder window as a complete utterance,
@@ -198,6 +228,7 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         stateLock.withLock {
             speaking = false
             hasQueuedAudio = false
+            queueDrainsAt = nil
         }
     }
 
@@ -206,6 +237,8 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
             stopRequested = true
             speaking = false
             hasQueuedAudio = false
+            queueDrainsAt = nil
+            lastChunkMetrics = nil
         }
         player.stop()
     }

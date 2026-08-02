@@ -33,6 +33,31 @@ public enum TTSChunkBoundary: Sendable {
     case final
 }
 
+/// Pacing metrics captured when a streaming backend schedules one chunk.
+/// `gapSeconds` is dead air: how long the player's queue had already been
+/// drained (silence) when this chunk became ready to play. `queueAheadSeconds`
+/// is the opposite: how much queued audio was still waiting to play, i.e. the
+/// safety margin before an underrun. Exactly one of the two is nonzero.
+public struct TTSChunkPlaybackMetrics: Sendable {
+    /// Duration of the audio scheduled for this chunk (after silence trim).
+    public let audioSeconds: Double
+    /// Dead air between the previous queued audio draining and this chunk's
+    /// playback start (0 when the queue was still busy).
+    public let gapSeconds: Double
+    /// Queued audio remaining when this chunk was scheduled (0 on underrun).
+    public let queueAheadSeconds: Double
+    /// Leading+trailing model silence removed before scheduling.
+    public let trimmedSeconds: Double
+
+    public init(audioSeconds: Double, gapSeconds: Double,
+                queueAheadSeconds: Double, trimmedSeconds: Double) {
+        self.audioSeconds = audioSeconds
+        self.gapSeconds = gapSeconds
+        self.queueAheadSeconds = queueAheadSeconds
+        self.trimmedSeconds = trimmedSeconds
+    }
+}
+
 /// Bring neural TTS PCM up to a consistent spoken-word level before it reaches
 /// AVAudioEngine. Both Kokoro and Supertonic can emit substantially quieter
 /// native samples than Apple's media route expects. RMS normalization with a
@@ -104,6 +129,12 @@ public protocol TTSService: AnyObject, Sendable {
     /// sentence or clause prosody.
     func speakChunk(_ text: String, boundary: TTSChunkBoundary) async throws
 
+    /// Pacing metrics for the most recent `speakChunk` call, consumed once.
+    /// Streaming backends that schedule PCM themselves can report per-chunk
+    /// audio duration and queue gap so the voice loop can log real dead air
+    /// versus real audio length. Default is nil (no metrics available).
+    func takeStreamingChunkMetrics() -> TTSChunkPlaybackMetrics?
+
     /// Block until all previously queued audio has finished playing.
     /// Default is a no-op (most backends are synchronous).
     func awaitPlayback() async
@@ -124,6 +155,7 @@ public extension TTSService {
     func speakChunk(_ text: String, boundary: TTSChunkBoundary) async throws {
         try await speakChunk(text)
     }
+    func takeStreamingChunkMetrics() -> TTSChunkPlaybackMetrics? { nil }
     func awaitPlayback() async {}
     func prepareForConversation() async throws {}
 }

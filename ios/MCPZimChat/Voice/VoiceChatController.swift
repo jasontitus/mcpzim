@@ -769,6 +769,13 @@ public final class VoiceChatController {
         var firstTextAt: Date?
         var queuedFirstChunk = false
         var memoryDeferralLogged = false
+        // Turn-level pacing accounting, filled from the backend's per-chunk
+        // metrics so the "TTS done" wall time can be split into real audio,
+        // synthesis, and dead air between chunks.
+        var chunkCount = 0
+        var totalAudioSeconds = 0.0
+        var totalGapSeconds = 0.0
+        var totalSynthesisSeconds = 0.0
         // sanitizeForSpeech runs several regex passes over the ENTIRE
         // growing reply; at the 75 ms poll cadence most polls see
         // unchanged text (UI pushes are throttled to 10 Hz and decode is
@@ -781,6 +788,11 @@ public final class VoiceChatController {
 
         while !Task.isCancelled {
             guard idx < session.messages.count else { break }
+            // When a chunk was dispatched this pass, loop again immediately —
+            // more speakable text may already be buffered (always true while
+            // draining a completed reply). Sleeping 75 ms per chunk here
+            // added dead air to every multi-chunk drain.
+            var advancedThisPass = false
             let raw = session.messages[idx].text
             if raw.count != lastRawCount {
                 lastSanitized = Self.sanitizeForSpeech(raw)
@@ -852,6 +864,10 @@ public final class VoiceChatController {
                             } catch {
                                 log("TTS chunk failed: \(error.localizedDescription)")
                             }
+                            let synthesisSeconds =
+                                Date().timeIntervalSince(synthesisStarted)
+                            chunkCount += 1
+                            totalSynthesisSeconds += synthesisSeconds
                             if !queuedFirstChunk {
                                 queuedFirstChunk = true
                                 let audioReady = Date()
@@ -865,10 +881,32 @@ public final class VoiceChatController {
                                     audioReady.timeIntervalSince(synthesisStarted),
                                     audioReady.timeIntervalSince(t0), availableMB))
                             }
+                            // Per-chunk pacing: `gap` is measured dead air
+                            // (queue drained → this chunk's playback start);
+                            // `ahead` is queued audio still unplayed when
+                            // this chunk was scheduled. Proves whether long
+                            // voice turns are silence or real audio length.
+                            if let metrics = tts.takeStreamingChunkMetrics() {
+                                totalAudioSeconds += metrics.audioSeconds
+                                totalGapSeconds += metrics.gapSeconds
+                                log(String(format:
+                                    "TTS chunk %d · boundary=%@ · chars=%d · synthesis=%.2fs · audio=%.2fs (%.1f ch/s) · gap=%.2fs · ahead=%.2fs · trim=%.2fs",
+                                    chunkCount,
+                                    String(describing: prefix.boundary),
+                                    prefix.consumedCharacters,
+                                    synthesisSeconds,
+                                    metrics.audioSeconds,
+                                    Double(prefix.consumedCharacters)
+                                        / max(0.001, metrics.audioSeconds),
+                                    metrics.gapSeconds,
+                                    metrics.queueAheadSeconds,
+                                    metrics.trimmedSeconds))
+                            }
                         }
                         // Advance by source characters, not the optional comma
                         // added only for soft-wrap prosody.
                         spokenUpTo += prefix.consumedCharacters
+                        advancedThisPass = true
                     }
                 }
             }
@@ -877,7 +915,11 @@ public final class VoiceChatController {
                 // Keep draining until all source characters are queued.
                 break
             }
-            try? await Task.sleep(nanoseconds: 75_000_000)
+            // Only poll-wait when no chunk was consumed; after a dispatch the
+            // next speakable prefix (if any) is already in the buffer.
+            if !advancedThisPass {
+                try? await Task.sleep(nanoseconds: 75_000_000)
+            }
         }
         if !sawAnyText {
             log("streamAssistantReply: reply was empty")
@@ -885,7 +927,13 @@ public final class VoiceChatController {
             return
         }
         await tts.awaitPlayback()
-        log(String(format: "TTS done in %.2fs", Date().timeIntervalSince(t0)))
+        // wall = generation overlap + audio + gaps + final drain. When
+        // audio+gaps ≈ wall the turn length is real speech; large uncounted
+        // remainder means waiting on text (generation-bound), not TTS.
+        log(String(format:
+            "TTS done in %.2fs · chunks=%d · audio=%.1fs · synthesis=%.1fs · gaps=%.1fs",
+            Date().timeIntervalSince(t0), chunkCount,
+            totalAudioSeconds, totalSynthesisSeconds, totalGapSeconds))
         resumeListeningAfterCycle()
     }
 
