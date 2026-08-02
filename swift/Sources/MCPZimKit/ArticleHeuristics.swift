@@ -766,6 +766,15 @@ public enum ArticleHeuristics {
     /// The continuation grammar intentionally requires a question/auxiliary
     /// after “then”, so an explicit hand-off such as “Then tell me about
     /// Donald Trump” is left untouched for normal topic-change routing.
+    /// Unit/attribute words that cannot identify a section on their own —
+    /// a follow-up made only of these needs the previous question's
+    /// keywords to rank meaningfully.
+    static let unitAttributeKeywords: Set<String> = [
+        "year", "date", "day", "month", "time", "age", "old",
+        "many", "much", "number", "long", "far", "tall", "big",
+        "wide", "deep", "fast", "heavy", "name", "kind", "type",
+    ]
+
     public static func contextualizedDiscussionQuestion(
         _ question: String, previousQuestion: String?
     ) -> String {
@@ -776,14 +785,79 @@ public enum ArticleHeuristics {
         let lowered = question.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = #"^(?:(?:and|so)\s+)?then\s+(?:what|how|why|where|when|who|which|did|does|was|were|is|are|can|could|would)\b|^(?:(?:and|so)\s+)?what\s+happened\s+(?:next|later|after\s+that)\b|^(?:(?:and|so)\s+)?what\s+about\s+(?:then|later|after\s+that)\b"#
-        guard lowered.range(of: pattern, options: .regularExpression) != nil
-        else { return question }
+        let isNarrativeContinuation = lowered.range(
+            of: pattern, options: .regularExpression) != nil
+        // Elliptical follow-ups whose only keywords are units/attributes
+        // inherit context: ranking "What year?" literally sent retrieval to
+        // Demographics (median age 2022) when the thread was "When did it
+        // join NATO?" — real capture 2026-08-02. "year" can't identify a
+        // section; the previous question's keywords can. Facet questions
+        // with a real topic word ("What is the population?") stay clean —
+        // that word IS the retrieval signal.
+        let kws = questionKeywords(question)
+        let isKeywordPoor = !kws.isEmpty
+            && kws.allSatisfy { Self.unitAttributeKeywords.contains($0) }
+        guard isNarrativeContinuation || isKeywordPoor else { return question }
         let inherited = questionKeywords(previousQuestion)
         guard !inherited.isEmpty else { return question }
         // Appending only the inherited content words keeps section scoring
         // free of instruction words such as “previous” or “facet”. The dash
         // still gives the model a natural appositive reading.
         return question + " — " + inherited.joined(separator: " ")
+    }
+
+    /// True for date/quantity-shaped questions where the answer is one
+    /// sentence and paraphrase risk is highest ("When did it join NATO?" →
+    /// "…as a member of the OSCE", no date — real capture 2026-08-02).
+    public static func isFactoidShaped(_ question: String) -> Bool {
+        let q = question.lowercased()
+        return q.range(of:
+            #"^(?:and\s+|so\s+)?(?:when|what year|what date|how (?:many|much|old|long|tall|far|big)|who)\b"#,
+            options: .regularExpression) != nil
+    }
+
+    /// Scan EVERY section of the in-hand sources for the single sentence
+    /// that best matches the question's content keywords. Section-level
+    /// ranking can miss the fact entirely (the NATO date sat in a section
+    /// retrieval never picked), and even with the right section in
+    /// evidence a 1-bit model paraphrases dates badly. Quoting the exact
+    /// sentence as its own evidence line anchors the answer. Returns nil
+    /// unless at least two keywords (or all, when fewer) land in one
+    /// sentence.
+    public static func keyFactSentence(
+        question: String,
+        sources: [(title: String, sections: [ArticleSection])]
+    ) -> (article: String, sentence: String)? {
+        let keywords = weightedKeywords(questionKeywords(question))
+        guard !keywords.isEmpty else { return nil }
+        let required = min(2, keywords.count)
+        var best: (article: String, sentence: String, score: Double)?
+        for source in sources {
+            for section in source.sections {
+                for raw in section.text.split(whereSeparator: { ".!?".contains($0) }) {
+                    let sentence = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard sentence.count >= 20, sentence.count <= 400 else { continue }
+                    let hay = sentence.lowercased()
+                    var hits = 0
+                    var score = 0.0
+                    for (kw, w) in keywords where hay.contains(kw) {
+                        hits += 1
+                        score += Double(w)
+                    }
+                    guard hits >= required else { continue }
+                    // Prefer sentences carrying a year for date questions.
+                    if hay.range(of: #"\b(1[89]|20)\d{2}\b"#,
+                                 options: .regularExpression) != nil {
+                        score += 1.5
+                    }
+                    if best == nil || score > best!.score {
+                        best = (source.title, sentence, score)
+                    }
+                }
+            }
+        }
+        guard let best else { return nil }
+        return (best.article, best.sentence)
     }
 
     /// Participant questions often appear lexically covered by a broad
@@ -892,6 +966,15 @@ public enum ArticleHeuristics {
     /// the "Early life" section says "his mother … his father". Expanded
     /// terms score at reduced weight so an exact keyword still wins.
     static let keywordSynonyms: [String: [String]] = [
+        // Geopolitics: "How has X dealt with the West and NATO?" ranked
+        // Geography because "west" is dense in border prose while the
+        // membership facts live under Foreign relations / Politics /
+        // Military headings (real capture 2026-08-02).
+        "nato": ["foreign", "relations", "military", "alliance", "membership"],
+        "eu": ["european", "union", "foreign", "relations", "membership"],
+        "west": ["foreign", "relations", "europe", "nato"],
+        "ally": ["foreign", "relations", "alliance", "military"],
+        "allies": ["foreign", "relations", "alliance", "military"],
         "parents": ["mother", "father", "family", "early life"],
         "parent": ["mother", "father", "family", "early life"],
         "mother": ["parents", "family", "early life"],

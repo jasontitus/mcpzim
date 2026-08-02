@@ -434,3 +434,62 @@ final class DiscussRetrievalTests: XCTestCase {
         XCTAssertTrue(window.contains("70 killed"), "got: \(window)")
     }
 }
+
+// MARK: - Question-flow retrieval (device capture 2026-08-02)
+
+extension DiscussRetrievalTests {
+
+    func testKeywordPoorFollowUpInheritsPreviousQuestionContext() {
+        let out = ArticleHeuristics.contextualizedDiscussionQuestion(
+            "What year?", previousQuestion: "When did it join nato?")
+        XCTAssertTrue(out.lowercased().contains("nato"), "got: \(out)")
+        // Keyword-rich turns stay untouched.
+        let rich = ArticleHeuristics.contextualizedDiscussionQuestion(
+            "What is education like in Bulgaria?",
+            previousQuestion: "When did it join nato?")
+        XCTAssertEqual(rich, "What is education like in Bulgaria?")
+    }
+
+    func testNatoQuestionRanksForeignRelationsOverGeography() {
+        let sections = [
+            ArticleSection(title: "", level: 0, text:
+                "Bulgaria is a country in Southeast Europe on the Balkan peninsula."),
+            ArticleSection(title: "Geography", level: 2, text: String(repeating:
+                "The west of the country borders the western mountains. To the west lies Serbia. ", count: 4)),
+            ArticleSection(title: "Foreign relations", level: 2, text:
+                "Bulgaria became a member of NATO in 2004 and of the European Union in 2007. Its foreign relations align with the alliance."),
+        ]
+        let ranked = ArticleHeuristics.rankSectionsForQuestion(
+            "How has Bulgaria dealt with the West and NATO?", sections: sections)
+        let nonLead = ranked.filter { !$0.title.isEmpty }
+        XCTAssertEqual(nonLead.first?.title, "Foreign relations",
+                       "got: \(ranked.map(\.title))")
+    }
+
+    func testIsFactoidShaped() {
+        XCTAssertTrue(ArticleHeuristics.isFactoidShaped("When did it join nato?"))
+        XCTAssertTrue(ArticleHeuristics.isFactoidShaped("What year?"))
+        XCTAssertTrue(ArticleHeuristics.isFactoidShaped("How many people live there?"))
+        XCTAssertFalse(ArticleHeuristics.isFactoidShaped("Tell me about Bulgaria"))
+        XCTAssertFalse(ArticleHeuristics.isFactoidShaped("What is education like?"))
+    }
+
+    func testKeyFactSentenceFindsDateSentenceAnywhere() {
+        let sources: [(title: String, sections: [ArticleSection])] = [
+            ("Lithuania", [
+                ArticleSection(title: "", level: 0, text:
+                    "Lithuania is a country in the Baltic region of Europe."),
+                ArticleSection(title: "Demographics", level: 2, text:
+                    "The median age was 44 years in 2022. The fertility rate was 1.34 in 2021."),
+                ArticleSection(title: "Foreign relations", level: 2, text:
+                    "Lithuania is a member of the OSCE. Lithuania joined NATO on 29 March 2004. It joined the European Union that May."),
+            ]),
+        ]
+        let fact = ArticleHeuristics.keyFactSentence(
+            question: "When did it join nato? — join nato lithuania",
+            sources: sources)
+        XCTAssertNotNil(fact)
+        XCTAssertTrue(fact?.sentence.contains("2004") ?? false, "got: \(fact?.sentence ?? "nil")")
+        XCTAssertTrue(fact?.sentence.lowercased().contains("nato") ?? false)
+    }
+}

@@ -4454,6 +4454,23 @@ public final class ChatSession {
         // see it". Treat that answer as the coverage signal: pull the best
         // corpus article for the question and regenerate ONCE.
         if Self.looksLikeDontSee(first), let adapter {
+            // FIRST: retry within the articles already in hand, excluding
+            // every section the model has seen — cheaper than a corpus
+            // pull and usually where the answer actually is (2026-08-02:
+            // Bulgaria's NATO facts sat two sections below the Geography
+            // pick). Only fall through to the corpus when the in-article
+            // retry also comes up dry.
+            let retried = await generateGroundedAnswer(
+                state: state, question: question,
+                retrievalQuestion: contextualQuestion,
+                excludeTriedPassages: true)
+            if !Self.looksLikeDontSee(retried) {
+                debug("discuss: in-article retry answered after a don't-see",
+                      category: "Router")
+                state.lastQuestion = question
+                discussionState = state
+                return
+            }
             let kwList = ArticleHeuristics.questionKeywords(contextualQuestion)
             let query = (state.topic + " " + kwList.joined(separator: " "))
                 .trimmingCharacters(in: .whitespaces)
@@ -4540,7 +4557,8 @@ public final class ChatSession {
     @discardableResult
     private func generateGroundedAnswer(
         state: DiscussionState, question: String,
-        retrievalQuestion: String? = nil
+        retrievalQuestion: String? = nil,
+        excludeTriedPassages: Bool = false
     ) async -> String {
         preemptLlamaPromptOptimizationForGroundedTurn()
         let resolvedQuestion = retrievalQuestion ?? question
@@ -4610,9 +4628,25 @@ public final class ChatSession {
                 picked.append((dedicated.title, lead))
             }
         }
+        // In-article retry: after a don't-see answer, rank AGAIN but skip
+        // every section already fed to the model — the fact usually sits in
+        // a section the first ranking passed over ("dealt with the West and
+        // NATO" ranked Geography; Foreign relations had the answer,
+        // 2026-08-02). Keys are section-granular prefixes of the cache's
+        // window-granular keys.
+        let excludedSectionKeys: Set<String> = excludeTriedPassages
+            ? Set((groundedPromptCache?.passageKeys ?? []).map {
+                String($0.split(separator: "\u{1F}").prefix(2).joined(separator: "\u{1F}"))
+            })
+            : []
+        func sectionKey(_ p: (article: String, section: ArticleSection)) -> String {
+            let t = p.section.title.lowercased()
+            return p.article.lowercased() + "\u{1F}"
+                + ((t.isEmpty || t == "lead") ? "lead" : t)
+        }
         for r in ranked where !picked.contains(where: {
             $0.article == r.article && $0.section.title == r.section.title
-        }) {
+        }) && !excludedSectionKeys.contains(sectionKey(r)) {
             picked.append(r)
             if picked.count >= passageLimit { break }
         }
@@ -4714,14 +4748,32 @@ public final class ChatSession {
             passagesForTurn = Array(passagesForTurn.prefix(1))
         }
 
+        // Date/quantity follow-ups get the single best-matching sentence
+        // from ANY section quoted verbatim as evidence. Section-level
+        // ranking can miss the fact ("When did Bulgaria join NATO?" pulled
+        // no new passage and the model invented 2009), and even with the
+        // right section a 1-bit model paraphrases dates badly ("joined
+        // NATO as a member of the OSCE") — real captures 2026-08-02.
+        let keyFact: (article: String, sentence: String)? =
+            ArticleHeuristics.isFactoidShaped(question)
+            ? ArticleHeuristics.keyFactSentence(
+                question: resolvedQuestion, sources: state.sources)
+            : nil
+        if let keyFact {
+            debug("discuss key fact: \(keyFact.article) · “\(String(keyFact.sentence.prefix(90)))…”",
+                  category: "Chat")
+        }
         func makeUserTurn(
             passages: [(article: String, section: ArticleSection)]
         ) -> ChatTurn {
-            let evidence: String
+            var evidence: String
             if passages.isEmpty {
                 evidence = "No new evidence for this turn; use the offline Wikipedia evidence already supplied earlier in the conversation."
             } else {
                 evidence = "New offline Wikipedia evidence:\n\n" + renderPassages(passages)
+            }
+            if let keyFact {
+                evidence += "\n\nKey sentence from \(keyFact.article): \"\(keyFact.sentence).\""
             }
             return ChatTurn(
                 role: .user,
