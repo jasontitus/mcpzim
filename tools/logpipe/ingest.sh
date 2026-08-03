@@ -28,9 +28,22 @@ if [ "${1:-}" = "--from" ]; then
   echo "logpipe: copying *.log from $SRC"
   cp -n "$SRC"/*.log "$RAW"/ 2>/dev/null || true
 else
-  echo "logpipe: rsync $BUCKET → $RAW"
-  if ! gsutil -m rsync -r "$BUCKET" "$RAW" 2>/tmp/logpipe_rsync.err; then
-    echo "logpipe: gsutil rsync failed (run 'gcloud auth login', or use --from <dir>):" >&2
+  echo "logpipe: checking $BUCKET"
+  # An empty prefix isn't a "directory" to gsutil, so probe for objects first
+  # and only rsync when there's something — otherwise a fresh bucket errors.
+  if gsutil ls -r "$BUCKET/**" >/tmp/logpipe_ls.txt 2>/tmp/logpipe_rsync.err \
+     && grep -q '\.log$' /tmp/logpipe_ls.txt; then
+    echo "logpipe: rsync $BUCKET/ → $RAW/"
+    if ! gsutil -m rsync -r "$BUCKET/" "$RAW/" 2>/tmp/logpipe_rsync.err; then
+      echo "logpipe: gsutil rsync failed (run 'gcloud auth login', or use --from <dir>):" >&2
+      tail -2 /tmp/logpipe_rsync.err >&2
+      exit 1
+    fi
+  elif grep -qiE "does not name|matched no objects|Did not find" /tmp/logpipe_rsync.err 2>/dev/null \
+       || ! grep -q '\.log$' /tmp/logpipe_ls.txt 2>/dev/null; then
+    echo "logpipe: no logs in bucket yet — nothing to pull"
+  else
+    echo "logpipe: could not reach $BUCKET (run 'gcloud auth login', or use --from <dir>):" >&2
     tail -2 /tmp/logpipe_rsync.err >&2
     exit 1
   fi
