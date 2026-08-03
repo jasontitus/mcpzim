@@ -193,6 +193,16 @@ struct LibraryView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                Toggle(isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: DiagnosticsUploader.optInKey) },
+                    set: { UserDefaults.standard.set($0, forKey: DiagnosticsUploader.optInKey) }
+                )) {
+                    Text("Share debug logs for analysis")
+                }
+                Text("When on, each finished session's log — your questions, the article titles retrieved, and GPS coordinates — uploads to the developer's private store so conversations can be reviewed for quality. Off by default; everything stays on device until you turn this on.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 #if DEBUG
                 VStack(alignment: .leading, spacing: 6) {
                     Text("GitHub PAT (gist scope)")

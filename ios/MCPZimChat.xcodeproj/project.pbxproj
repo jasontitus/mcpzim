@@ -46,6 +46,7 @@
 		2F1E1FEB8ACA41EF8F715E1F /* LocationFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7495A1AA64C657297341FF95 /* LocationFetcher.swift */; };
 		2FDFC126506F934041D5B973 /* ZimfoRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */; };
 		31CE2A7CFC75560E42826C1B /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = EBF6F9DAB8CD17AD868F990E /* MLXLMCommon */; };
+		320B318DA7D8E3DB5D1AE679 /* DiagnosticsUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */; };
 		3314878699DC689245BED58E /* TTSBenchMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 880D685087279FC0CFB4AA63 /* TTSBenchMain.swift */; };
 		3569A18ECEA25DFFA02E346C /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
 		38C77B4EF968848BB9665767 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */; };
@@ -126,6 +127,7 @@
 		AF2A0E2D772718AFC1B1AF20 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
 		B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149DA9870C0F015A888DD308 /* DeviceProfile.swift */; };
 		B02A0D7A19EC22CA4345A940 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
+		B174C7186264CD4E4110F703 /* DiagnosticsUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */; };
 		B1A228CFEF62A3BB362ED387 /* Gemma4Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CA32CC741209D233E3E7BB /* Gemma4Provider.swift */; };
 		B4435C228602DB8C1A8FDB6C /* CoreMLTTSBenchMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C6AD5B5F6231C9BE1C5A0E /* CoreMLTTSBenchMain.swift */; };
 		B4F1B56FC86AE1D5C3B4CA01 /* DebugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821CC325A7537CE99306695C /* DebugReport.swift */; };
@@ -159,6 +161,7 @@
 		D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
 		DAB96DD245708E6AD02ED7E7 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = B6F8A6F28E87B9F454782D51 /* HuggingFace */; };
+		DB563556A253AE9F07B3FCE1 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 1544010A9FD79DA8ADD7DBC6 /* FirebaseStorage */; };
 		DC19A1CA500A7E5308E0505F /* FoundationModelsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */; };
 		DC31AA377E56FEC379F716AE /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		DEE474FDE1C8EB10036FC46E /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 36DC7A228BE4E4873218936A /* MLXLLM */; };
@@ -166,6 +169,7 @@
 		E18395D889A1ACFD60C1F226 /* KokoroAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */; };
 		E1D81FA198B01F3774BBC0BB /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 3E2FE9FB9928746EDEDB1F23 /* MLXUtilsLibrary */; };
 		E1FB76DEEBFB837F5D6F65A6 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
+		E3A0F6A5DE2419C07E0BB3DF /* DiagnosticsUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */; };
 		E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		E799CDAC1E31F24F18413D9D /* VoiceChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52F46C6B552CB78CF57FB14 /* VoiceChatView.swift */; };
 		E8429766D83FB7A9E83BD30E /* ZimfoIntentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */; };
@@ -267,6 +271,7 @@
 		8F78094543B8F42D597D3F45 /* ObjCExceptionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionWrapper.h; sourceTree = "<group>"; };
 		91040115100CBC7767537CAA /* TTSNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSNormalizationTests.swift; sourceTree = "<group>"; };
 		937C8D68F64A20DE1D02AFC7 /* EvalHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvalHarness.swift; sourceTree = "<group>"; };
+		93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsUploader.swift; sourceTree = "<group>"; };
 		94333E6F9FCA8D53D381D08A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		94CDCFF57A4AB75EE05BE3B3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		99473B48A554D4D0FD4C3D2D /* FoundationModelsProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsProvider.swift; sourceTree = "<group>"; };
@@ -322,6 +327,7 @@
 				CDAFE85D42EB26CD3B735B89 /* FirebaseAnalytics in Frameworks */,
 				74730B0484541D04E593B12C /* FirebaseCrashlytics in Frameworks */,
 				451603D7FEC6D0ECB889E464 /* FirebasePerformance in Frameworks */,
+				DB563556A253AE9F07B3FCE1 /* FirebaseStorage in Frameworks */,
 				A3F8DDA8CE492A709D73CDBC /* CoreKiwix.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -488,6 +494,7 @@
 			isa = PBXGroup;
 			children = (
 				149DA9870C0F015A888DD308 /* DeviceProfile.swift */,
+				93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */,
 				25A07E5C8A32C8BF3B549551 /* LogArchive.swift */,
 				F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */,
 				75C0CEDA42215DBD3FC2E34F /* ZimfoContext+Adapter.swift */,
@@ -666,6 +673,7 @@
 				91E850AB9C5D9C459FAB691D /* FirebaseAnalytics */,
 				A9AA86B4762DC487AE80AEE9 /* FirebaseCrashlytics */,
 				9A634903D03F005E92034688 /* FirebasePerformance */,
+				1544010A9FD79DA8ADD7DBC6 /* FirebaseStorage */,
 			);
 			productName = MCPZimChat;
 			productReference = 8633BF1515A2BB5CB3ED054A /* MCPZimChat.app */;
@@ -810,11 +818,11 @@
 			projectRoot = "";
 			targets = (
 				95D3E644B6C76C2F047DED57 /* MCPZimChat */,
-				B074BDCBFEB2E7ABEFBBC97A /* MCPZimChatMac */,
 				D2A4B299CAF114122B2894FF /* MCPZimChatMacTests */,
-				111055D4F12154EDB5BF3E17 /* MCPZimCoreMLTTSBenchCLI */,
 				CFB05F6C91DE73155B47CD65 /* MCPZimEvalCLI */,
 				59F52A614A8FA3BF87462335 /* MCPZimTTSBenchCLI */,
+				111055D4F12154EDB5BF3E17 /* MCPZimCoreMLTTSBenchCLI */,
+				B074BDCBFEB2E7ABEFBBC97A /* MCPZimChatMac */,
 			);
 		};
 /* End PBXProject section */
@@ -933,6 +941,7 @@
 				6625E94A57D0998AB1B05671 /* DebugPane.swift in Sources */,
 				6643DDA4A260E70B04474D8C /* DebugReport.swift in Sources */,
 				B00F5300CA8295376D15CAE7 /* DeviceProfile.swift in Sources */,
+				B174C7186264CD4E4110F703 /* DiagnosticsUploader.swift in Sources */,
 				C76A8ECC4E114DFA06290F3F /* FoundationModelsNativeTools.swift in Sources */,
 				DF65D0F49519D238DE60C1E5 /* FoundationModelsProvider.swift in Sources */,
 				1552DF61BEE685667DC21E18 /* Gemma4Provider.swift in Sources */,
@@ -998,6 +1007,7 @@
 				286FE7F9C1D759B018281BA7 /* ChatSession.swift in Sources */,
 				83C0423CC621164C37E98ACA /* DebugReport.swift in Sources */,
 				FB4B16ED534F3874E6D0C437 /* DeviceProfile.swift in Sources */,
+				E3A0F6A5DE2419C07E0BB3DF /* DiagnosticsUploader.swift in Sources */,
 				96A5442E958C239D945495B4 /* EvalCLI.swift in Sources */,
 				BA5ECC4F7C675EBB99609961 /* EvalHarness.swift in Sources */,
 				0221A3CC27F893F52F50456F /* FoundationModelsNativeTools.swift in Sources */,
@@ -1032,6 +1042,7 @@
 				7DB08BA62F598A060EB40F39 /* DebugPane.swift in Sources */,
 				B4F1B56FC86AE1D5C3B4CA01 /* DebugReport.swift in Sources */,
 				CA3F5AF9BEB7381081B9895B /* DeviceProfile.swift in Sources */,
+				320B318DA7D8E3DB5D1AE679 /* DiagnosticsUploader.swift in Sources */,
 				6D7C51E18886D0389EA31EA2 /* FoundationModelsNativeTools.swift in Sources */,
 				3E5CBB6DF865493628BCFBEC /* FoundationModelsProvider.swift in Sources */,
 				92A825DC132CF07CA068D76E /* Gemma4Provider.swift in Sources */,
@@ -1606,6 +1617,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1544010A9FD79DA8ADD7DBC6 /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C44398C94355E648AD13BFB2 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
+		};
 		1837A3F2C129CB18D3BCC2D5 /* KokoroSwift */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = KokoroSwift;

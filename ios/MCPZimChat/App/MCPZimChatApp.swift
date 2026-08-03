@@ -5,6 +5,7 @@ import SwiftUI
 @main
 struct MCPZimChatApp: App {
     @State private var session = ChatSession()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         AppTelemetry.configure()
@@ -14,6 +15,19 @@ struct MCPZimChatApp: App {
         WindowGroup {
             RootView()
                 .environment(session)
+                .task {
+                    // Ship any session that finished before this launch (incl.
+                    // the one before a crash). Opt-in + no-op otherwise.
+                    DiagnosticsUploader.uploadFinishedLogs(archive: .shared)
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    // Backgrounding is when the current session becomes a
+                    // "finished" log worth sending — fires over cellular, so a
+                    // walking session lands with no interaction.
+                    if phase == .background {
+                        DiagnosticsUploader.uploadFinishedLogs(archive: .shared)
+                    }
+                }
         }
         #if os(macOS)
         .commands {

@@ -157,6 +157,8 @@ targets:
         product: FirebaseCrashlytics
       - package: Firebase
         product: FirebasePerformance
+      - package: Firebase
+        product: FirebaseStorage
       - framework: MCPZimChat/Frameworks/CoreKiwix.xcframework
         embed: false
         codeSign: false
