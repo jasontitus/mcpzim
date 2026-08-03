@@ -44,3 +44,7 @@ tools/fine-tune/*.jsonl
 tools/fine-tune/logs/
 tools/fine-tune/ft-out-*/
 *.gguf
+
+# logpipe: raw device logs + built corpus contain user queries/GPS — keep local
+eval/corpus/raw/
+eval/corpus/*.jsonl
