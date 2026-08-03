@@ -1,0 +1,19 @@
+rules_version = '2';
+// Zimfo diagnostics channel. The app uploads finished debug logs to
+// debug-logs/<deviceTag>/<session>.log with no Firebase Auth (the app carries
+// no sign-in). This is WRITE-ONLY and size-capped: anyone can post a log, but
+// nobody can read or list them back through the SDK — the corpus pull uses
+// owner GCS credentials (gsutil), which bypass these rules. Read stays closed
+// so a leaked bucket name can't exfiltrate conversation logs.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /debug-logs/{device}/{file} {
+      allow write: if request.resource.size < 8 * 1024 * 1024
+                   && request.resource.contentType.matches('text/plain');
+      allow read, list: if false;
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
