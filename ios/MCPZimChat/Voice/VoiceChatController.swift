@@ -66,6 +66,23 @@ public final class VoiceChatController {
         log("TTS backend initialized after capture — \(service.displayName)")
         return service
     }
+    /// Swap a too-heavy synthesis backend for the always-affordable system
+    /// voice when the device can't spare its peak. Called once per reply,
+    /// after `tts` is realized. On macOS `availableMemoryMB` is 0 (no jetsam
+    /// cap) so the gate is skipped and the chosen backend stands.
+    private func ensureAffordableTTS() {
+        guard let current = ttsStorage, !(current is SystemTTSService) else { return }
+        let available = Self.availableMemoryMB()
+        guard available > 0 else { return }
+        let needed = Double(current.peakSynthesisMemoryMB)
+            + minimumEagerSpeechHeadroomMB
+        guard available < needed else { return }
+        log(String(format:
+            "TTS backend %@ needs ~%d MB peak but only %.0f MB free — using system voice this session (avoids MLX synthesis abort)",
+            current.displayName, current.peakSynthesisMemoryMB, available))
+        ttsStorage = SystemTTSService()   // ARC frees the heavy backend
+    }
+
     public let session: ChatSession
 
     /// How long a contiguous silence ends the utterance and submits.
@@ -759,6 +776,15 @@ public final class VoiceChatController {
         let minimumChunk = min(
             max(24, requestedMinimum), max(24, maximumChunk - 16))
         log("TTS streaming start (adaptive sentence/clause polling · window=\(minimumChunk)–\(maximumChunk) chars)")
+        // A heavy MLX backend (Kokoro ≈ 2.8 GB synthesis peak) cannot coexist
+        // with a large resident LLM: the synthesis either defers forever
+        // (silent turn) or, once generation frees the compute gate, aborts
+        // inside MLX — EXC_BREAKPOINT in mlx_array_eval, real crash 2026-08-02
+        // (Kokoro + Bonsai 27B). Downgrade to the ~5 MB system voice for the
+        // rest of the session when the selected backend can't fit the current
+        // jetsam headroom, so the user hears the answer instead of silence or
+        // a crash.
+        ensureAffordableTTS()
         let t0 = Date()
         // Keep the UI honest: we are still thinking until the first chunk is
         // actually handed to the audio backend.
