@@ -48,3 +48,10 @@ tools/fine-tune/ft-out-*/
 # logpipe: raw device logs + built corpus contain user queries/GPS — keep local
 eval/corpus/raw/
 eval/corpus/*.jsonl
+
+# Firebase client config — contains the project API key; keep out of
+# source control (GitHub secret scanning flagged it 2026-08-03). The
+# build reads these from the working tree; get them from the Firebase
+# console or the shared vault.
+ios/MCPZimChat/GoogleService-Info.plist
+ios/MCPZimChat/GoogleService-Info-Mac.plist
