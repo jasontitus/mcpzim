@@ -95,6 +95,19 @@ private struct NearbyShareContent: View {
             }
             .disabled(!controller.isSharingLibrary && !controller.hasShareableFiles)
 
+            if let modelSize = shareableModelSizeLabel {
+                Toggle(isOn: Binding(
+                    get: { controller.includeModelInShare },
+                    set: { controller.setIncludeModel($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include AI model (\(modelSize))")
+                        Text("Lets your friend chat entirely offline — no model download needed.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             ForEach(manager.hostPreparations) { preparation in
                 HStack(spacing: 12) {
                     ProgressView(value: preparation.fraction)
@@ -132,7 +145,17 @@ private struct NearbyShareContent: View {
         if !controller.hasShareableFiles {
             return "Nothing to share yet — add Wikipedia or a map first"
         }
-        return "Let a friend copy your Wikipedia and maps"
+        return "Let a friend copy your Wikipedia, maps, and AI model"
+    }
+
+    /// Size label for the selected model's shareable file, nil when the
+    /// model isn't shareable (not downloaded, or not a single-file GGUF).
+    private var shareableModelSizeLabel: String? {
+        guard let url = controller.shareableModelFiles().first,
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64)
+                  .flatMap({ $0 })
+        else { return nil }
+        return SwarmFormat.bytes(size)
     }
 
     // MARK: Nearby libraries
@@ -296,7 +319,9 @@ private struct SwarmFileSelectionSheet: View {
                                         .truncationMode(.middle)
                                     HStack(spacing: 6) {
                                         Text(SwarmFormat.bytes(file.sizeBytes))
-                                        if !file.path.lowercased().hasSuffix(".zim") {
+                                        if file.path.lowercased().hasSuffix(".gguf") {
+                                            Text("· AI model — installs automatically")
+                                        } else if !file.path.lowercased().hasSuffix(".zim") {
                                             Text("· not a ZIM — saved but not loaded")
                                         }
                                     }

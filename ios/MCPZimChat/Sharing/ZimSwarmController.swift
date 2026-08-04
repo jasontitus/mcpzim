@@ -36,6 +36,15 @@ final class ZimSwarmController: ObservableObject {
     var shareableFiles: () -> [URL] = { [] }
     /// Imports freshly received ZIMs into the chat session's library.
     var importFiles: (([URL]) async -> Void)?
+    /// Supplies the selected AI model's shareable file(s) — empty when the
+    /// model isn't a single-file GGUF or isn't fully downloaded yet.
+    var shareableModelFiles: () -> [URL] = { [] }
+    /// Offers a received file to the model providers; true means a provider
+    /// claimed it and moved it into its own cache slot.
+    var importModelFile: ((URL) async -> Bool)?
+    /// Whether the share also seeds the AI model, so the friend can chat
+    /// entirely offline. On by default — that's the point of the bootstrap.
+    @Published private(set) var includeModelInShare = true
 
     private var browsingViewCount = 0
     private var cancellable: AnyCancellable?
@@ -74,11 +83,21 @@ final class ZimSwarmController: ObservableObject {
         return "Zimfo · \(device)"
     }
 
-    var hasShareableFiles: Bool { !shareableFiles().isEmpty }
+    var hasShareableFiles: Bool { !currentShareSet().isEmpty }
+
+    /// Everything the share seeds right now: enabled library ZIMs, plus the
+    /// selected model's GGUF when the toggle is on.
+    private func currentShareSet() -> [URL] {
+        var urls = shareableFiles()
+        if includeModelInShare {
+            urls.append(contentsOf: shareableModelFiles())
+        }
+        return urls
+    }
 
     func setSharing(_ enabled: Bool) {
         if enabled {
-            let urls = shareableFiles()
+            let urls = currentShareSet()
             guard !urls.isEmpty else { return }
             isSharingLibrary = true
             // Hosting also implies being discoverable to the friend's browser;
@@ -93,13 +112,22 @@ final class ZimSwarmController: ObservableObject {
         updateSleepBlocker()
     }
 
-    /// Re-seeds with the current library contents (called after an import so
-    /// a newly received ZIM is immediately shareable onward to a third
-    /// device). The engine's manifest cache makes re-hosting unchanged files
-    /// instant — only the new file gets hashed.
+    /// Flips whether the AI model rides along; if sharing is live, re-hosts
+    /// so the advertised file list matches the toggle immediately.
+    func setIncludeModel(_ on: Bool) {
+        guard includeModelInShare != on else { return }
+        includeModelInShare = on
+        refreshSharingIfActive()
+    }
+
+    /// Re-seeds with the current share set (called after an import so a
+    /// newly received ZIM is immediately shareable onward to a third
+    /// device, and when the model toggle flips). The engine's manifest
+    /// cache makes re-hosting unchanged files instant — only new files get
+    /// hashed.
     private func refreshSharingIfActive() {
         guard isSharingLibrary else { return }
-        let urls = shareableFiles()
+        let urls = currentShareSet()
         guard !urls.isEmpty else {
             setSharing(false)
             return
@@ -148,14 +176,21 @@ final class ZimSwarmController: ObservableObject {
                                      appropriateFor: nil, create: true) else { return }
         var imported: [URL] = []
         var importedBytes: Int64 = 0
+        var importedModelCount = 0
         var skipped = 0
 
         // Move *everything* out of the per-swarm staging folder (which gets
-        // cleaned up below). Only .zim files are imported into the library;
-        // anything else a generic LocalSwarm peer sent just lands in
-        // Documents, where the library scan ignores it.
+        // cleaned up below). .zim files are imported into the library; a
+        // .gguf is first offered to the model providers, which adopt it into
+        // their own cache slot; anything else a generic LocalSwarm peer sent
+        // just lands in Documents, where the library scan ignores it.
         for source in fileURLs {
             let isZim = source.pathExtension.lowercased() == "zim"
+            if source.pathExtension.lowercased() == "gguf",
+               await importModelFile?(source) == true {
+                importedModelCount += 1
+                continue
+            }
             let sourceSize = (try? fm.attributesOfItem(atPath: source.path)[.size] as? Int64)
                 .flatMap { $0 } ?? 0
             var destination = docs.appendingPathComponent(source.lastPathComponent)
@@ -188,12 +223,21 @@ final class ZimSwarmController: ObservableObject {
         cleanupStagingFolder(swarmID: swarmID)
 
         lastSkippedCount = skipped
-        if !imported.isEmpty {
-            let size = ByteCountFormatter.string(fromByteCount: importedBytes, countStyle: .file)
-            lastImportSummary = imported.count == 1
-                ? "Added \(imported[0].lastPathComponent) (\(size))"
-                : "Added \(imported.count) files (\(size))"
-            await importFiles?(imported)
+        if !imported.isEmpty || importedModelCount > 0 {
+            var parts: [String] = []
+            if !imported.isEmpty {
+                let size = ByteCountFormatter.string(fromByteCount: importedBytes, countStyle: .file)
+                parts.append(imported.count == 1
+                    ? "Added \(imported[0].lastPathComponent) (\(size))"
+                    : "Added \(imported.count) files (\(size))")
+            }
+            if importedModelCount > 0 {
+                parts.append(parts.isEmpty ? "AI model installed" : "AI model included")
+            }
+            lastImportSummary = parts.joined(separator: " · ")
+            if !imported.isEmpty {
+                await importFiles?(imported)
+            }
             refreshSharingIfActive()
         }
         updateSleepBlocker()

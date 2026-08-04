@@ -61,6 +61,15 @@ struct RootView: View {
                     swarm.importFiles = { [weak session] urls in
                         await session?.addReaders(urls: urls)
                     }
+                    // The AI model rides along in the share (single-file
+                    // GGUF models only) and adopts straight into the
+                    // provider's cache slot on receive.
+                    swarm.shareableModelFiles = { [weak session] in
+                        session?.shareableModelFiles() ?? []
+                    }
+                    swarm.importModelFile = { [weak session] url in
+                        await session?.importSharedModelFile(at: url) ?? false
+                    }
                     // Single idempotent entry point — SwiftUI can fire
                     // `.task` more than once as navigation reshapes the
                     // stack, and ChatSession.runLaunchSequence() guards

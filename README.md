@@ -18,11 +18,14 @@ actually holds together.
 **Getting the content is now part of the app.** A fresh install offers two
 paths to a working library: **Nearby Sharing** — a friend who already has
 Zimfo (the person who recommended it, usually) turns on *Share my library*
-and their Wikipedia/StreetZIM files copy straight to the new device over
-AWDL / peer-to-peer Wi-Fi, no router or internet needed, with per-chunk
-SHA-256 verification, multi-device parallel pull, and resume (powered by the
-vendored [LocalSwarm](https://github.com/jasontitus/localswarm) engine,
-`ios/LocalPackages/LocalSwarm/`) — and an **in-app download catalog**:
+and their Wikipedia/StreetZIM files — **and the AI model itself** — copy
+straight to the new device over AWDL / peer-to-peer Wi-Fi, no router or
+internet needed, with per-chunk SHA-256 verification, multi-device parallel
+pull, and resume (powered by the vendored
+[LocalSwarm](https://github.com/jasontitus/localswarm) engine,
+`ios/LocalPackages/LocalSwarm/`); the received model drops into the
+provider's own cache slot and auto-activates, so the whole bootstrap works
+with zero connectivity — and an **in-app download catalog**:
 Wikipedia editions with and without pictures plus the full StreetZIM region
 list, multi-selected and fetched by a background `URLSession` that keeps
 going while the app is suspended and keeps the device awake while it's

@@ -242,6 +242,53 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             .appendingPathComponent(ggufFilename)
     }
 
+    /// The complete, byte-validated GGUF on disk, if any — what Nearby
+    /// Sharing offers to a friend so a fresh install can chat without ever
+    /// touching the internet.
+    public var shareableGGUFURL: URL? {
+        if let localGGUFPath {
+            let url = URL(fileURLWithPath: localGGUFPath)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        guard let url = cachedGGUFURL,
+              FileManager.default.fileExists(atPath: url.path),
+              (try? cachedFileHasExpectedSize(url)) == true else { return nil }
+        return url
+    }
+
+    /// Claim a GGUF received from a nearby device. The filename must match
+    /// this provider's pinned file and the byte count must validate — the
+    /// swarm already SHA-256-verified every chunk in transit, so the size
+    /// check's job is rejecting a same-named file from a different release.
+    /// On success the file is *moved* into the provider's cache slot (the
+    /// same place `ensureGGUFDownloaded()` would have put it) and the next
+    /// load skips the network entirely.
+    public func adoptSharedGGUF(at url: URL) -> Bool {
+        guard url.lastPathComponent == ggufFilename,
+              (try? cachedFileHasExpectedSize(url)) == true,
+              let destination = cachedGGUFURL else { return false }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination.path) {
+            if (try? cachedFileHasExpectedSize(destination)) == true {
+                // Already have a good copy; drop the duplicate.
+                try? fm.removeItem(at: url)
+                return true
+            }
+            // Replace a truncated/failed earlier download.
+            try? fm.removeItem(at: destination)
+        }
+        do {
+            try fm.createDirectory(at: destination.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try fm.moveItem(at: url, to: destination)
+            log.info("adopted shared GGUF into cache: \(self.ggufFilename, privacy: .public)")
+            return true
+        } catch {
+            log.error("failed to adopt shared GGUF: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     /// Download the GGUF via HuggingFace's direct resolve URL if not
     /// already on disk. We store under the same
     /// `<caches>/huggingface/hub/models--<repo>/snapshots/main/<file>`
@@ -1421,6 +1468,10 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         self.approximateMemoryMB = approximateMemoryMB
         self.template = template
     }
+    /// Model-sharing surface (matches the real provider; nothing to share
+    /// or adopt when llama.cpp isn't linked).
+    public var shareableGGUFURL: URL? { nil }
+    public func adoptSharedGGUF(at url: URL) -> Bool { false }
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { $0.finish() }
     }

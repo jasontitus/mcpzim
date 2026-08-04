@@ -337,6 +337,19 @@ headless builds.
   Partial downloads never appear in the library because the Documents scan
   is top-level-only. The controller rebuilds Bonjour browsers/listeners on
   every return to the foreground (iOS tears them down during suspension).
+- **The AI model rides along** (`ChatSession+ModelSharing.swift`): the share
+  includes the selected model's byte-validated GGUF (toggleable, on by
+  default), so the recipient can chat with zero internet — the model
+  download is otherwise the one online step a friend-bootstrap can't skip.
+  On receive, a `.gguf` is offered to every registered `LlamaCppProvider`;
+  `adoptSharedGGUF` claims it only when the filename matches the provider's
+  pinned file *and* the pinned byte count validates (transport integrity is
+  the swarm's per-chunk SHA-256), then moves it into the exact
+  `<caches>/huggingface/hub/...` slot `ensureGGUFDownloaded()` uses — the
+  provider's own cache/validation logic takes over from there. If the
+  device has no working model (`.notLoaded`/`.failed`), the adopted model
+  is auto-selected and loaded. MLX safetensors models are multi-file HF
+  snapshots and stay download-only for now. Pinned by `ModelSharingTests`.
 - **`ZimDownloadManager`** is a background-`URLSession` downloader
   (`sessionSendsLaunchEvents`, resume-data persisted under Application
   Support) for the catalog: transfers survive suspension and termination;
