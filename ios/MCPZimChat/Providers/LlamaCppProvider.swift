@@ -101,7 +101,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "LlamaCppProvider.state")
     private var state: ModelLoadState = .notLoaded
-    private var continuations: [AsyncStream<ModelLoadState>.Continuation] = []
+    private var continuations: [UUID: AsyncStream<ModelLoadState>.Continuation] = [:]
 
     /// Opaque handles from llama.cpp. Guarded by `modelLock` below —
     /// generate() can take a long time and we don't want `unload()`
@@ -175,9 +175,17 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { continuation in
+            let id = UUID()
             queue.sync {
                 continuation.yield(self.state)
-                self.continuations.append(continuation)
+                self.continuations[id] = continuation
+            }
+            // Drop dead subscribers so `continuations` doesn't grow
+            // unboundedly (and we don't yield to terminated streams) as
+            // models are switched over a long session.
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.queue.async { self.continuations[id] = nil }
             }
         }
     }
@@ -185,7 +193,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     private func set(_ new: ModelLoadState) {
         queue.sync {
             state = new
-            for c in continuations { c.yield(new) }
+            for c in continuations.values { c.yield(new) }
         }
     }
 

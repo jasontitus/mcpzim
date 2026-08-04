@@ -134,8 +134,13 @@ struct HeroMediaView: View {
 
         let base = "zim://\(zim)/"
         let absolute: String
-        if src.hasPrefix("http://") || src.hasPrefix("https://") || src.hasPrefix("zim://") {
+        if src.hasPrefix("zim://") {
             absolute = src
+        } else if src.hasPrefix("http://") || src.hasPrefix("https://") {
+            // Offline media is always zim://-relative. Untrusted ZIM
+            // article HTML must not drive the WebView to fetch arbitrary
+            // remote URLs, so reject absolute http(s) srcs outright.
+            return nil
         } else if src.hasPrefix("/") {
             absolute = base + String(src.dropFirst())
         } else {

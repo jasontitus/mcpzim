@@ -505,7 +505,10 @@ public actor MCPToolAdapter {
             return Self.encodeInventory(inv)
         case "search":
             let query = (args["query"] as? String) ?? ""
-            let requestedLimit = (args["limit"] as? Int) ?? 10
+            // Clamp to the schema bounds ("minimum":1,"maximum":50) before
+            // any arithmetic — an unclamped model-supplied `limit` near
+            // Int.max would trap the `* 2` overfetch below (DS4 medium).
+            let requestedLimit = max(1, min(50, (args["limit"] as? Int) ?? 10))
             let kindString = args["kind"] as? String
             let kind = kindString.flatMap { ZimKind(rawValue: $0) }
             // Over-fetch BM25 candidates when a reranker is wired up

@@ -1300,7 +1300,17 @@ public final class ChatSession {
         let originString = (out["origin"] as? String)?
             .trimmingCharacters(in: .whitespaces) ?? ""
         let hasMeaningfulOriginString = !originString.isEmpty
-        if isProximityTool && !hasNumericOrigin && !hasMeaningfulOriginString {
+        // A named `place` (e.g. near_places(place:"Berkeley")) is also
+        // location-like: injecting our coords here would make the tool
+        // adapter prefer them over geocoding the place, scanning near the
+        // user instead of Berkeley. (A "my location" synonym in `place`
+        // was already rewritten to a "lat,lon" string above, which the
+        // adapter parses back to coords — so skipping injection is safe.)
+        let placeString = (out["place"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        let hasMeaningfulPlaceString = !placeString.isEmpty
+        if isProximityTool && !hasNumericOrigin && !hasMeaningfulOriginString
+            && !hasMeaningfulPlaceString {
             out["lat"] = here.lat
             out["lon"] = here.lon
         }

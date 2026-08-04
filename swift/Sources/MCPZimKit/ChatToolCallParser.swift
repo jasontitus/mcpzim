@@ -78,12 +78,19 @@ public enum ChatToolCallParser {
             }
             // Order matters: longer sentinels first so `</tool_call>`
             // wins over `>`.
+            var closerFound = false
             for closer in ["</tool_call>", "<tool_call|>", ">"] {
                 if buffer[endIdx...].hasPrefix(closer) {
                     endIdx = buffer.index(endIdx, offsetBy: closer.count)
+                    closerFound = true
                     break
                 }
             }
+            // A *complete* call must carry its closing marker. A balanced
+            // JSON whose closer hasn't streamed in yet is still partial —
+            // return nil so the streaming loop keeps collecting rather than
+            // dispatching mid-stream (contract documented above).
+            guard closerFound else { return nil }
             return Match(range: openRange.lowerBound..<endIdx, name: name, arguments: args)
         }
 

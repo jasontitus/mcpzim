@@ -30,10 +30,11 @@ final class WeightLoader {
   /// - **Decoder weights**: Transposes noise convolution weights and handles weight_v conditionally
   /// - Parameter modelPath: URL to the directory containing model weight files
   /// - Returns: Dictionary mapping weight names to their processed MLXArray tensors
-  /// - Note: Uses forced try (try!) as weight loading is critical and should fail fast if unsuccessful
-  static func loadWeights(modelPath: URL) -> [String: MLXArray] {
+  /// - Throws: Rethrows any error from `MLX.loadArrays` so a corrupt/missing
+  ///   model bundle surfaces as a recoverable error instead of aborting the process.
+  static func loadWeights(modelPath: URL) throws -> [String: MLXArray] {
     // Load raw weights from disk
-    let weights = try! MLX.loadArrays(url: modelPath)
+    let weights = try MLX.loadArrays(url: modelPath)
     var sanitizedWeights: [String: MLXArray] = [:]
 
     // Process each weight based on its component prefix

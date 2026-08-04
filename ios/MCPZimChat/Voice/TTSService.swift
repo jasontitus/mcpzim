@@ -333,7 +333,7 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: voicesURL.path) else {
             throw TTSError.modelMissing("voices.npz missing; download the Kokoro voice first.")
         }
-        self.kokoro = KokoroTTS(modelPath: modelURL)
+        self.kokoro = try KokoroTTS(modelPath: modelURL)
         // `isPacked: true` matches the format of the voices.npz we
         // download from the KokoroTestApp repo — MLXUtilsLibrary's
         // newer NpyzReader signature requires it be explicit.

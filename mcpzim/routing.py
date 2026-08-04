@@ -40,6 +40,8 @@ def _decode_varint(data: bytes, pos: int) -> tuple[int, int]:
     shift = 0
     result = 0
     while True:
+        if pos >= len(data):
+            raise ValueError("varint truncated: read past end of buffer")
         b = data[pos]
         pos += 1
         result |= (b & 0x7F) << shift
@@ -454,7 +456,10 @@ class RouterCache:
             if g is not None:
                 return g
         blob = _read_graph_bin(zim)
-        g = Graph.parse(blob)
+        try:
+            g = Graph.parse(blob)
+        except (struct.error, IndexError, ValueError) as exc:
+            raise ValueError(f"corrupt routing graph in {zim.path.name}: {exc}") from exc
         with self._lock:
             self._graphs.setdefault(key, g)
         log.info("loaded routing graph from %s: %d nodes, %d edges", zim.path.name, g.num_nodes, g.num_edges)

@@ -107,7 +107,16 @@ struct LogDetailView: View {
             }
         }
         .onAppear {
-            logText = LogArchive.shared.read(url)
+            // Session logs can run to many MB; `read` does a whole-file
+            // `String(contentsOf:)`. Load it off the main thread so opening
+            // a large log doesn't hang the UI.
+            let target = url
+            Task {
+                let text = await Task.detached(priority: .userInitiated) {
+                    LogArchive.shared.read(target)
+                }.value
+                logText = text
+            }
         }
         #if os(iOS)
         .sheet(isPresented: $showShare) {

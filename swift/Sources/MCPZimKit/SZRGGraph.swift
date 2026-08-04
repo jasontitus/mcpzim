@@ -250,6 +250,14 @@ public struct SZRGGraph: Sendable {
                 for g in 0..<numGeoms {
                     let start = inlineGeomBase + Int(geomOffsets[g])
                     let end = inlineGeomBase + Int(geomOffsets[g + 1])
+                    // geomOffsets values are raw from the untrusted graph.bin;
+                    // only the blob's total length was advance-checked. Reject
+                    // offsets past the geom blob (or non-monotonic) before
+                    // decodeGeom builds a cursor bounded only by `end` (DS4 med).
+                    guard start >= inlineGeomBase, end >= start,
+                          end <= inlineGeomBase + geomBytes else {
+                        throw SZRGError.truncated("geom offset out of range at \(g)")
+                    }
                     geoms.append(try Self.decodeGeom(raw, start: start, end: end))
                 }
             } else if decodeGeoms && version == 5, let gdata = geomsData {
@@ -338,6 +346,11 @@ public struct SZRGGraph: Sendable {
             for g in 0..<numGeoms {
                 let start = base + Int(offsets[g])
                 let end = base + Int(offsets[g + 1])
+                // Offsets are raw from the untrusted SZGM buffer; validate
+                // against the geom blob before decodeGeom reads past it.
+                guard start >= base, end >= start, end <= base + geomBytes else {
+                    throw SZRGError.truncated("SZGM geom offset out of range at \(g)")
+                }
                 geoms.append(try Self.decodeGeom(raw, start: start, end: end))
             }
             return geoms
@@ -363,8 +376,13 @@ public struct SZRGGraph: Sendable {
         while cursor.pos < end {
             let dlon = Self.zigzagDecode(try cursor.readVarint())
             let dlat = Self.zigzagDecode(try cursor.readVarint())
-            lonE7 &+= Int32(dlon)
-            latE7 &+= Int32(dlat)
+            // A malformed varint can decode a delta outside Int32 range;
+            // `Int32(_:)` would trap, so reject it as truncated instead.
+            guard let dlonI = Int32(exactly: dlon), let dlatI = Int32(exactly: dlat) else {
+                throw SZRGError.truncated("geom delta")
+            }
+            lonE7 &+= dlonI
+            latE7 &+= dlatI
             points.append((Double(latE7) / 1e7, Double(lonE7) / 1e7))
         }
         return points

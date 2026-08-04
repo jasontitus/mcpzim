@@ -27,8 +27,10 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     private let manager = CLLocationManager()
     /// Latest fix (if any). Updated on every delegate callback.
     private var latest: CLLocation?
-    /// Callers waiting on the next fix; drained when one arrives.
-    private var waiters: [CheckedContinuation<CLLocationCoordinate2D, Error>] = []
+    /// Callers waiting on the next fix; drained when one arrives. Each is
+    /// tagged with the originating `once()` call's id so a single call's
+    /// timeout fails only its own waiter, not everyone's.
+    private var waiters: [(id: UUID, cont: CheckedContinuation<CLLocationCoordinate2D, Error>)] = []
     /// Subscribers notified on every new fix. ChatSession registers
     /// one at launch so `session.currentLocation` tracks the singleton
     /// without any polling / timeout. `@MainActor` guarantees the
@@ -39,8 +41,16 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     nonisolated(unsafe) private var subscribers: [(id: UUID, cb: (CLLocationCoordinate2D) -> Void)] = []
 
     /// Tests (or "offline dev" flows) can set this to bypass the real
-    /// `CLLocationManager` and return a canned coordinate.
-    nonisolated(unsafe) static var overrideForTesting: (@Sendable () async throws -> CLLocationCoordinate2D)?
+    /// `CLLocationManager` and return a canned coordinate. Lock-guarded:
+    /// `once()` reads it from a nonisolated async context while a writer
+    /// (test setup) can run on another thread, so a bare `nonisolated(unsafe)`
+    /// store would be a torn read of the closure.
+    private static let overrideLock = NSLock()
+    nonisolated(unsafe) private static var _overrideForTesting: (@Sendable () async throws -> CLLocationCoordinate2D)?
+    static var overrideForTesting: (@Sendable () async throws -> CLLocationCoordinate2D)? {
+        get { overrideLock.withLock { _overrideForTesting } }
+        set { overrideLock.withLock { _overrideForTesting = newValue } }
+    }
 
     override private init() {
         super.init()
@@ -220,11 +230,12 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         }
         // No fresh fix yet — enqueue a waiter + race against a
         // timeout. The delegate resumes waiters on the next fix.
+        let waiterID = UUID()
         return try await withThrowingTaskGroup(of: CLLocationCoordinate2D.self) { group in
             group.addTask { [weak self] in
                 try await withCheckedThrowingContinuation { c in
                     Task { @MainActor [weak self] in
-                        self?.waiters.append(c)
+                        self?.waiters.append((waiterID, c))
                     }
                 }
             }
@@ -233,9 +244,10 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
                 throw LocationError.timeout
             }
             defer {
-                // Make sure any leftover waiters are drained with an
-                // error so their continuations don't leak.
-                Task { @MainActor [weak self] in self?.failPendingWaiters(.timeout) }
+                // Fail only THIS call's waiter so a concurrently-waiting
+                // `once()` whose own window is still open isn't drained
+                // with a spurious timeout.
+                Task { @MainActor [weak self] in self?.failWaiter(waiterID, .timeout) }
                 group.cancelAll()
             }
             if let first = try await group.next() {
@@ -249,7 +261,16 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
     private func failPendingWaiters(_ err: LocationError) {
         let toFail = waiters
         waiters.removeAll()
-        for c in toFail { c.resume(throwing: err) }
+        for w in toFail { w.cont.resume(throwing: err) }
+    }
+
+    /// Fail (and remove) just the waiter registered by one `once()` call,
+    /// leaving other in-flight waiters untouched.
+    @MainActor
+    private func failWaiter(_ id: UUID, _ err: LocationError) {
+        guard let idx = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: idx)
+        waiter.cont.resume(throwing: err)
     }
 
     enum LocationError: Error {
@@ -275,9 +296,9 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         locLog.notice("didUpdateLocations: (\(loc.coordinate.latitude), \(loc.coordinate.longitude))")
         Task { @MainActor in
             self.latest = loc
-            let waiters = self.waiters
+            let pending = self.waiters
             self.waiters.removeAll()
-            for c in waiters { c.resume(returning: loc.coordinate) }
+            for w in pending { w.cont.resume(returning: loc.coordinate) }
             // Push to every ChatSession / intent subscriber so their
             // `currentLocation` state stays fresh without polling.
             for (_, cb) in self.subscribers { cb(loc.coordinate) }

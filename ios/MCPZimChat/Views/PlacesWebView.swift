@@ -1075,8 +1075,8 @@ private func loadPlacesSpec(
         var lon = coords[0], lat = coords[1];
         var safeLabel = esc(label);
         var safeDesc = esc(description);
-        var jsLabel = String(label || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
-        var jsPath = String(wikiPath || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+        var jsLabel = String(label || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
+        var jsPath = String(wikiPath || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
         var website = (extras && extras.website) || "";
         var phone   = (extras && extras.phone)   || "";
         var brand   = (extras && extras.brand)   || "";
@@ -1100,7 +1100,7 @@ private func loadPlacesSpec(
         // Wikipedia tag); plumbed through PlacesPayload.Place.website
         // to here.
         if (website) {
-          var jsWeb = String(website).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+          var jsWeb = String(website).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
           html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'website\\', \\'' + jsWeb + '\\');"'
             + ' style="background:#0ea5e9;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
             + '🌐 Website</button>';
@@ -1108,7 +1108,7 @@ private func loadPlacesSpec(
         // Phone button — posts to the native bridge, which opens the
         // `tel:` URL via UIApplication (a WKWebView won't dial on its own).
         if (phone) {
-          var jsPhone = String(phone).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+          var jsPhone = String(phone).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
           html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'call\\', \\'' + jsPhone + '\\');"'
             + ' style="background:#22c55e;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
             + '📞 Call</button>';

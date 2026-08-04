@@ -6,6 +6,9 @@
 // after the route was planned, and we want "how much longer" to still work.
 
 import Foundation
+import OSLog
+
+private let ctxLog = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "ZimfoContext")
 
 /// Serializable snapshot of an active driving route, enough to compute
 /// remaining time + distance + the nearest next turn without needing the
@@ -148,14 +151,24 @@ public actor ZimfoContext {
     /// for a one-field change.
     private func persistRoute() {
         let snap = Snapshot(activeRoute: _activeRoute, lastLocation: _lastLocation)
-        guard let data = try? JSONEncoder().encode(snap) else { return }
-        try? data.write(to: storeURL, options: [.atomic])
+        do {
+            let data = try JSONEncoder().encode(snap)
+            try data.write(to: storeURL, options: [.atomic])
+        } catch {
+            // A swallowed write failure leaves context.json stale/missing,
+            // so a later Siri intent reads an old route. Surface it.
+            ctxLog.error("persistRoute failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     private func persistLocation() {
-        guard let coord = _lastLocation,
-              let data = try? JSONEncoder().encode(coord) else { return }
-        try? data.write(to: Self.locationURL(for: storeURL), options: [.atomic])
+        guard let coord = _lastLocation else { return }
+        do {
+            let data = try JSONEncoder().encode(coord)
+            try data.write(to: Self.locationURL(for: storeURL), options: [.atomic])
+        } catch {
+            ctxLog.error("persistLocation failed: \(String(describing: error), privacy: .public)")
+        }
     }
 }
 

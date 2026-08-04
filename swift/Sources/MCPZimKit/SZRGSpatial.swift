@@ -115,7 +115,11 @@ public struct SZCIIndex: Sendable {
         guard i > 0, i < numNames else { return "" }
         let s = Int(nameOffsets[i])
         let e = Int(nameOffsets[i + 1])
-        if e == s { return "" }
+        // nameOffsets are raw from an untrusted SZCI; a crafted offset past
+        // the blob (or non-monotonic) would drive the UnsafeBufferPointer read
+        // out of bounds of namesBlob (DS4 medium). Treat as empty. (e > s also
+        // covers the previous e == s empty-name case.)
+        guard e > s, s >= 0, e <= namesBlob.count else { return "" }
         return namesBlob.withUnsafeBufferPointer { bp -> String in
             let slice = UnsafeBufferPointer(start: bp.baseAddress!.advanced(by: s),
                                              count: e - s)
@@ -189,7 +193,7 @@ public struct SZRCCell: Sendable {
         guard start >= 0, end <= geomBlob.count else {
             throw SZCIError.truncated("geom window [\(start)..\(end)] exceeds blob \(geomBlob.count)")
         }
-        return geomBlob.withUnsafeBufferPointer { bp -> [(lat: Double, lon: Double)] in
+        return try geomBlob.withUnsafeBufferPointer { bp -> [(lat: Double, lon: Double)] in
             let base = UnsafeRawBufferPointer(bp)
             let lon0 = SZRGInt.readInt32LE(base, at: start)
             let lat0 = SZRGInt.readInt32LE(base, at: start + 4)
@@ -203,8 +207,13 @@ public struct SZRCCell: Sendable {
                 let dlon = zigzagDecode(dlonRaw)
                 let (dlatRaw, ni2) = SZRGInt.readVarintLE(base, at: ni1, end: end)
                 let dlat = zigzagDecode(dlatRaw)
-                lonE7 &+= Int32(dlon)
-                latE7 &+= Int32(dlat)
+                // A malformed varint delta outside Int32 range would trap
+                // `Int32(_:)`; reject it as truncated instead.
+                guard let dlonI = Int32(exactly: dlon), let dlatI = Int32(exactly: dlat) else {
+                    throw SZCIError.truncated("geom delta")
+                }
+                lonE7 &+= dlonI
+                latE7 &+= dlatI
                 pts.append((Double(latE7) / 1e7, Double(lonE7) / 1e7))
                 i = ni2
             }

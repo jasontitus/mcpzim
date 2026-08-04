@@ -138,6 +138,13 @@ class Geocoder:
             name_lower = name.lower()
             if q_lower not in name_lower:
                 continue
+            # Skip records whose coordinates aren't parseable rather than
+            # failing the whole geocode over one malformed index entry.
+            try:
+                lat = float(rec.get("a", 0.0))
+                lon = float(rec.get("o", 0.0))
+            except (TypeError, ValueError):
+                continue
             # Score = earliest match position, then shorter name wins.
             scored.append(
                 (
@@ -146,8 +153,8 @@ class Geocoder:
                     Place(
                         name=name,
                         type=t,
-                        lat=float(rec.get("a", 0.0)),
-                        lon=float(rec.get("o", 0.0)),
+                        lat=lat,
+                        lon=lon,
                         subtype=str(rec.get("s", "") or ""),
                         location=str(rec.get("l", "") or ""),
                     ),

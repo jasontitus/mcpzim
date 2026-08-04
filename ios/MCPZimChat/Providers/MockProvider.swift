@@ -14,25 +14,35 @@ public final class MockProvider: ModelProvider, @unchecked Sendable {
     public let supportsToolCalls = true
 
     private let lock = NSLock()
-    private var stateContinuations: [AsyncStream<ModelLoadState>.Continuation] = []
+    private var stateContinuations: [UUID: AsyncStream<ModelLoadState>.Continuation] = [:]
     private var state: ModelLoadState = .notLoaded
 
     public init() {}
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { cont in
+            let id = UUID()
             self.lock.lock()
             let s = self.state
-            self.stateContinuations.append(cont)
+            self.stateContinuations[id] = cont
             self.lock.unlock()
             cont.yield(s)
+            // Drop dead subscribers so the map doesn't grow unboundedly
+            // (and we don't yield to terminated streams) across the many
+            // sessions an eval harness builds per process.
+            cont.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self.stateContinuations[id] = nil
+                self.lock.unlock()
+            }
         }
     }
 
     private func set(_ new: ModelLoadState) {
         lock.lock()
         state = new
-        let conts = stateContinuations
+        let conts = Array(stateContinuations.values)
         lock.unlock()
         conts.forEach { $0.yield(new) }
     }

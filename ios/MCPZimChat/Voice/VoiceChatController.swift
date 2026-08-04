@@ -654,7 +654,14 @@ public final class VoiceChatController {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != lastSubmittedTranscript else {
             log("submitFinal skipped (empty or duplicate): \"\(trimmed)\"")
-            resumeListeningAfterCycle()
+            // Don't re-arm the mic mid-turn: a delayed duplicate `isFinal`
+            // can land after the force-submit grace task already moved us to
+            // `.thinking`, and resuming here would install a second recognizer
+            // that captures the assistant's own TTS. Only resume while still
+            // in a listening phase.
+            if state != .thinking && state != .speaking {
+                resumeListeningAfterCycle()
+            }
             return
         }
         log("submitFinal → session.send(\"\(trimmed)\")")
@@ -947,6 +954,11 @@ public final class VoiceChatController {
                 try? await Task.sleep(nanoseconds: 75_000_000)
             }
         }
+        // Barge-in (interruptAndListen) cancels this task and spawns a fresh
+        // watcher that owns the re-arm. Returning here avoids a second
+        // resumeListeningAfterCycle() racing that watcher — which would
+        // install a duplicate mic tap / STT stream.
+        if Task.isCancelled { return }
         if !sawAnyText {
             log("streamAssistantReply: reply was empty")
             resumeListeningAfterCycle()

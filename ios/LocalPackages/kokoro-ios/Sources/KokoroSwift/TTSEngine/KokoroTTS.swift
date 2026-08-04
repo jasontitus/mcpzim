@@ -58,14 +58,20 @@ public final class KokoroTTS {
   
   /// Currently active language (cached to avoid reinitializing G2P)
   private var chosenLanguage: Language = .none
+
+  /// Serializes `generateAudio` so concurrent callers can't race on the
+  /// mutable `chosenLanguage` cache or the shared, stateful G2P engine.
+  private let generationLock = NSLock()
   
   /// Initializes the Kokoro TTS engine with model weights and G2P processor.
   /// - Parameters:
   ///   - modelPath: URL to the directory containing model weights
   ///   - g2p: Grapheme-to-phoneme processor type (default: Misaki)
-  public init(modelPath: URL, g2p: G2P = .misaki) {
+  /// - Throws: Rethrows weight-loading errors so a corrupt/missing model
+  ///   bundle surfaces to the caller instead of aborting the process.
+  public init(modelPath: URL, g2p: G2P = .misaki) throws {
     // Load and sanitize model weights
-    let sanitizedWeights = WeightLoader.loadWeights(modelPath: modelPath)
+    let sanitizedWeights = try WeightLoader.loadWeights(modelPath: modelPath)
     let config = KokoroConfig.loadConfig()
     
     // Initialize BERT model for phoneme encoding
@@ -166,6 +172,11 @@ public final class KokoroTTS {
   /// - Throws: `KokoroTTSError.tooManyTokens` if text is too long,
   ///           or `G2PProcessorError` if G2P processing fails
   public func generateAudio(voice: MLXArray, language: Language, text: String, speed: Float = 1.0) throws -> ([Float], [MToken]?) {
+    // Serialize the whole pipeline: the language cache and the G2P engine
+    // are shared mutable state, so concurrent synthesis must not interleave.
+    generationLock.lock()
+    defer { generationLock.unlock() }
+
     // Update language if it has changed
     try updateLanguageIfNeeded(language)
 

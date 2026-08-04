@@ -62,7 +62,7 @@ if corpus_path.exists():
         except Exception: pass
 
 new_convs, new_sessions = [], set()
-for log in sorted(raw_dir.glob("*.log")):
+for log in sorted(raw_dir.rglob("*.log")):   # recurse into per-device folders
     if log.stem in seen:
         continue
     out = subprocess.run(["python3", parser, str(log)],

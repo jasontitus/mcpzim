@@ -95,8 +95,13 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
 
         let start = Int(graph.adjOffsets[current.node])
         let end = Int(graph.adjOffsets[current.node + 1])
+        // adjOffsets/edgeTargets come straight from the untrusted graph.bin;
+        // clamp the CSR edge window and skip targets past the node arrays so a
+        // crafted graph can't drive an out-of-bounds read (DS4 medium).
+        guard start >= 0, start <= end, end <= graph.numEdges else { continue }
         for e in start..<end {
             let target = Int(graph.edgeTargets[e])
+            if target >= graph.numNodes { continue }
             let dist = graph.edgeDistMeters[e]
             let speed = max(1.0, Double(graph.edgeSpeedKmh[e]))
             let edgeCost = dist * 3.6 / speed
@@ -194,8 +199,11 @@ private func reconstructRoute(
 /// Nearest graph node to (lat, lon) by squared e7 distance — linear scan
 /// over the eager node table (matches the JS `nearestNode`).
 public func nearestNodeSpatial(index: SZCIIndex, lat: Double, lon: Double) -> Int {
-    let latE7 = Int32((lat * 1e7).rounded())
-    let lonE7 = Int32((lon * 1e7).rounded())
+    // lat/lon arrive from LLM-controlled MCP args; the Int32 conversion traps
+    // beyond ~±214.7°, so reject out-of-range coords up front (the caller
+    // already treats -1 as "no node" → noRoute) (DS4 medium).
+    guard let latE7 = Int32(exactly: (lat * 1e7).rounded()),
+          let lonE7 = Int32(exactly: (lon * 1e7).rounded()) else { return -1 }
     let nodes = index.nodesScaled
     var best = -1
     var bestDist = Double.infinity
@@ -282,6 +290,9 @@ func aStarSpatial(
         for ei in eStart..<eEnd {
             let base = ei * 5
             let target = Int(cell.edges[base])
+            // `target` is a raw node id from the untrusted SZRC cell; guard it
+            // before coord()/cellForNode() index index.nodesScaled (DS4 medium).
+            if target >= index.numNodes { continue }
             if closed.contains(target) { continue }
             let speedDist = cell.edges[base + 1]
             let speed = Double((speedDist >> 24) & 0xFF)

@@ -76,7 +76,8 @@ struct StartRouteIntent: AppIntent {
         guard let totalDist = body["distance_m"] as? Double,
               let totalDur = body["duration_s"] as? Double,
               let polyRaw = body["polyline"] as? [[Double]],
-              !polyRaw.isEmpty
+              !polyRaw.isEmpty,
+              polyRaw.allSatisfy({ $0.count >= 2 })
         else {
             return .result(dialog: IntentDialog("Route planning failed."))
         }

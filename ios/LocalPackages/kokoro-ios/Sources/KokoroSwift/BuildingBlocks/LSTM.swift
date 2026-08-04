@@ -101,6 +101,13 @@ class LSTM: Module {
 
       allCell.append(currentCell)
       allHidden.append(currentHidden)
+
+      // Materialize the carried recurrence state periodically so a long
+      // utterance doesn't unroll the whole sequence into one O(seqLen)
+      // lazy graph before the terminal `stacked`.
+      if (idx + 1) % 64 == 0 {
+        MLX.eval(currentCell, currentHidden)
+      }
     }
 
     return (MLX.stacked(allHidden, axis: -2), MLX.stacked(allCell, axis: -2))
@@ -132,6 +139,7 @@ class LSTM: Module {
     var currentCell = cell ?? MLXArray.zeros([x.shape[0], hiddenSize])
 
     // Process sequence in backward direction (seqLen-1 to 0)
+    var step = 0
     for idx in stride(from: seqLen - 1, through: 0, by: -1) {
       var ifgo = xProj[0..., idx, 0...]
       ifgo = ifgo + MLX.matmul(currentHidden, whBackward.transposed())
@@ -151,6 +159,13 @@ class LSTM: Module {
       // array every step, O(seqLen²) element moves on long utterances.
       allCell.append(currentCell)
       allHidden.append(currentHidden)
+
+      // Materialize the carried recurrence state periodically (see the
+      // forward pass) to cap the lazy-graph depth on long utterances.
+      step += 1
+      if step % 64 == 0 {
+        MLX.eval(currentCell, currentHidden)
+      }
     }
 
     // Restore original sequence order in one pass.
