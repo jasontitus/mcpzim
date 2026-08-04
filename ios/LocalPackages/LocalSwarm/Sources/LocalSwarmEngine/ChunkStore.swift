@@ -253,9 +253,14 @@ public final class ChunkStore {
     }
 
     private func persistBitfield() {
-        dirtyChunks = 0
+        // Failure keeps the dirty count so a later checkpoint or flush()
+        // retries; bumping lastPersist regardless rate-limits retries against
+        // a failing disk to the time-based cadence rather than every write.
         lastPersist = DispatchTime.now()
-        guard let url = bitfieldURL else { return }
+        guard let url = bitfieldURL else {
+            dirtyChunks = 0
+            return
+        }
         // Atomic write of the incrementally maintained packed form. The
         // per-swarm directory is keyed by the content-addressed swarmID, so a
         // loaded bitfield can only belong to this exact content. We do not
@@ -265,6 +270,7 @@ public final class ChunkStore {
         // than silent.
         do {
             try packedBitfield.write(to: url, options: .atomic)
+            dirtyChunks = 0
         } catch {
             swarmDiag("bitfield persist FAILED (\(url.lastPathComponent)): \(error)")
         }

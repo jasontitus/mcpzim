@@ -1,9 +1,9 @@
 # Vendored LocalSwarmEngine
 
 Vendored from https://github.com/jasontitus/localswarm at commit
-`8e27b2b` on branch `claude/mcpzim-local-swarm-fex4ts` (engine `Sources/` +
-`Tests/` + `Package.swift` only — the upstream repo's own SwiftUI app,
-Android app, and Go peer are not vendored). That commit includes the DS4
+`6d6d47e`, the tip of upstream `main` (engine `Sources/` + `Tests/` +
+`Package.swift` only — the upstream repo's own SwiftUI app, Android app,
+and Go peer are not vendored). That commit includes the DS4
 perf-review fixes and checkpointed-persistence hardening (via upstream's
 `claude/ds4-branches-review-zutieh`), the reconciled folder-share design
 (single folder = Go-conformant unprefixed folder swarm), and the
