@@ -2,10 +2,35 @@
 
 import SwiftUI
 
+#if os(iOS)
+/// Minimal delegate for the background download session: iOS relaunches the
+/// app when a `ZimDownloadManager` transfer finishes while we're not running,
+/// and hands over a completion handler to call once the session's events are
+/// drained. Touching `.shared` here also recreates the URLSession so the
+/// pending delegate callbacks have somewhere to land.
+final class ZimfoAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == ZimDownloadManager.sessionIdentifier else {
+            completionHandler()
+            return
+        }
+        Task { @MainActor in
+            ZimDownloadManager.shared.backgroundEventsCompletionHandler = completionHandler
+        }
+    }
+}
+#endif
+
 @main
 struct MCPZimChatApp: App {
     @State private var session = ChatSession()
+    @StateObject private var swarm = ZimSwarmController()
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(ZimfoAppDelegate.self) private var appDelegate
+    #endif
 
     init() {
         AppTelemetry.configure()
@@ -15,6 +40,7 @@ struct MCPZimChatApp: App {
         WindowGroup {
             RootView()
                 .environment(session)
+                .environmentObject(swarm)
                 .task {
                     // Ship any session that finished before this launch (incl.
                     // the one before a crash). Opt-in + no-op otherwise.
@@ -26,6 +52,12 @@ struct MCPZimChatApp: App {
                     // walking session lands with no interaction.
                     if phase == .background {
                         DiagnosticsUploader.uploadFinishedLogs(archive: .shared)
+                    }
+                    // iOS tears down Bonjour listeners/browsers during
+                    // suspension; nearby devices reappear only after a
+                    // rebuild.
+                    if phase == .active {
+                        swarm.refreshConnectivity()
                     }
                 }
         }

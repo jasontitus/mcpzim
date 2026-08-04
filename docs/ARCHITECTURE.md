@@ -319,6 +319,61 @@ Because voice goes through `ChatSession.send`, voice queries get
 the full Phase 2/3 tooling — router, section chunking, rerank,
 map-reduce.
 
+## Getting content: Nearby Sharing + in-app downloads (`Sharing/`)
+
+Everything that *fills* the library lives in `MCPZimChat/Sharing/` (logic)
+plus two views; the eval CLI excludes `Sharing/**` so none of it leaks into
+headless builds.
+
+- **`ZimSwarmController`** wraps the vendored
+  [LocalSwarm](https://github.com/jasontitus/localswarm) engine
+  (`ios/LocalPackages/LocalSwarm/`, Apache-2.0, pinned commit in its
+  `MCPZIM_VENDOR.md`). Seeding shares the *enabled* library entries under
+  "Zimfo · <device>"; receiving stages swarm downloads in
+  `Documents/Incoming/<swarmID>/` (same volume as the library, so the
+  post-transfer move is a rename), then imports `.zim`s through
+  `ChatSession.addReaders` — which also invalidates the prompt cache — and
+  re-hosts if sharing is on, so a bootstrap chain (A → B → C) works.
+  Partial downloads never appear in the library because the Documents scan
+  is top-level-only. The controller rebuilds Bonjour browsers/listeners on
+  every return to the foreground (iOS tears them down during suspension).
+- **The AI model rides along** (`ChatSession+ModelSharing.swift`): the share
+  includes the selected model's byte-validated GGUF (toggleable, on by
+  default), so the recipient can chat with zero internet — the model
+  download is otherwise the one online step a friend-bootstrap can't skip.
+  On receive, a `.gguf` is offered to every registered `LlamaCppProvider`;
+  `adoptSharedGGUF` claims it only when the filename matches the provider's
+  pinned file *and* the pinned byte count validates (transport integrity is
+  the swarm's per-chunk SHA-256), then moves it into the exact
+  `<caches>/huggingface/hub/...` slot `ensureGGUFDownloaded()` uses — the
+  provider's own cache/validation logic takes over from there. If the
+  device has no working model (`.notLoaded`/`.failed`), the adopted model
+  is auto-selected and loaded. MLX safetensors models are multi-file HF
+  snapshots and stay download-only for now. Pinned by `ModelSharingTests`.
+- **`ZimDownloadManager`** is a background-`URLSession` downloader
+  (`sessionSendsLaunchEvents`, resume-data persisted under Application
+  Support) for the catalog: transfers survive suspension and termination;
+  `ZimfoAppDelegate` handles the background relaunch hand-back. Finished
+  files move into Documents and are opened immediately via a
+  foreground notification, or by the next launch's scan otherwise.
+- **`ZimCatalog`** resolves the *latest* archives at runtime — Wikipedia
+  (`nopic` + `maxi` flavors) from the Kiwix directory index, StreetZIM
+  regions (with tier/size/description) from streetzim.web.app — with baked
+  fallbacks pinned at build time. Parsers are pure and pinned by
+  `CatalogParsingTests`.
+- **`SleepBlocker`** (in `ZimDownloadManager.swift`) is a ref-counted
+  keep-awake shared by both transports: idle-timer on iOS, an
+  `idleSystemSleepDisabled` process assertion on macOS — the "no-sleep
+  download" guarantee while the app is frontmost.
+
+UI: `NearbyShareView` (share toggle + discovered swarms + file picker +
+transfer rows), `DownloadCatalogView` (pick-and-go multi-select with a
+free-space guard), and `OfflineContentSetupView` as the first-run hub that
+leads with "copy from a friend". Config that must not drift: both app
+Info.plists carry `NSLocalNetworkUsageDescription` +
+`NSBonjourServices` (`_localswarm._tcp`, `_localswarmquic._tcp`), and the
+sandboxed Mac app needs `com.apple.security.network.server` to seed.
+
 ## Eval harness (Phase 2/3 additions)
 
 `ConversationalEvalTests.swift` gained:

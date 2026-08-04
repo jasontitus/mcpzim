@@ -50,13 +50,22 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Get offline content") {
+                NavigationLink {
+                    NearbyShareView()
+                } label: {
+                    Label("Nearby sharing", systemImage: "person.2.wave.2.fill")
+                }
+                NavigationLink {
+                    DownloadCatalogView()
+                } label: {
+                    Label("Download Wikipedia & maps", systemImage: "arrow.down.circle")
+                }
                 Button {
                     showOfflineSetup = true
                 } label: {
-                    Label("Choose Wikipedia and StreetZIM maps",
-                          systemImage: "square.stack.3d.up")
+                    Label("Guided setup", systemImage: "square.stack.3d.up")
                 }
-                Text("Guided downloads for no-picture Wikipedia and a state, region, or country map from streetzim.web.app.")
+                Text("Copy a friend's library directly over Wi-Fi, or download Wikipedia (with or without pictures) and StreetZIM street maps in the background.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
