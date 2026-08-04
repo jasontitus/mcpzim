@@ -1,0 +1,76 @@
+import Foundation
+
+/// A swarm available to download, aggregated across every nearby peer that
+/// advertises the same content (`swarmID`). `peers` are the parallel sources.
+public struct DiscoveredSwarm: Identifiable, Hashable, Sendable {
+    public let swarmID: String
+    public let name: String
+    public let totalBytes: Int64
+    public let chunkCount: Int
+    /// All discovered peers across every transport (a host appears once per
+    /// transport it advertises).
+    public var peers: [DiscoveredPeer]
+
+    public var id: String { swarmID }
+
+    /// Distinct devices offering this swarm (collapsing transport variants).
+    public var sourceCount: Int { Set(peers.map(\.peerID)).count }
+
+    /// Whether this share requires a PIN (any advertising peer flags it locked).
+    public var locked: Bool { peers.contains { $0.locked } }
+
+    /// Transports this swarm can be pulled over right now.
+    public var availableTransports: Set<Transport> { Set(peers.map(\.transport)) }
+
+    /// Peers reachable over a given transport.
+    public func peers(for transport: Transport) -> [DiscoveredPeer] {
+        peers.filter { $0.transport == transport }
+    }
+}
+
+/// Progress while a host is hashing a file into chunks, before it starts
+/// advertising (a big file takes a while to prepare).
+public struct HostPreparation: Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public var fraction: Double
+}
+
+/// A receive the user has requested but whose manifest is still being fetched,
+/// so no transfer row exists yet. Lets the UI show "Connecting…" the instant
+/// Receive is tapped (a big swarm's manifest takes a moment to transfer).
+public struct PendingReceive: Identifiable, Sendable {
+    public let swarmID: String
+    public let name: String
+    public var id: String { swarmID }
+}
+
+/// What a node is currently doing with a given swarm.
+public enum SwarmRole: String, Sendable {
+    case seeding       // hosting original files
+    case downloading   // pulling chunks
+    case paused        // download stopped by the user; partial data kept for resume
+    case complete      // finished downloading; now re-seeding
+}
+
+/// A snapshot of one active transfer for display. Value type so it crosses
+/// queues safely and drives SwiftUI directly.
+public struct TransferStatus: Identifiable, Sendable, Equatable {
+    public let swarmID: String
+    public let name: String
+    public let totalBytes: Int64
+    public var completedBytes: Int64
+    public var bytesPerSecond: Double
+    public var connectedPeers: Int
+    public var role: SwarmRole
+
+    public var id: String { swarmID }
+
+    public var fractionComplete: Double {
+        if role == .complete { return 1 }
+        guard totalBytes > 0 else { return 0 }
+        return min(1, Double(completedBytes) / Double(totalBytes))
+    }
+
+    public var isComplete: Bool { role == .complete }
+}

@@ -9,6 +9,7 @@ import AVFoundation
 
 struct RootView: View {
     @Environment(ChatSession.self) private var session
+    @EnvironmentObject private var swarm: ZimSwarmController
     @AppStorage("onboarding.didOfferOfflineContentV1")
     private var didOfferOfflineContent = false
     @State private var showOfflineSetup = false
@@ -46,6 +47,20 @@ struct RootView: View {
                     SetupOverlayView()
                 }
                 .task {
+                    // Reconnect the background download session right away —
+                    // a transfer started last session needs a live delegate
+                    // to hand its finished file to, even if the user never
+                    // opens the downloads UI this launch.
+                    _ = ZimDownloadManager.shared
+                    // Nearby sharing seeds the enabled library entries and
+                    // imports received ZIMs through the normal library path
+                    // (which also invalidates the prompt cache).
+                    swarm.shareableFiles = { [weak session] in
+                        session?.library.filter { $0.isEnabled }.map(\.url) ?? []
+                    }
+                    swarm.importFiles = { [weak session] urls in
+                        await session?.addReaders(urls: urls)
+                    }
                     // Single idempotent entry point — SwiftUI can fire
                     // `.task` more than once as navigation reshapes the
                     // stack, and ChatSession.runLaunchSequence() guards
@@ -68,6 +83,19 @@ struct RootView: View {
         .sheet(isPresented: $showOfflineSetup) {
             OfflineContentSetupView()
                 .environment(session)
+                .environmentObject(swarm)
+        }
+        .onReceive(NotificationCenter.default
+            .publisher(for: ZimDownloadManager.fileReadyNotification)) { note in
+            // A catalog download finished while the app is frontmost — load
+            // it now instead of waiting for the next launch's Documents scan.
+            guard let url = note.userInfo?["url"] as? URL else { return }
+            Task {
+                while !session.libraryBootstrapComplete {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                await session.addReaders(urls: [url])
+            }
         }
         .onOpenURL { url in
             guard url.pathExtension.lowercased() == "zim" else { return }
@@ -333,5 +361,7 @@ struct SetupOverlayView: View {
 }
 
 #Preview {
-    RootView().environment(ChatSession())
+    RootView()
+        .environment(ChatSession())
+        .environmentObject(ZimSwarmController())
 }

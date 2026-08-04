@@ -19,6 +19,13 @@ settings:
 packages:
   MCPZimKit:
     path: ../swift
+  # Vendored from https://github.com/jasontitus/localswarm (see
+  # LocalPackages/LocalSwarm/MCPZIM_VENDOR.md for the pinned commit and
+  # re-sync steps). Powers Nearby Sharing: seeding the ZIM library to nearby
+  # devices and pulling a friend's ZIMs over AWDL / peer-to-peer Wi-Fi with
+  # multi-source parallelism, SHA-256 chunk verification, and resume.
+  LocalSwarm:
+    path: LocalPackages/LocalSwarm
   # Vendored fork of https://github.com/ml-explore/mlx-swift-lm (pin 3.31.3).
   # Local patch inserts a `QuantizedKVCacheProtocol` branch into
   # `Libraries/MLXLLM/Models/Gemma4Text.swift::Gemma4Attention.callAsFunction`
@@ -126,9 +133,18 @@ targets:
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
         NSSpeechRecognitionUsageDescription: "Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server."
+        # Nearby Sharing (LocalSwarm engine): direct device-to-device
+        # transfers over AWDL / peer-to-peer Wi-Fi. Bonjour service names
+        # must match the engine's advertisers exactly.
+        NSLocalNetworkUsageDescription: "Zimfo finds nearby devices and copies offline libraries directly over Wi-Fi, with no internet required."
+        NSBonjourServices:
+          - _localswarm._tcp
+          - _localswarmquic._tcp
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
+      - package: LocalSwarm
+        product: LocalSwarmEngine
       - package: mlx-swift-lm
         product: MLXLLM
       - package: mlx-swift-lm
@@ -239,9 +255,10 @@ targets:
           - "GoogleService-Info.plist"
           - "GoogleService-Info-Mac.plist"
           - "Info-Mac.plist"
-          - "App/**"    # no SwiftUI @main; we supply our own main.swift
-          - "Views/**"  # no UI in a CLI
-          - "Voice/**"  # no AVFoundation / Kokoro pulls
+          - "App/**"     # no SwiftUI @main; we supply our own main.swift
+          - "Views/**"   # no UI in a CLI
+          - "Voice/**"   # no AVFoundation / Kokoro pulls
+          - "Sharing/**" # no LocalSwarmEngine / nearby-share machinery
       - path: MCPZimEval
     dependencies:
       - package: MCPZimKit
@@ -353,10 +370,16 @@ targets:
         NSLocationWhenInUseUsageDescription: "Zimfo uses your location for routing and \"what's nearby\" queries. All lookups stay on-device."
         NSMicrophoneUsageDescription: "Zimfo uses the microphone for hands-free voice chat with the on-device model. Audio is transcribed locally and never leaves the device."
         NSSpeechRecognitionUsageDescription: "Zimfo transcribes your voice on-device using Apple's speech recognizer. Nothing is sent to Apple or any server."
+        NSLocalNetworkUsageDescription: "Zimfo finds nearby devices and copies offline libraries directly over Wi-Fi, with no internet required."
+        NSBonjourServices:
+          - _localswarm._tcp
+          - _localswarmquic._tcp
         NSApplicationCrashOnExceptions: true
     dependencies:
       - package: MCPZimKit
         product: MCPZimKit
+      - package: LocalSwarm
+        product: LocalSwarmEngine
       - package: mlx-swift-lm
         product: MLXLLM
       - package: mlx-swift-lm

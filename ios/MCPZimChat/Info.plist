@@ -39,8 +39,15 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_localswarm._tcp</string>
+		<string>_localswarmquic._tcp</string>
+	</array>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Needed to read ZIM archives you drop into the app's Documents folder.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Zimfo finds nearby devices and copies offline libraries directly over Wi-Fi, with no internet required.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Zimfo uses your location for routing and "what's nearby" queries. All lookups stay on-device.</string>
 	<key>NSMicrophoneUsageDescription</key>
