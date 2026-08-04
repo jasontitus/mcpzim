@@ -256,9 +256,12 @@ public final class SwarmManager: ObservableObject {
     // MARK: - Hosting
 
     /// Slices the chosen files into a new swarm and begins seeding it alongside
-    /// any others already hosted. Hashing runs off the main thread; `completion`
-    /// fires on the main thread with the manifest once seeding starts (so a
-    /// caller can record the content-addressed swarmID).
+    /// any others already hosted. A single *directory* URL becomes a folder
+    /// swarm with its internal layout preserved (each file's manifest path is
+    /// its path relative to the folder, which the receiving side recreates);
+    /// plain files keep their bare filename. Hashing runs off the main thread;
+    /// `completion` fires on the main thread with the manifest once seeding
+    /// starts (so a caller can record the content-addressed swarmID).
     public func hostFiles(at urls: [URL], name: String? = nil, pin: String? = nil, completion: ((SwarmManifest) -> Void)? = nil) {
         let displayName = name ?? Self.defaultName(for: urls)
         let peerID = localPeerID
@@ -268,19 +271,38 @@ public final class SwarmManager: ObservableObject {
         ioQueue.async { [weak self] in
             guard let self = self else { return }
             do {
+                // A single directory becomes a folder swarm: enumerate it into
+                // (url, relative-path) sources preserving the tree, unprefixed —
+                // byte-for-byte conformant with the Go seeder. Everything else is
+                // the mixed case: plain files keyed by last path component, and
+                // any directory in the list expanded with its folder name as the
+                // path prefix (so a host app can seed "files + model folders" as
+                // one swarm).
+                var isDir: ObjCBool = false
+                let sources: [(url: URL, path: String)]
+                if urls.count == 1,
+                   FileManager.default.fileExists(atPath: urls[0].path, isDirectory: &isDir), isDir.boolValue {
+                    sources = try Chunker.folderSources(urls[0])
+                } else {
+                    sources = try Chunker.mixedSources(urls)
+                }
+                // Cache identity includes each file's relative path, so the same
+                // files shared flat vs. as a folder can never alias.
+                let cacheItems = sources.map { ShareItem(url: $0.url, relativePath: $0.path) }
+
                 let manifest: SwarmManifest
                 let ordered: [URL]
-                if let cached = ManifestCache.lookup(name: displayName, urls: urls) {
+                if let cached = ManifestCache.lookup(name: displayName, items: cacheItems) {
                     // Unchanged files (same paths, sizes, mtimes) — skip hashing
-                    // entirely so a relaunch re-shares a 100 GB file instantly.
+                    // entirely so a relaunch re-shares a 100 GB folder instantly.
                     (manifest, ordered) = cached
                     swarmDiag("manifest cache HIT for \(displayName) (\(manifest.chunkCount) chunks) — skipping hash")
                 } else {
-                    (manifest, ordered) = try Chunker.buildManifest(name: displayName, fileURLs: urls,
+                    (manifest, ordered) = try Chunker.buildManifest(name: displayName, sources: sources,
                         progress: { [weak self] fraction in
                             DispatchQueue.main.async { self?.updatePreparation(prepID, fraction: fraction) }
                         })
-                    ManifestCache.store(manifest: manifest, ordered: ordered, name: displayName, urls: urls)
+                    ManifestCache.store(manifest: manifest, ordered: ordered, name: displayName, items: cacheItems)
                 }
                 let store = ChunkStore.forSeeding(manifest: manifest, sourceURLs: ordered)
                 self.netQueue.async {
@@ -643,16 +665,24 @@ public final class SwarmManager: ObservableObject {
         let fullWindows = Int(duration)
         guard fullWindows >= 2, progress.count >= 2 else { return (0, 0) }
         let sorted = progress.sorted { $0.t < $1.t }
+        // Window edges are queried in increasing time order, so one cursor
+        // walks the samples once overall — a rescan-from-zero per edge made
+        // this quadratic in samples × duration for long benchmark legs.
+        var cursor = 0
+        var latest: Int64 = 0
         func bytesAt(_ time: Double) -> Int64 {
-            var result: Int64 = 0
-            for sample in sorted {
-                if sample.t <= time { result = sample.bytes } else { break }
+            while cursor < sorted.count, sorted[cursor].t <= time {
+                latest = sorted[cursor].bytes
+                cursor += 1
             }
-            return result
+            return latest
         }
         var rates: [Double] = []
-        for i in 1..<fullWindows { // skip window [0,1) warmup; ignore partial tail
-            rates.append(Double(bytesAt(Double(i + 1)) - bytesAt(Double(i))))
+        var previous = bytesAt(1.0) // window [0,1) is warmup
+        for i in 1..<fullWindows { // skip warmup; ignore partial tail
+            let next = bytesAt(Double(i + 1))
+            rates.append(Double(next - previous))
+            previous = next
         }
         guard let lo = rates.min(), let hi = rates.max() else { return (0, 0) }
         return (lo, hi)

@@ -4,11 +4,25 @@ import CryptoKit
 enum Hashing {
     /// Lowercase hex string of a SHA-256 digest.
     static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hex(SHA256.hash(data: data))
     }
 
     static func sha256Hex(of digest: SHA256.Digest) -> String {
-        digest.map { String(format: "%02x", $0) }.joined()
+        hex(digest)
+    }
+
+    private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+    /// Table-driven hex — runs once per chunk during seeding, where a per-byte
+    /// `String(format:)` was an order of magnitude slower.
+    static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+        var out = [UInt8]()
+        out.reserveCapacity(64)
+        for byte in bytes {
+            out.append(hexDigits[Int(byte >> 4)])
+            out.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 }
 

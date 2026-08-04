@@ -18,6 +18,7 @@ final class PeerConnection {
 
     let connection: NWConnection
     private let queue: DispatchQueue
+    private let forcedDirect: Bool
 
     var onReady: (() -> Void)?
     var onMessage: ((Message) -> Void)?
@@ -33,13 +34,30 @@ final class PeerConnection {
     init(endpoint: NWEndpoint, queue: DispatchQueue, transport: Transport,
          peerToPeer: Bool = true, forceDirect: Bool = false) {
         self.queue = queue
+        self.forcedDirect = forceDirect
         self.connection = NWConnection(to: endpoint, using: transport.parameters(peerToPeer: peerToPeer, forceDirect: forceDirect))
     }
 
     /// Inbound: accept a connection handed up by the listener.
     init(connection: NWConnection, queue: DispatchQueue) {
         self.queue = queue
+        self.forcedDirect = false
         self.connection = connection
+    }
+
+    /// The physical link this connection is running over. A `forceDirect` dial
+    /// prohibits every infrastructure interface, so a live forced connection is
+    /// guaranteed to be on AWDL; otherwise we read it from the actual path.
+    var linkKind: LinkKind {
+        if forcedDirect { return .directAWDL }
+        guard let path = connection.currentPath else { return .unknown }
+        if path.availableInterfaces.contains(where: { $0.name.hasPrefix("awdl") || $0.name.hasPrefix("llw") }) {
+            return .directAWDL
+        }
+        if path.usesInterfaceType(.wiredEthernet) { return .wired }
+        if path.usesInterfaceType(.wifi) { return .wifi }
+        if path.usesInterfaceType(.cellular) { return .cellular }
+        return .other
     }
 
     func start() {

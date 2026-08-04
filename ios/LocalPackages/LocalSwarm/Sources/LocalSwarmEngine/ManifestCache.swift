@@ -19,28 +19,30 @@ enum ManifestCache {
 
     /// Cache key for this exact hosting request, or nil if any file can't be
     /// stat'ed (caller falls through to a normal build, which will throw a
-    /// proper error).
-    static func key(name: String, urls: [URL], chunkSize: Int = Chunker.defaultChunkSize) -> String? {
-        var parts: [String] = ["v1", name, String(chunkSize)]
-        for url in urls.sorted(by: { $0.path < $1.path }) {
+    /// proper error). Keyed per item so the same files shared under a
+    /// different relative-path layout (flat vs. as a directory) can never
+    /// alias. "v2": v1 predates relative paths.
+    static func key(name: String, items: [ShareItem], chunkSize: Int = Chunker.defaultChunkSize) -> String? {
+        var parts: [String] = ["v2", name, String(chunkSize)]
+        for item in items.sorted(by: { $0.url.path < $1.url.path }) {
             // NB: not URL.resourceValues — NSURL caches those per instance, so a
             // re-stat of a changed file can return stale size/mtime and turn a
             // must-miss into a hit. FileManager stats fresh every call.
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: item.url.path),
                   let size = attrs[.size] as? Int64,
                   let mtime = attrs[.modificationDate] as? Date else { return nil }
-            parts.append(url.path)
+            parts.append(item.url.path)
+            parts.append(item.relativePath)
             parts.append(String(size))
             parts.append(String(mtime.timeIntervalSince1970))
         }
-        let digest = SHA256.hash(data: Data(parts.joined(separator: "|").utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return Hashing.sha256Hex(of: SHA256.hash(data: Data(parts.joined(separator: "|").utf8)))
     }
 
     /// Returns the cached manifest + ordered source URLs for an unchanged set
     /// of files, or nil on any miss/mismatch.
-    static func lookup(name: String, urls: [URL]) -> (SwarmManifest, [URL])? {
-        guard let key = key(name: name, urls: urls),
+    static func lookup(name: String, items: [ShareItem]) -> (SwarmManifest, [URL])? {
+        guard let key = key(name: name, items: items),
               let data = try? Data(contentsOf: fileURL(for: key)),
               let entry = try? JSONDecoder().decode(Entry.self, from: data) else { return nil }
         // The key already encodes path+size+mtime; re-check existence so a
@@ -53,12 +55,22 @@ enum ManifestCache {
 
     /// Persists a freshly built manifest. Best-effort — a failed save only
     /// costs a future re-hash.
-    static func store(manifest: SwarmManifest, ordered: [URL], name: String, urls: [URL]) {
-        guard let key = key(name: name, urls: urls) else { return }
+    static func store(manifest: SwarmManifest, ordered: [URL], name: String, items: [ShareItem]) {
+        guard let key = key(name: name, items: items) else { return }
         let entry = Entry(manifest: manifest, orderedPaths: ordered.map(\.path))
         guard let data = try? JSONEncoder().encode(entry) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: fileURL(for: key), options: .atomic)
+    }
+
+    /// Flat-share conveniences (bare filenames as relative paths).
+    static func lookup(name: String, urls: [URL]) -> (SwarmManifest, [URL])? {
+        lookup(name: name, items: urls.map { ShareItem(url: $0) })
+    }
+
+    static func store(manifest: SwarmManifest, ordered: [URL], name: String, urls: [URL]) {
+        store(manifest: manifest, ordered: ordered, name: name,
+              items: urls.map { ShareItem(url: $0) })
     }
 
     /// Wipe the cache (also handy for tests).

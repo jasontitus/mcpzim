@@ -89,6 +89,9 @@ final class EngineCoreTests: XCTestCase {
             let recv = try ChunkStore.forDownloading(manifest: manifest, directory: destDir)
             try recv.writeChunk(0, data: try seed.readChunk(0))
             try recv.writeChunk(2, data: try seed.readChunk(2))
+            // Persistence is checkpointed, not per-write; a session flushes at
+            // stop/completion (and the store on deinit) — do the same here.
+            recv.flush()
         }
         // Re-open the same directory; previously written chunks should persist.
         let resumed = try ChunkStore.forDownloading(manifest: manifest, directory: destDir)
@@ -117,6 +120,7 @@ final class EngineCoreTests: XCTestCase {
         let recv = try ChunkStore.forDownloading(manifest: manifest, directory: destDir)
         try recv.writeChunk(0, data: try seed.readChunk(0))
         try recv.writeChunk(1, data: try seed.readChunk(1))
+        recv.flush() // checkpointed persistence; see the resume test above
 
         let expected = Int64(manifest.length(ofChunk: 0) + manifest.length(ofChunk: 1))
         XCTAssertEqual(ChunkStore.persistedBytes(manifest: manifest, directory: destDir, indices: all), expected)

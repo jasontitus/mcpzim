@@ -27,6 +27,18 @@ public final class ChunkStore {
     private let readOnly: Bool
 
     private var bitfield: [Bool]
+    /// The packed form of `bitfield`, maintained bit-by-bit so persisting never
+    /// has to re-serialize the whole array.
+    private var packedBitfield: Data
+    /// False entries remaining in `bitfield` — O(1) completeness checks.
+    private var missingCount: Int
+    /// Chunks stored since the bitfield was last persisted.
+    private var dirtyChunks = 0
+    private var lastPersist = DispatchTime.now()
+    /// Checkpoint cadence: persist after this many chunks or this much time,
+    /// whichever comes first (was: one atomic file rewrite per chunk written).
+    private static let persistEveryChunks = 64
+    private static let persistIntervalNs: UInt64 = 1_000_000_000
     private var readHandles: [Int: FileHandle] = [:]
     private var writeHandles: [Int: FileHandle] = [:]
     private let lock = NSRecursiveLock()
@@ -40,11 +52,14 @@ public final class ChunkStore {
         self.layout = manifest.chunkLayout()
         self.fileURLs = fileURLs
         self.bitfield = bitfield
+        self.packedBitfield = Self.packBitfield(bitfield)
+        self.missingCount = bitfield.lazy.filter { !$0 }.count
         self.bitfieldURL = bitfieldURL
         self.readOnly = readOnly
     }
 
     deinit {
+        flush()
         for handle in readHandles.values { try? handle.close() }
         for handle in writeHandles.values { try? handle.close() }
     }
@@ -122,9 +137,10 @@ public final class ChunkStore {
     public static func persistedBytes(manifest: SwarmManifest, directory: URL, indices: [Int]) -> Int64 {
         let bits = loadBitfield(at: directory.appendingPathComponent(".localswarm-bitfield"),
                                 count: manifest.chunkCount)
+        let layout = manifest.chunkLayout()
         var total: Int64 = 0
         for index in indices where index >= 0 && index < bits.count && bits[index] {
-            total += Int64(manifest.length(ofChunk: index))
+            total += Int64(layout[index].length)
         }
         return total
     }
@@ -144,12 +160,12 @@ public final class ChunkStore {
 
     public var completedChunkCount: Int {
         lock.lock(); defer { lock.unlock() }
-        return bitfield.lazy.filter { $0 }.count
+        return bitfield.count - missingCount
     }
 
     public var isComplete: Bool {
         lock.lock(); defer { lock.unlock() }
-        return !bitfield.contains(false)
+        return missingCount == 0
     }
 
     /// Bytes held so far, counting only the selected chunk indices.
@@ -157,7 +173,7 @@ public final class ChunkStore {
         lock.lock(); defer { lock.unlock() }
         var total: Int64 = 0
         for index in indices where index >= 0 && index < bitfield.count && bitfield[index] {
-            total += Int64(manifest.length(ofChunk: index))
+            total += Int64(layout[index].length)
         }
         return total
     }
@@ -194,7 +210,17 @@ public final class ChunkStore {
         try handle.seek(toOffset: UInt64(info.offsetInFile))
         try handle.write(contentsOf: data)
         bitfield[index] = true
-        persistBitfield()
+        packedBitfield[index / 8] |= UInt8(1 << (7 - (index % 8)))
+        missingCount -= 1
+        dirtyChunks += 1
+        // Checkpoint rather than persist per chunk: an atomic full-file rewrite
+        // per 1 MiB written gutted large downloads with ~100k extra
+        // serialize+rename cycles. A crash now re-fetches at most the chunks
+        // since the last checkpoint (they're on disk but unclaimed — harmless).
+        if missingCount == 0 || dirtyChunks >= Self.persistEveryChunks ||
+            DispatchTime.now().uptimeNanoseconds - lastPersist.uptimeNanoseconds >= Self.persistIntervalNs {
+            persistBitfield()
+        }
         return true
     }
 
@@ -218,16 +244,33 @@ public final class ChunkStore {
 
     // MARK: - Bitfield persistence
 
+    /// Persists any unflushed bitfield state. Call at natural boundaries
+    /// (session stop, completion); also runs on deinit.
+    public func flush() {
+        lock.lock(); defer { lock.unlock() }
+        guard dirtyChunks > 0 else { return }
+        persistBitfield()
+    }
+
     private func persistBitfield() {
-        guard let url = bitfieldURL else { return }
-        // Atomic + frequent (per chunk). The per-swarm directory is keyed by the
-        // content-addressed swarmID, so a loaded bitfield can only belong to this
-        // exact content. We do not fsync chunk bytes per chunk (it would gut
-        // throughput); a hard crash can therefore lose the last seconds of
-        // unflushed writes while the bitfield claims them — surfaced here so it's
-        // observable rather than silent.
+        // Failure keeps the dirty count so a later checkpoint or flush()
+        // retries; bumping lastPersist regardless rate-limits retries against
+        // a failing disk to the time-based cadence rather than every write.
+        lastPersist = DispatchTime.now()
+        guard let url = bitfieldURL else {
+            dirtyChunks = 0
+            return
+        }
+        // Atomic write of the incrementally maintained packed form. The
+        // per-swarm directory is keyed by the content-addressed swarmID, so a
+        // loaded bitfield can only belong to this exact content. We do not
+        // fsync chunk bytes (it would gut throughput); a hard crash can
+        // therefore lose the last seconds of unflushed writes while the
+        // bitfield claims them — surfaced here so it's observable rather
+        // than silent.
         do {
-            try Self.packBitfield(bitfield).write(to: url, options: .atomic)
+            try packedBitfield.write(to: url, options: .atomic)
+            dirtyChunks = 0
         } catch {
             swarmDiag("bitfield persist FAILED (\(url.lastPathComponent)): \(error)")
         }

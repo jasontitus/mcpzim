@@ -1,5 +1,20 @@
 import Foundation
 
+/// One file offered to a swarm, together with the relative path it gets in
+/// the manifest. Flat shares use the bare filename; folder shares carry each
+/// file's path relative to the shared directory ("styles/f1.json"), which the
+/// receiving `ChunkStore` recreates — `Manifest.validate()` has always
+/// accepted safe nested relative paths, this is the sending-side handle.
+public struct ShareItem: Sendable, Hashable {
+    public let url: URL
+    public let relativePath: String
+
+    public init(url: URL, relativePath: String? = nil) {
+        self.url = url
+        self.relativePath = relativePath ?? url.lastPathComponent
+    }
+}
+
 /// A swarm available to download, aggregated across every nearby peer that
 /// advertises the same content (`swarmID`). `peers` are the parallel sources.
 public struct DiscoveredSwarm: Identifiable, Hashable, Sendable {
@@ -55,6 +70,43 @@ public enum SwarmRole: String, Sendable {
 
 /// A snapshot of one active transfer for display. Value type so it crosses
 /// queues safely and drives SwiftUI directly.
+/// The physical link a transfer is actually running over — so the UI can tell
+/// the user whether they're on the fast direct path or a slower fallback.
+public enum LinkKind: String, Sendable, Equatable {
+    case directAWDL   // awdl0 / llw* — Apple's peer-to-peer link (AirDrop-class)
+    case wifi         // infrastructure Wi-Fi, via a router or a hotspot
+    case wired        // Ethernet
+    case cellular
+    case other
+    case unknown      // not yet connected / can't tell
+
+    /// Lower is better/faster — used to pick the best link across several peers.
+    public var rank: Int {
+        switch self {
+        case .directAWDL: return 0
+        case .wired: return 1
+        case .wifi: return 2
+        case .cellular: return 3
+        case .other: return 4
+        case .unknown: return 5
+        }
+    }
+
+    /// True when this is the fastest available path (nothing to gain by switching).
+    public var isBest: Bool { self == .directAWDL || self == .wired }
+
+    public var label: String {
+        switch self {
+        case .directAWDL: return "Direct"
+        case .wifi: return "Wi-Fi"
+        case .wired: return "Wired"
+        case .cellular: return "Cellular"
+        case .other: return "Network"
+        case .unknown: return "Connecting…"
+        }
+    }
+}
+
 public struct TransferStatus: Identifiable, Sendable, Equatable {
     public let swarmID: String
     public let name: String
@@ -63,6 +115,7 @@ public struct TransferStatus: Identifiable, Sendable, Equatable {
     public var bytesPerSecond: Double
     public var connectedPeers: Int
     public var role: SwarmRole
+    public var link: LinkKind = .unknown
 
     public var id: String { swarmID }
 
