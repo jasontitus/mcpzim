@@ -596,6 +596,31 @@ private struct MessageRow: View {
     private func provenanceChips(_ sources: [GroundingSource]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                // Deterministic per-sentence verification verdict, when the
+                // grounded path computed one. "N/M matched" is the honest
+                // summary; any unsupported sentence gets its own warning
+                // chip so trained-data leakage is visible, not blended in.
+                let attribs = message.sentenceAttributions
+                let claims = attribs.filter { $0.support < 1.0 || $0.isSupported }
+                if !attribs.isEmpty {
+                    let unsupported = attribs.filter { !$0.isSupported && $0.support < 1.0 }
+                    if unsupported.isEmpty {
+                        chip(icon: "checkmark.seal.fill",
+                             label: "All \(claims.count) statement\(claims.count == 1 ? "" : "s") matched sources",
+                             tint: .green)
+                    } else {
+                        ForEach(Array(unsupported.prefix(2).enumerated()), id: \.offset) { _, a in
+                            chip(icon: "exclamationmark.triangle.fill",
+                                 label: "Not in sources: “\(String(a.sentence.prefix(48)))…”",
+                                 tint: .orange)
+                        }
+                        if unsupported.count > 2 {
+                            chip(icon: "exclamationmark.triangle.fill",
+                                 label: "+\(unsupported.count - 2) more unverified",
+                                 tint: .orange)
+                        }
+                    }
+                }
                 ForEach(Array(sources.enumerated()), id: \.offset) { _, source in
                     HStack(spacing: 4) {
                         Image(systemName: source.kind == .wikipedia
@@ -612,6 +637,19 @@ private struct MessageRow: View {
             }
             .padding(.horizontal, 10)
         }
+    }
+
+    @ViewBuilder
+    private func chip(icon: String, label: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(label).lineLimit(1)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(tint.opacity(0.12)))
     }
 
     private func sourceLabel(_ source: GroundingSource) -> String {

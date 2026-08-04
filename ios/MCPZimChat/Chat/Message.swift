@@ -58,6 +58,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     /// library/article/section identity needed to answer "where did this come
     /// from?" in the normal chat UI.
     public var groundingSources: [GroundingSource] = []
+    /// Deterministic per-sentence alignment of the reply against the exact
+    /// passages that were in the prompt (AnswerAttribution). Sentences with
+    /// `passageIndex == nil` made claims the offline sources don't contain —
+    /// trained-data leakage or hallucination — and the UI flags them.
+    public var sentenceAttributions: [SentenceAttribution] = []
 
     public init(id: UUID = UUID(), role: Role, text: String = "",
                 toolCalls: [ToolCallTrace] = [],

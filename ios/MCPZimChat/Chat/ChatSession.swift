@@ -4844,6 +4844,17 @@ public final class ChatSession {
                     ?? state.sources.flatMap(\.sections)
                 messages[idx].suggestions = groundedSuggestions(
                     state: state, sections: sections, after: question)
+                let attribPassages = picked.map {
+                    AnswerAttribution.Passage(
+                        article: $0.article,
+                        section: $0.section.title.isEmpty ? nil : $0.section.title,
+                        text: $0.section.text)
+                }
+                messages[idx].sentenceAttributions = AnswerAttribution.attribute(
+                    answer: extractive, passages: attribPassages)
+                debug(AnswerAttribution.logLine(
+                    messages[idx].sentenceAttributions, passages: attribPassages),
+                      category: "Attrib")
             }
             debug("grounded extractive reply: \(extractive)", category: "Chat")
             debug(extractive, category: "Assistant")
@@ -4942,6 +4953,20 @@ public final class ChatSession {
                             .joined(separator: "§")
                     }.joined(separator: " | "),
                       category: "Chat")
+                // Per-sentence provenance: align the reply against the exact
+                // prompt passages, deterministically — unsupported sentences
+                // surface in the UI as "not in sources".
+                let attribPassages = picked.map {
+                    AnswerAttribution.Passage(
+                        article: $0.article,
+                        section: $0.section.title.isEmpty ? nil : $0.section.title,
+                        text: $0.section.text)
+                }
+                messages[idx].sentenceAttributions = AnswerAttribution.attribute(
+                    answer: messages[idx].text, passages: attribPassages)
+                debug(AnswerAttribution.logLine(
+                    messages[idx].sentenceAttributions, passages: attribPassages),
+                      category: "Attrib")
                 // Suggestions should stay about the pinned subject. Pulled
                 // support articles improve evidence, but their own generic
                 // headings (for example Domestic policy › History) made chips
