@@ -72,6 +72,18 @@ public final class VoiceChatController {
     /// cap) so the gate is skipped and the chosen backend stands.
     private func ensureAffordableTTS() {
         guard let current = ttsStorage, !(current is SystemTTSService) else { return }
+        // Thermal gate first: at .serious the GPU is already throttled
+        // (the 2026-08-02 crash turn decoded at 3.1 tok/s) and MLX
+        // synthesis both stalls badly and aborts more readily under
+        // pressure. Memory alone doesn't capture this — the same crash
+        // session showed the swap must fire even when the estimate says
+        // the peak *barely* fits.
+        let thermal = ProcessInfo.processInfo.thermalState
+        if thermal == .serious || thermal == .critical {
+            log("TTS backend \(current.displayName) skipped under \(thermal == .critical ? "critical" : "serious") thermal state — using system voice this session")
+            ttsStorage = SystemTTSService()
+            return
+        }
         let available = Self.availableMemoryMB()
         guard available > 0 else { return }
         let needed = Double(current.peakSynthesisMemoryMB)
