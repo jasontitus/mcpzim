@@ -57,12 +57,26 @@ final class SwarmSession: @unchecked Sendable {
     private var peers: [String: PeerSession] = [:]
     private var neededOrder: [Int] = []
     private var neededSet: Set<Int> = []
+    /// Index of the first `neededOrder` entry that may still be needed; the
+    /// prefix before it is verified-and-stored and never rescanned. The cursor
+    /// only advances past chunks that left `neededSet` — an in-flight chunk can
+    /// return to circulation on peer loss, so it must stay scannable.
+    private var neededHead = 0
     private var globalInFlight: Set<Int> = []
     /// Total bytes of chunks requested-but-not-yet-received, across all streams.
     /// Capped (on top of the per-peer window) so a high stream count can't balloon
     /// outstanding requests / transport buffers on a memory-constrained device.
     private var globalInFlightBytes: Int64 = 0
     private static let maxInFlightBytes: Int64 = 256 << 20
+    /// Per-chunk byte lengths, indexed by global chunk index. Precomputed once:
+    /// `manifest.length(ofChunk:)` is a linear scan over the file list, and the
+    /// transfer hot path needs a length per requested/received chunk.
+    private let chunkLengths: [Int]
+    /// Byte size of the selection, summed once instead of per status snapshot.
+    private let totalSelectedBytes: Int64
+    /// Running count of selected bytes present in the store, maintained per
+    /// stored chunk so a snapshot never rescans the whole bitfield.
+    private var completedBytesCache: Int64
     private var advertisers: [Advertiser] = []
     private var advertisingSuspended = false
     private var pendingAdvertisePeerID: String?
@@ -108,6 +122,14 @@ final class SwarmSession: @unchecked Sendable {
         self.transport = transport
         self.netQueue = netQueue
         self.ioQueue = ioQueue
+        let lengths = manifest.chunkLayout().map(\.length)
+        self.chunkLengths = lengths
+        self.totalSelectedBytes = selectedIndices.reduce(Int64(0)) {
+            $0 + Int64($1 >= 0 && $1 < lengths.count ? lengths[$1] : 0)
+        }
+        self.completedBytesCache = isDownloading
+            ? store.completedBytes(in: selectedIndices)
+            : self.totalSelectedBytes
         if let pin = pin, !pin.isEmpty {
             let token = swarmAuthToken(swarmID: manifest.swarmID, pin: pin)
             // Seeder side gates on this; downloader side presents it.
@@ -253,6 +275,9 @@ final class SwarmSession: @unchecked Sendable {
         advertisers.removeAll()
         for peer in peers.values { peer.connection.cancel() }
         peers.removeAll()
+        // The bitfield persists on a checkpoint cadence; flush the tail so an
+        // interrupted download resumes from exactly what's on disk.
+        store.flush()
     }
 
     // MARK: - Peer wiring
@@ -453,7 +478,12 @@ final class SwarmSession: @unchecked Sendable {
                 peer.inFlight.remove(index)
                 self.untrackInFlight(index)
                 if stored {
-                    self.neededSet.remove(index)
+                    // Count toward the selection only if this chunk was needed —
+                    // an unsolicited chunk outside the selection is stored but
+                    // must not inflate the progress counter.
+                    if self.neededSet.remove(index) != nil {
+                        self.completedBytesCache += Int64(data.count)
+                    }
                     self.downloadRate.record(data.count)
                     peer.downRate.record(data.count)
                     self.receivedOK += 1
@@ -463,7 +493,11 @@ final class SwarmSession: @unchecked Sendable {
                         let peers = self.peers.values.filter { $0.handshaken }.count
                         swarmDiag("down \(self.downloadRate.bytesPerSecond.formattedByteRate) · \(self.receivedOK)/\(self.selectedIndices.count) chunks · \(peers) streams · inFlight=\(self.globalInFlight.count)")
                     }
-                    for other in self.peers.values {
+                    // Announce only to peers that lack the chunk. A peer that
+                    // already has it (every seeder stream — their bitfield is
+                    // full) gains nothing, and the unfiltered broadcast put one
+                    // control frame per chunk × peer on the bulk-transfer path.
+                    for other in self.peers.values where other !== peer && !other.has(index) {
                         other.connection.send(.have(swarmID: self.manifest.swarmID, chunkIndex: index))
                     }
                 }
@@ -479,22 +513,34 @@ final class SwarmSession: @unchecked Sendable {
 
     // MARK: - Scheduling
 
+    /// O(1) chunk length (0 for an out-of-range index, like `length(ofChunk:)`).
+    private func chunkLength(_ index: Int) -> Int {
+        index >= 0 && index < chunkLengths.count ? chunkLengths[index] : 0
+    }
+
     /// Marks a chunk as outstanding (requested) and accounts its bytes.
     private func trackInFlight(_ index: Int) {
         guard globalInFlight.insert(index).inserted else { return }
-        globalInFlightBytes += Int64(manifest.length(ofChunk: index))
+        globalInFlightBytes += Int64(chunkLength(index))
     }
 
     /// Clears an outstanding chunk and its byte accounting.
     private func untrackInFlight(_ index: Int) {
         guard globalInFlight.remove(index) != nil else { return }
-        globalInFlightBytes -= Int64(manifest.length(ofChunk: index))
+        globalInFlightBytes -= Int64(chunkLength(index))
     }
 
     private func pump() {
         guard isDownloading, !completed else { return }
-        if neededOrder.count > neededSet.count * 2 {
-            neededOrder = neededOrder.filter { neededSet.contains($0) }
+        // Advance the cursor past the completed front once per pump (amortized
+        // O(1) per finished chunk — pump used to rescan the whole consumed
+        // prefix on every call), then compact when the dead entries dominate.
+        while neededHead < neededOrder.count, !neededSet.contains(neededOrder[neededHead]) {
+            neededHead += 1
+        }
+        if neededHead > 2048 || neededOrder.count - neededHead > neededSet.count * 2 {
+            neededOrder = neededOrder[neededHead...].filter { neededSet.contains($0) }
+            neededHead = 0
         }
         let endgame = neededSet.count <= endgameThreshold
 
@@ -504,7 +550,8 @@ final class SwarmSession: @unchecked Sendable {
             guard globalInFlightBytes < Self.maxInFlightBytes else { break }
             var slots = peer.availableSlots
             guard slots > 0 else { continue }
-            for index in neededOrder {
+            for position in neededHead..<neededOrder.count {
+                let index = neededOrder[position]
                 guard slots > 0, globalInFlightBytes < Self.maxInFlightBytes else { break }
                 guard neededSet.contains(index) else { continue }
                 guard peer.has(index), !peer.inFlight.contains(index) else { continue }
@@ -524,7 +571,8 @@ final class SwarmSession: @unchecked Sendable {
                 swarmDiag("pump: requested \(requestedThisPump) (total \(requestsSent), \(neededSet.count) remaining, \(handshakenPeers.count) peer(s))")
             }
         } else if !neededSet.isEmpty {
-            let withData = handshakenPeers.filter { p in neededOrder.prefix(256).contains { p.has($0) } }.count
+            let front = neededOrder[neededHead...].prefix(256)
+            let withData = handshakenPeers.filter { p in front.contains { p.has($0) } }.count
             swarmDiag("pump: requested 0 — \(handshakenPeers.count) handshaken peer(s), \(withData) hold needed chunks, inFlight=\(globalInFlight.count)")
         }
     }
@@ -532,6 +580,7 @@ final class SwarmSession: @unchecked Sendable {
     private func finishDownload() {
         guard !completed else { return }
         completed = true
+        store.flush()
         // Only now start advertising/seeding. Running an AWDL listener while a
         // download's AWDL connection is active causes a severe throughput
         // collapse (radio role conflict), so a leecher stays quiet until done.
@@ -547,18 +596,26 @@ final class SwarmSession: @unchecked Sendable {
     // MARK: - Snapshot
 
     func currentStatus() -> TransferStatus {
-        let completedBytes = store.completedBytes(in: selectedIndices)
+        // Cached counters: a snapshot fires ~7×/s during a transfer, and the
+        // rescans this used to do (bitfield walk × linear per-chunk length
+        // lookups) grew with swarm size on the serial netQueue.
+        let completedBytes = completedBytesCache
         let role: SwarmRole = !isDownloading ? .seeding : (completed ? .complete : .downloading)
         let rate = (role == .seeding) ? uploadRate.bytesPerSecond : downloadRate.bytesPerSecond
-        let total = selectedIndices.reduce(Int64(0)) { $0 + Int64(manifest.length(ofChunk: $1)) }
-        let connected = peers.values.filter { $0.handshaken }.count
+        let total = totalSelectedBytes
+        let active = peers.values.filter { $0.handshaken }
+        // Report the best (fastest) link any active peer is on — that's the path
+        // carrying the transfer, so the UI can flag whether we're on AWDL or a
+        // slower fallback.
+        let link = active.map { $0.connection.linkKind }.min(by: { $0.rank < $1.rank }) ?? .unknown
         return TransferStatus(swarmID: manifest.swarmID,
                               name: manifest.name,
                               totalBytes: total,
                               completedBytes: completedBytes,
                               bytesPerSecond: rate,
-                              connectedPeers: connected,
-                              role: role)
+                              connectedPeers: active.count,
+                              role: role,
+                              link: link)
     }
 
     /// Pushes a status snapshot to the UI. `force` bypasses the rate limit for

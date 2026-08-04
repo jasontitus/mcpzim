@@ -75,4 +75,28 @@ final class ManifestCacheTests: XCTestCase {
         try FileManager.default.removeItem(at: file)
         XCTAssertNil(ManifestCache.lookup(name: "a.bin", urls: [file]))
     }
+
+    func testLayoutIsPartOfCacheIdentity() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = try makeFile("model.bin", bytes: 4096, in: dir)
+
+        // The same file shared flat vs. inside a folder: different relative
+        // paths, so the cache must never alias one to the other.
+        let flatItems = [ShareItem(url: file)]
+        let dirItems = [ShareItem(url: file, relativePath: "styles/model.bin")]
+
+        let flat = try Chunker.buildManifest(name: "n", sources: [(url: file, path: "model.bin")])
+        ManifestCache.store(manifest: flat.manifest, ordered: flat.orderedURLs,
+                            name: "n", items: flatItems)
+
+        XCTAssertNotNil(ManifestCache.lookup(name: "n", items: flatItems))
+        XCTAssertNil(ManifestCache.lookup(name: "n", items: dirItems),
+                     "layout is part of the cache identity")
+
+        let nested = try Chunker.buildManifest(name: "n", sources: [(url: file, path: "styles/model.bin")])
+        XCTAssertNotEqual(flat.manifest.swarmID, nested.manifest.swarmID,
+                          "relative path feeds the content address")
+    }
 }

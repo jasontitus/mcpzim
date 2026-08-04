@@ -52,6 +52,12 @@ enum WireError: Error {
 enum Wire {
     /// Encodes a complete frame including the 4-byte length prefix.
     static func encode(_ message: Message) throws -> Data {
+        // Chunk payloads dominate transfer traffic; build their frame in one
+        // preallocated buffer so the ~1 MiB payload is copied exactly once
+        // (the generic body-then-frame path below copies it twice).
+        if case let .chunkResponse(swarmID, chunkIndex, data) = message {
+            return encodeChunkResponse(swarmID: swarmID, chunkIndex: chunkIndex, payload: data)
+        }
         var body = ByteWriter()
         switch message {
         case let .handshake(peerID, swarmID):
@@ -97,6 +103,27 @@ enum Wire {
         frame.u32(UInt32(body.data.count))
         frame.raw(body.data)
         return frame.data
+    }
+
+    private static func encodeChunkResponse(swarmID: String, chunkIndex: Int, payload: Data) -> Data {
+        let sid = Array(swarmID.utf8)
+        let bodyLength = 1 + 4 + sid.count + 4 + 4 + payload.count
+        var out = Data(capacity: 4 + bodyLength)
+        appendU32(&out, UInt32(bodyLength))
+        out.append(MessageType.chunkResponse.rawValue)
+        appendU32(&out, UInt32(sid.count))
+        out.append(contentsOf: sid)
+        appendU32(&out, UInt32(chunkIndex))
+        appendU32(&out, UInt32(payload.count))
+        out.append(payload)
+        return out
+    }
+
+    private static func appendU32(_ data: inout Data, _ value: UInt32) {
+        data.append(UInt8((value >> 24) & 0xff))
+        data.append(UInt8((value >> 16) & 0xff))
+        data.append(UInt8((value >> 8) & 0xff))
+        data.append(UInt8(value & 0xff))
     }
 
     /// Decodes a frame body (everything after the length prefix).
@@ -184,37 +211,50 @@ struct ByteWriter {
     }
 }
 
+/// Reads directly out of the received frame body. It used to copy the whole
+/// body into a `[UInt8]` and then copy each `take` out of that — two extra
+/// full-payload copies per received chunk. `take` now returns a slice sharing
+/// the frame's storage; every consumer either transforms it immediately
+/// (hash/JSON/unpack) or writes it to disk, so nothing retains the frame
+/// beyond the chunk's own lifetime.
 struct ByteReader {
-    private let bytes: [UInt8]
+    private let data: Data
+    private let base: Int   // Data indices need not start at 0 (slices)
+    private let count: Int
     private var offset = 0
 
-    init(_ data: Data) { bytes = [UInt8](data) }
+    init(_ data: Data) {
+        self.data = data
+        self.base = data.startIndex
+        self.count = data.count
+    }
 
     mutating func u8() throws -> UInt8 {
-        guard offset < bytes.count else { throw WireError.malformed }
+        guard offset < count else { throw WireError.malformed }
         defer { offset += 1 }
-        return bytes[offset]
+        return data[base + offset]
     }
 
     mutating func u32() throws -> UInt32 {
-        guard offset + 4 <= bytes.count else { throw WireError.malformed }
-        let value = (UInt32(bytes[offset]) << 24)
-            | (UInt32(bytes[offset + 1]) << 16)
-            | (UInt32(bytes[offset + 2]) << 8)
-            | UInt32(bytes[offset + 3])
+        guard offset + 4 <= count else { throw WireError.malformed }
+        let i = base + offset
+        let value = (UInt32(data[i]) << 24)
+            | (UInt32(data[i + 1]) << 16)
+            | (UInt32(data[i + 2]) << 8)
+            | UInt32(data[i + 3])
         offset += 4
         return value
     }
 
-    mutating func take(_ count: Int) throws -> Data {
-        guard count >= 0, offset + count <= bytes.count else { throw WireError.malformed }
-        defer { offset += count }
-        return Data(bytes[offset..<offset + count])
+    mutating func take(_ n: Int) throws -> Data {
+        guard n >= 0, offset + n <= count else { throw WireError.malformed }
+        defer { offset += n }
+        return data[(base + offset)..<(base + offset + n)]
     }
 
     mutating func string() throws -> String {
-        let count = Int(try u32())
-        let data = try take(count)
+        let n = Int(try u32())
+        let data = try take(n)
         return String(decoding: data, as: UTF8.self)
     }
 }

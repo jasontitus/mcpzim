@@ -156,6 +156,25 @@ final class ModelSharingTests: XCTestCase {
         XCTAssertNil(ZimSwarmController.voiceModelDestination(forRelativePath: "wikipedia.zim"))
     }
 
+    func testVoiceDestinationHandlesUnprefixedFolderSwarmPaths() {
+        // A share consisting of only one voice folder arrives as a folder
+        // swarm with unprefixed paths (the engine's Go-conformant form).
+        let weights = ZimSwarmController.voiceModelDestination(
+            forRelativePath: "kokoro-v1_0.safetensors")
+        XCTAssertEqual(weights?.deletingLastPathComponent().lastPathComponent, "kokoro_mlx")
+
+        let bundle = ZimSwarmController.voiceModelDestination(
+            forRelativePath: "supertonic-3-coreml/model.mlmodelc/coremldata.bin")
+        XCTAssertTrue(bundle?.path.contains("/supertonic_3/supertonic-3-coreml/") == true)
+
+        XCTAssertNil(ZimSwarmController.voiceModelDestination(
+            forRelativePath: "nested/kokoro-v1_0.safetensors"),
+            "the bare-filename form only matches at the top level")
+        XCTAssertNil(ZimSwarmController.voiceModelDestination(
+            forRelativePath: "supertonic-3-coreml"),
+            "a bare bundle-root name is not a voice file")
+    }
+
     func testRelativePathComputation() {
         let root = URL(fileURLWithPath: "/tmp/stage/swarm1", isDirectory: true)
         XCTAssertEqual(

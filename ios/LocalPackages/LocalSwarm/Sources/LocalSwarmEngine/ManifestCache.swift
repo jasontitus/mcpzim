@@ -36,8 +36,7 @@ enum ManifestCache {
             parts.append(String(size))
             parts.append(String(mtime.timeIntervalSince1970))
         }
-        let digest = SHA256.hash(data: Data(parts.joined(separator: "|").utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return Hashing.sha256Hex(of: SHA256.hash(data: Data(parts.joined(separator: "|").utf8)))
     }
 
     /// Returns the cached manifest + ordered source URLs for an unchanged set

@@ -43,6 +43,28 @@ enum DiagLog {
         }
     }
 
+    /// The last `maxBytes` of the log, read by seeking — the Debug screen polls
+    /// this every 1.5 s, and a full `snapshot()` re-read+decode of the up-to-8 MB
+    /// file per tick was pure waste. A seek can land mid-UTF-8-sequence; at worst
+    /// the first visible character decodes as a replacement glyph.
+    static func tail(maxBytes: Int) -> String {
+        queue.sync {
+            guard maxBytes > 0, let url = fileURL,
+                  let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+            defer { try? handle.close() }
+            guard let size = try? handle.seekToEnd() else { return "" }
+            let want = min(size, UInt64(maxBytes))
+            guard want > 0 else { return "" }
+            do {
+                try handle.seek(toOffset: size - want)
+                let data = try handle.readToEnd() ?? Data()
+                return String(decoding: data, as: UTF8.self)
+            } catch {
+                return ""
+            }
+        }
+    }
+
     /// Wipe the log — both the on-disk file and the write cursor.
     static func clear() {
         queue.sync {
@@ -109,6 +131,10 @@ public enum SwarmDiagnostics {
 
     /// Current contents of the on-disk diagnostics log (oldest first).
     public static func snapshot() -> String { DiagLog.snapshot() }
+
+    /// Just the last `maxBytes` of the log — what a live-updating Debug screen
+    /// should poll instead of `snapshot()` (which reads the whole file).
+    public static func tail(maxBytes: Int) -> String { DiagLog.tail(maxBytes: maxBytes) }
 
     /// Clear the diagnostics log.
     public static func clear() { DiagLog.clear() }

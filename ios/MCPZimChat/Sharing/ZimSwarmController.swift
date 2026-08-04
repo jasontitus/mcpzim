@@ -312,25 +312,41 @@ final class ZimSwarmController: ObservableObject {
     }
 
     /// Where a received voice-model file belongs, or nil when it isn't one.
-    /// Only the two known top-level folders are honored — an arbitrary swarm
-    /// can never write elsewhere into Application Support.
+    /// Only known voice trees/filenames are honored — an arbitrary swarm can
+    /// never write elsewhere into Application Support. Two share shapes
+    /// arrive here: the usual mixed swarm carries the folder-name prefix
+    /// ("kokoro_mlx/voices.npz"), while a share consisting of *only* one
+    /// voice folder is a folder swarm with unprefixed paths (the engine's
+    /// Go-conformant form) — recognized by Kokoro's two known filenames or
+    /// Supertonic's "supertonic-3-coreml/" bundle root.
     nonisolated static func voiceModelDestination(forRelativePath relative: String) -> URL? {
         let components = relative.split(separator: "/").map(String.init)
-        guard components.count >= 2 else { return nil }
-        let base: URL
-        switch components[0] {
-        case "kokoro_mlx":
-            base = KokoroAssets.modelDirectory
-        case "supertonic_3":
+        guard let first = components.first else { return nil }
+
+        switch first {
+        case "kokoro_mlx" where components.count >= 2:
+            return components.dropFirst()
+                .reduce(KokoroAssets.modelDirectory) { $0.appendingPathComponent($1) }
+        case "supertonic_3" where components.count >= 2:
             #if canImport(FluidAudio)
-            base = Supertonic3Assets.modelDirectory
+            return components.dropFirst()
+                .reduce(Supertonic3Assets.modelDirectory) { $0.appendingPathComponent($1) }
+            #else
+            return nil
+            #endif
+        case "kokoro-v1_0.safetensors", "voices.npz":
+            guard components.count == 1 else { return nil }
+            return KokoroAssets.modelDirectory.appendingPathComponent(first)
+        case "supertonic-3-coreml":
+            #if canImport(FluidAudio)
+            guard components.count >= 2 else { return nil }
+            return components.reduce(Supertonic3Assets.modelDirectory) { $0.appendingPathComponent($1) }
             #else
             return nil
             #endif
         default:
             return nil
         }
-        return components.dropFirst().reduce(base) { $0.appendingPathComponent($1) }
     }
 
     /// Moves `source` over `destination`, creating parent directories and

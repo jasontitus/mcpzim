@@ -256,12 +256,12 @@ public final class SwarmManager: ObservableObject {
     // MARK: - Hosting
 
     /// Slices the chosen files into a new swarm and begins seeding it alongside
-    /// any others already hosted. A *directory* URL is shared with its internal
-    /// layout preserved (each file gets `<dirname>/<subpath>` as its manifest
-    /// path, which the receiving side recreates); plain files keep their bare
-    /// filename. Hashing runs off the main thread; `completion` fires on the
-    /// main thread with the manifest once seeding starts (so a caller can
-    /// record the content-addressed swarmID).
+    /// any others already hosted. A single *directory* URL becomes a folder
+    /// swarm with its internal layout preserved (each file's manifest path is
+    /// its path relative to the folder, which the receiving side recreates);
+    /// plain files keep their bare filename. Hashing runs off the main thread;
+    /// `completion` fires on the main thread with the manifest once seeding
+    /// starts (so a caller can record the content-addressed swarmID).
     public func hostFiles(at urls: [URL], name: String? = nil, pin: String? = nil, completion: ((SwarmManifest) -> Void)? = nil) {
         let displayName = name ?? Self.defaultName(for: urls)
         let peerID = localPeerID
@@ -271,21 +271,38 @@ public final class SwarmManager: ObservableObject {
         ioQueue.async { [weak self] in
             guard let self = self else { return }
             do {
-                let items = Self.expandForSharing(urls)
-                guard !items.isEmpty else { throw Chunker.ChunkerError.noFiles }
+                // A single directory becomes a folder swarm: enumerate it into
+                // (url, relative-path) sources preserving the tree, unprefixed —
+                // byte-for-byte conformant with the Go seeder. Everything else is
+                // the mixed case: plain files keyed by last path component, and
+                // any directory in the list expanded with its folder name as the
+                // path prefix (so a host app can seed "files + model folders" as
+                // one swarm).
+                var isDir: ObjCBool = false
+                let sources: [(url: URL, path: String)]
+                if urls.count == 1,
+                   FileManager.default.fileExists(atPath: urls[0].path, isDirectory: &isDir), isDir.boolValue {
+                    sources = try Chunker.folderSources(urls[0])
+                } else {
+                    sources = try Chunker.mixedSources(urls)
+                }
+                // Cache identity includes each file's relative path, so the same
+                // files shared flat vs. as a folder can never alias.
+                let cacheItems = sources.map { ShareItem(url: $0.url, relativePath: $0.path) }
+
                 let manifest: SwarmManifest
                 let ordered: [URL]
-                if let cached = ManifestCache.lookup(name: displayName, items: items) {
+                if let cached = ManifestCache.lookup(name: displayName, items: cacheItems) {
                     // Unchanged files (same paths, sizes, mtimes) — skip hashing
-                    // entirely so a relaunch re-shares a 100 GB file instantly.
+                    // entirely so a relaunch re-shares a 100 GB folder instantly.
                     (manifest, ordered) = cached
                     swarmDiag("manifest cache HIT for \(displayName) (\(manifest.chunkCount) chunks) — skipping hash")
                 } else {
-                    (manifest, ordered) = try Chunker.buildManifest(name: displayName, items: items,
+                    (manifest, ordered) = try Chunker.buildManifest(name: displayName, sources: sources,
                         progress: { [weak self] fraction in
                             DispatchQueue.main.async { self?.updatePreparation(prepID, fraction: fraction) }
                         })
-                    ManifestCache.store(manifest: manifest, ordered: ordered, name: displayName, items: items)
+                    ManifestCache.store(manifest: manifest, ordered: ordered, name: displayName, items: cacheItems)
                 }
                 let store = ChunkStore.forSeeding(manifest: manifest, sourceURLs: ordered)
                 self.netQueue.async {
@@ -648,16 +665,24 @@ public final class SwarmManager: ObservableObject {
         let fullWindows = Int(duration)
         guard fullWindows >= 2, progress.count >= 2 else { return (0, 0) }
         let sorted = progress.sorted { $0.t < $1.t }
+        // Window edges are queried in increasing time order, so one cursor
+        // walks the samples once overall — a rescan-from-zero per edge made
+        // this quadratic in samples × duration for long benchmark legs.
+        var cursor = 0
+        var latest: Int64 = 0
         func bytesAt(_ time: Double) -> Int64 {
-            var result: Int64 = 0
-            for sample in sorted {
-                if sample.t <= time { result = sample.bytes } else { break }
+            while cursor < sorted.count, sorted[cursor].t <= time {
+                latest = sorted[cursor].bytes
+                cursor += 1
             }
-            return result
+            return latest
         }
         var rates: [Double] = []
-        for i in 1..<fullWindows { // skip window [0,1) warmup; ignore partial tail
-            rates.append(Double(bytesAt(Double(i + 1)) - bytesAt(Double(i))))
+        var previous = bytesAt(1.0) // window [0,1) is warmup
+        for i in 1..<fullWindows { // skip warmup; ignore partial tail
+            let next = bytesAt(Double(i + 1))
+            rates.append(Double(next - previous))
+            previous = next
         }
         guard let lo = rates.min(), let hi = rates.max() else { return (0, 0) }
         return (lo, hi)
@@ -736,41 +761,6 @@ public final class SwarmManager: ObservableObject {
     private static func defaultName(for urls: [URL]) -> String {
         if urls.count == 1 { return urls[0].lastPathComponent }
         return "\(urls.count) files"
-    }
-
-    /// Turns a user-facing share list into concrete manifest items. Plain
-    /// files pass through with their bare filename; a directory is walked
-    /// recursively and every regular file inside becomes
-    /// `<dirname>/<subpath>` (hidden files skipped). Expanded entries are
-    /// sorted by relative path so two hosts sharing identical content derive
-    /// the identical content-addressed swarmID.
-    nonisolated static func expandForSharing(_ urls: [URL]) -> [ShareItem] {
-        let fm = FileManager.default
-        var items: [ShareItem] = []
-        for url in urls {
-            var isDirectory: ObjCBool = false
-            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
-            guard isDirectory.boolValue else {
-                items.append(ShareItem(url: url))
-                continue
-            }
-            let root = url.standardizedFileURL
-            let prefix = root.lastPathComponent
-            guard let enumerator = fm.enumerator(at: root,
-                                                 includingPropertiesForKeys: [.isRegularFileKey],
-                                                 options: [.skipsHiddenFiles]) else { continue }
-            var expanded: [ShareItem] = []
-            for case let child as URL in enumerator {
-                guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
-                else { continue }
-                let childPath = child.standardizedFileURL.path
-                guard childPath.hasPrefix(root.path + "/") else { continue }
-                let subpath = String(childPath.dropFirst(root.path.count + 1))
-                expanded.append(ShareItem(url: child, relativePath: "\(prefix)/\(subpath)"))
-            }
-            items.append(contentsOf: expanded.sorted { $0.relativePath < $1.relativePath })
-        }
-        return items
     }
 
 }
