@@ -636,7 +636,7 @@ final class IntentRouterTests: XCTestCase {
         focus.setLastList([
             FocusEntity(name: "World War I", kind: .topic),
             FocusEntity(name: "World War II", kind: .topic),
-        ])
+        ], kind: .comparison)
 
         let intent = IntentRouter.classify(
             "How many people were killed in each?", focus: focus)
@@ -653,7 +653,7 @@ final class IntentRouterTests: XCTestCase {
         focus.setLastList([
             FocusEntity(name: "World War I", kind: .topic),
             FocusEntity(name: "World War II", kind: .topic),
-        ])
+        ], kind: .comparison)
 
         XCTAssertNil(IntentRouter.classify(
             "What changed between the two that made WWII so much more deadly?",

@@ -1,52 +1,84 @@
 # Field issues from device logs — 2026-08-03
 
 Source sessions: `eval/corpus/raw/5393c74a/2026-08-03_21-34-40.log` (k1 kart /
-go-cart) and the war-of-1812 session (`2026-08-03_23-14-36.log` on-device;
-copy at `/tmp/war1812.log` — re-pull via devicectl or logpipe if lost).
-Replay each transcript with MCPZimEvalCLI --probe-discuss as the acceptance
-test when fixing.
+go-cart) and the war-of-1812 session (`2026-08-03_23-14-36.log`, preserved in
+the corpus). Replay transcripts with
+`MCPZimEvalCLI --probe-discuss --turn … --turn …` as the acceptance test.
 
-## P0 — grounded KV cache diverging every turn (likely regression)
-War-of-1812 session: EVERY grounded turn logs `reused=0 ·
-mode=reset-after-divergence` with LCP collapsing to 5–377 tokens, ~6 s full
-re-prefill per turn even mid-discussion (append should be warm). Suspect the
-2026-08-03 `rawAssistantText` change (A2, commit 496c7a14^..) interacting
-with the grounded prompt cache: the cache stores `cacheAnswer` (raw buffer)
-but the transcript rebuild may now feed scrubbed vs raw text inconsistently.
-Verify on Mac: 3-turn probe-discuss, watch `[Perf] reused=`. Bisect against
-352a4599 if unclear.
+**STATUS 2026-08-04: all items below are FIXED and replay-verified except the
+P2 verify-only pair.** Mac replay of the war transcript now shows turn 2
+answering casualties from the pinned article (attribution 1.00) and turn 3
+appending warm (`reused=996 · prefill=1.9s`) where the field log had
+`reused=0 · 6s` every turn.
 
-## P1 — silent dead turn on fast-path locate miss
-"Where is k1 kart" → `locate` failed ("could not resolve") → NO reply
-rendered at all; user reset the conversation 19 s later. Fix: the locate
-fast-path miss must (a) fall back to name search ("K1 Speed" would hit),
-(b) always render an honest miss reply + suggestions, mirroring the
-article-miss did-you-mean chain.
+## P0 — grounded KV cache diverging every turn — FIXED (was routing, not KV)
 
-## P1 — near_places unmapped kind returns instant zero
-"nearest go cart place" → kinds=["go cart place"] not in chip vocabulary →
-scan guard (correct) → 0 hits in 2 ms, no fallback. Fix: kind-synonym map
-("go cart"/"go-kart"/"karting" → karting category; general mechanism), and
-unmapped kinds fall back to NAME search over places before returning empty.
+The doc's original suspect (`rawAssistantText`/A2 byte divergence) was
+WRONG: the field log's own turn 3 appended warm (`reused=937 ·
+prefill=0.004s`), proving the cache machinery fine. Every cold turn was a
+cache DISCARD caused by conversational misrouting (below) — the discussion
+pin kept being cleared, and rebinding pays a full re-prefill by design.
+Fixing the routing fixed the "regression". Three levels:
 
-## P1 — wrong-article binding + lost facet in war-of-1812 session
-1. "Tell me about the war of 1812 what were the what were the causes?" →
-   title kept the trailing question clause + dictation stutter → search
-   rescue → "1812 Louisiana hurricane". Attribution correctly flagged it
-   (0.50) and the model declined. Fix: strip trailing interrogative clauses
-   ("what were the causes") and dedupe stuttered n-grams before title
-   dispatch.
-2. "How many people died on each side in the war?" → "the war" bound to a
-   capital-punishment article (user: "Not the one about capital
-   punishment"). Resolver should prefer the discussion's pinned subject for
-   "the war/the X" anaphora before any fresh search.
-3. After the correction, the re-grounded turn answered start/end DATES, not
-   the casualty question — the correction replaced the question so the
-   facet (deaths) was lost. Fix: corrections ("not the one about X") should
-   re-run the PREVIOUS question with the corrected binding, not answer the
-   correction text itself.
+1. `IntentRouter.titleNamesPinnedSubject` — "the war" (stateless title
+   parse of "…died on each side in the war?") now token-matches the pinned
+   "War of 1812" after article-stripping, so the turn stays in the
+   discussion. Substring matching had missed it and the turn LEFT.
+2. `ConversationFocus.lastListKind` — a disambiguation offer leaves two
+   topics in `lastList`, and `comparisonContinuationRoute` treated ANY
+   two-topic list as a compared pair: "each side" routed to
+   `compare_articles(War of 1812, French invasion of Russia)` and exited
+   the discussion. Comparison follow-ups now require `.comparison`.
+3. Discussion-leave paths now LOG (`discussion leave: tool(title) vs
+   pinned topic`) — the field log had no trace of why the pin dropped,
+   which is why the wrong suspect was written down.
 
-## P2 — verify-only
+## P1 — silent dead turn on fast-path locate miss — FIXED
+
+"Where is k1 kart" → `ZimService.geocodeVariants` now appends progressive
+trailing-token-drop variants ("k1 kart" → "k1"), so "K1 Speed" resolves by
+prefix (the index never contained "kart"). The geocode-miss reply also logs
+under `[Assistant]` now — the field log could not show whether the miss
+message rendered at all, so the honest-miss handler looked dead when it
+may not have been.
+
+## P1 — near_places unmapped kind returns instant zero — FIXED
+
+`kindSynonyms` (21 phrasings → existing chips: petrol→fuel, drugstore→
+pharmacy, er/urgent care→health members, bookstore→shops, …) consulted in
+`chipsFor` and at `effectiveKinds`, so synonyms inherit niche/broad chip
+behavior. Kinds that still map to no chip get a bounded name-search
+fallback over the prefix-chunked search-data (≤48 chunk loads, ≤200
+matches, poi/place rows only, radius-filtered) before returning empty —
+never a full scan, so the statewide-ZIM OOM guard stands.
+
+## P1 — wrong-article binding + lost facet in war-of-1812 session — FIXED
+
+1. Title cleanup: `IntentRouter.collapseStutter` (dictation doubles) +
+   `strippingTrailingInterrogativeClause` (interrogative + auxiliary only,
+   so "Doctor Who" / "The Man Who Sold the World" survive) run before the
+   tell-me-about title dispatch. The field turn now dispatches
+   `article_overview("the war of 1812")` instead of search-rescuing the
+   stuttered tail to "1812 Louisiana hurricane".
+2. Anaphora: covered by the P0 fixes above — "the war" stays on the
+   pinned subject.
+3. Corrections/picks: the ambiguity gate now stashes `pendingDisambiguation`
+   (question + candidates, one turn). The next turn resolves via
+   `ReferenceResolver.clarificationPick` (negation "not the one about X",
+   exact name, positional, unique-token) and re-runs the ORIGINAL question
+   against the pick via `groundedQuestionOverride` — the pick text is no
+   longer answered as if it were the question. A turn that literally NAMES
+   one candidate (`ReferenceResolver.namedCandidate`, ≥2-token contiguous
+   run) self-resolves the gate instead of re-asking — the field session's
+   exact-title reply "The war of 1812" had re-triggered the same
+   clarification.
+
+Regression tests: `ClarificationAndTitleCleanupTests` (23),
+`GeocodeVariantsTests` (9), `NearPlacesKindFallbackTests` (13), plus
+existing comparison tests retagged with `.comparison`.
+
+## P2 — verify-only (still open)
+
 - Disneyland map tile AbortErrors (code=20, z7–z14): user reports the map
   looked fine — consistent with MapLibre canceling superseded tiles during
   the initial camera jump. Confirm benign, then drop these lines to a
@@ -56,6 +88,10 @@ unmapped kinds fall back to NAME search over places before returning empty.
   before declaring failure (two false alarms so far).
 
 ## Standing context
+
 Attribution chips (496c7a14) are live and already catching bad retrieval —
 keep the `[Attrib]` line in any refactor. Firebase key rotation is pending
-at next TestFlight cycle (see memory + gitignore note).
+at next TestFlight cycle (see memory + gitignore note). The Mac
+`GemmaToolEmissionTests` failure (E2B int4 weight-shape mismatch) predates
+all of this — likely fallout of the mlx-swift-lm 0.31.3 pin-back — and
+only affects the Mac eval harness, not the shipping llama.cpp path.

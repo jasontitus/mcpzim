@@ -444,6 +444,194 @@ public enum ReferenceResolver {
         "small", "first", "last", "other", "that", "this",
     ]
 
+    // MARK: - Clarification answers
+
+    /// Resolve the user's ANSWER to a disambiguation question the host just
+    /// asked ("Which one do you mean — War of 1812 or Capital punishment by
+    /// the United States military § War of 1812/Creek War?"). Deterministic
+    /// and candidates-only — the wider focus never participates, so a reply
+    /// can't rebind to something we didn't offer.
+    ///
+    /// Shapes, in order:
+    ///   1. Negation — "not the one about capital punishment" excludes every
+    ///      candidate the negated words name; a single survivor binds.
+    ///   2. Exact name — "The war of 1812" (leading-article and punctuation
+    ///      insensitive; a section-qualified candidate also matches on its
+    ///      article half before "§").
+    ///   3. Positional — "the first one", "number 2".
+    ///   4. Unique token pick — the reply's content words all appear in
+    ///      exactly one candidate's name.
+    ///
+    /// Device capture 2026-08-03: the exact-title reply "The war of 1812"
+    /// re-triggered the SAME clarification, because the general `namePick`
+    /// demands a unique token-subset match and BOTH candidates contain
+    /// war + 1812. Exactness must outrank containment when the user is
+    /// answering the question we asked.
+    public static func clarificationPick(
+        _ raw: String, candidates: [FocusEntity]
+    ) -> FocusEntity? {
+        guard candidates.count > 1 else { return candidates.first }
+        let text = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!,"))
+        let lower = text.lowercased()
+
+        func stem(_ w: String) -> String {
+            for suffix in ["es", "s"] where w.hasSuffix(suffix) {
+                let s = String(w.dropLast(suffix.count))
+                if s.count >= 4 { return s }
+            }
+            return w
+        }
+        func tokens(_ s: String) -> [String] {
+            s.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+        }
+        let leadJunk: Set<String> = [
+            "yes", "yeah", "yep", "yup", "sure", "okay", "ok", "please",
+            "i", "mean", "meant", "the", "a", "an",
+        ]
+        func articleTitle(_ name: String) -> String {
+            name.split(separator: "§").first
+                .map { $0.trimmingCharacters(in: .whitespaces) } ?? name
+        }
+
+        // 1. Negation. Runs first: "not the ONE about X" must never read
+        // as an ordinal pick of item one.
+        if lower.hasPrefix("not ") || lower.hasPrefix("no ")
+            || lower.hasPrefix("no, ") || lower.contains(" not the ") {
+            let junk: Set<String> = leadJunk.union([
+                "not", "no", "one", "ones", "about", "that", "this", "it",
+                "them", "those",
+            ])
+            let negStems = tokens(lower).filter { !junk.contains($0) }.map(stem)
+            if !negStems.isEmpty {
+                let survivors = candidates.filter { c in
+                    let nameStems = Set(tokens(c.name).map(stem))
+                    return !negStems.allSatisfy { nameStems.contains($0) }
+                }
+                if survivors.count == 1 { return survivors[0] }
+            }
+            return nil
+        }
+
+        // 2. Exact name / exact article half.
+        var replyToks = tokens(lower)
+        while let f = replyToks.first, leadJunk.contains(f) {
+            replyToks.removeFirst()
+        }
+        if !replyToks.isEmpty {
+            func normalized(_ s: String) -> [String] {
+                var t = tokens(s)
+                if let f = t.first, ["the", "a", "an"].contains(f) {
+                    t.removeFirst()
+                }
+                return t
+            }
+            let exact = candidates.filter {
+                normalized($0.name) == replyToks
+                    || normalized(articleTitle($0.name)) == replyToks
+            }
+            if exact.count == 1 { return exact[0] }
+        }
+
+        // 3. Positional. Word-number aliases ("one", "two") are excluded on
+        // purpose — they collide with ordinary prose ("the one about…").
+        if let m = firstMatch(lower, pattern: #"(?:number|#)\s*(\d+)"#),
+           let n = Int(m), n >= 1, n <= candidates.count {
+            return candidates[n - 1]
+        }
+        let positional: [String: Int] = [
+            "first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2,
+        ]
+        let words = lower.split(separator: " ").map(String.init)
+        for (word, idx) in positional where words.contains(word) {
+            let looksLikePick = lower.contains("the \(word)")
+                || lower.hasPrefix(word) || lower.contains("\(word) one")
+            if looksLikePick, idx < candidates.count { return candidates[idx] }
+        }
+
+        // 4. Unique token pick, scoped to the offered candidates.
+        let contentStems = replyToks
+            .filter { $0.count >= 3 && !stopwords.contains($0) }
+            .map(stem)
+        if !contentStems.isEmpty {
+            let matches = candidates.filter { c in
+                let nameStems = Set(tokens(c.name).map(stem))
+                return contentStems.allSatisfy { nameStems.contains($0) }
+            }
+            if matches.count == 1 { return matches[0] }
+        }
+        return nil
+    }
+
+    /// The candidate whose normalized name — or article half before "§" —
+    /// appears verbatim as a contiguous token run inside the turn. Unlike
+    /// `clarificationPick` (which resolves an ANSWER to a question we
+    /// asked), this asks whether a fresh turn simply NAMES one of the
+    /// things a stale list offered: "What was the cause of the war of
+    /// 1812 in North America?" names The War of 1812 outright, and
+    /// asking "which one do you mean?" against a leftover disambiguation
+    /// list was the field re-ask loop (2026-08-03). When several
+    /// candidates match, the strictly longest name wins; a tie stays
+    /// ambiguous and returns nil.
+    public static func namedCandidate(
+        in raw: String, candidates: [FocusEntity]
+    ) -> FocusEntity? {
+        func tokens(_ s: String) -> [String] {
+            s.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+        }
+        func stripArticle(_ t: [String]) -> [String] {
+            if let f = t.first, ["the", "a", "an"].contains(f) {
+                return Array(t.dropFirst())
+            }
+            return t
+        }
+        func containsRun(_ haystack: [String], _ needle: [String]) -> Bool {
+            guard !needle.isEmpty, needle.count <= haystack.count else {
+                return false
+            }
+            for start in 0 ... (haystack.count - needle.count) {
+                if Array(haystack[start ..< start + needle.count]) == needle {
+                    return true
+                }
+            }
+            return false
+        }
+        let turnToks = tokens(raw)
+        var best: (entity: FocusEntity, length: Int)?
+        var tie = false
+        for c in candidates {
+            let full = stripArticle(tokens(c.name))
+            let half = stripArticle(tokens(
+                c.name.split(separator: "§").first.map(String.init) ?? c.name))
+            var matched = 0
+            // Single-token names ("Paris") are too easy to hit inside an
+            // unrelated sentence; require two tokens of evidence.
+            if full.count >= 2, containsRun(turnToks, full) {
+                matched = full.count
+            } else if half.count >= 2, half != full,
+                      containsRun(turnToks, half) {
+                matched = half.count
+            }
+            guard matched > 0 else { continue }
+            if let b = best {
+                if matched > b.length {
+                    best = (c, matched); tie = false
+                } else if matched == b.length {
+                    tie = true
+                }
+            } else {
+                best = (c, matched)
+            }
+        }
+        if tie { return nil }
+        return best?.entity
+    }
+
     // MARK: - Drift-thread selection
 
     /// Match a turn naming an open drift thread ("the war", "tell me about the

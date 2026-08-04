@@ -83,10 +83,17 @@ enum ProbeE2ECLI {
         var zim: String? = nil
         var modelRepo = "mlx-community/Qwen3-4B-4bit"
         var extraCases: [Case] = []
+        var onlyExtras = false
         var args = inputArgs[...]
         while let a = args.first {
             args = args.dropFirst()
             switch a {
+            case "--only":
+                // Skip the default suite and run just the --add-case list —
+                // for transcript replays (each default case costs an LLM
+                // generation, so replaying a 3-turn field session shouldn't
+                // pay for 10 unrelated turns first).
+                onlyExtras = true
             case "--zim":
                 zim = args.first.map { String($0) }
                 if !args.isEmpty { args = args.dropFirst() }
@@ -126,7 +133,7 @@ enum ProbeE2ECLI {
             exit(2)
         }
 
-        let cases = defaultCases + extraCases
+        let cases = onlyExtras ? extraCases : defaultCases + extraCases
         print("== probe-e2e ==")
         print("zim:   \(zim)")
         print("model: \(modelRepo)")

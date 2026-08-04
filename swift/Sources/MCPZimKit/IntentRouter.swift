@@ -491,7 +491,15 @@ public enum IntentRouter {
         if let m = match(lower, pattern:
             #"^(?:tell\s+me\s+(?:about|more\s+about)|(?:how|what)\s+about|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of)\s+(.+)$"#)
         {
-            let subject = m[0].trimmingCharacters(in: .whitespaces)
+            // Dictation artifacts first: collapse stutter, then cut any
+            // trailing interrogative clause — the clause is the QUESTION
+            // (which the grounded answer keeps from the full user text),
+            // not part of the title ("Tell me about the war of 1812 what
+            // were the what were the causes?", device capture 2026-08-03,
+            // dispatched the whole tail and search-rescued to "1812
+            // Louisiana hurricane").
+            let subject = strippingTrailingInterrogativeClause(
+                collapseStutter(m[0].trimmingCharacters(in: .whitespaces)))
             let firstWord = subject
                 .split(separator: " ", maxSplits: 1)
                 .first.map(String.init) ?? ""
@@ -761,6 +769,12 @@ public enum IntentRouter {
     private static func comparisonContinuationRoute(
         _ lower: String, focus: ConversationFocus
     ) -> ComparisonContinuationRoute? {
+        // Only a list that IS a compared pair. A disambiguation offer also
+        // leaves two topics in `lastList`, and "how many people died on
+        // each side in the war?" then retrieved compare_articles(War of
+        // 1812, French invasion of Russia) — Mac replay of the 2026-08-03
+        // field session.
+        guard focus.lastListKind == .comparison else { return nil }
         let pair = Array(focus.lastList.prefix(2))
         guard pair.count == 2,
               pair.allSatisfy({ $0.kind == .topic })
@@ -888,6 +902,91 @@ public enum IntentRouter {
             #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of|about)\s+"#
         return s.replacingOccurrences(
             of: p, with: "", options: .regularExpression)
+    }
+
+    /// Collapse immediately-repeated word runs — dictation stutter.
+    /// Voice input routinely doubles a phrase mid-turn ("what were the
+    /// what were the causes", device capture 2026-08-03), and the doubled
+    /// run then poisons downstream title extraction. Longest runs collapse
+    /// first so "what were the what were the" loses one full trigram
+    /// instead of producing "what were the were the".
+    public static func collapseStutter(_ text: String) -> String {
+        var tokens = text.split(separator: " ").map(String.init)
+        for n in stride(from: 4, through: 1, by: -1) {
+            var i = 0
+            while i + 2 * n <= tokens.count {
+                if Array(tokens[i ..< i + n]) == Array(tokens[i + n ..< i + 2 * n]) {
+                    tokens.removeSubrange(i + n ..< i + 2 * n)
+                    // Stay at i: a triple repeat needs another pass here.
+                } else {
+                    i += 1
+                }
+            }
+        }
+        return tokens.joined(separator: " ")
+    }
+
+    /// Auxiliaries that open an interrogative CLAUSE ("what were …",
+    /// "when did …"). Deliberately excludes content verbs so titles like
+    /// "The Man Who Sold the World" survive — "sold" is not in this set.
+    private static let interrogativeAuxiliaries: Set<String> = [
+        "is", "are", "was", "were", "did", "do", "does", "can", "could",
+        "will", "would", "should", "has", "have", "had", "am",
+    ]
+    private static let interrogativeOpeners: Set<String> = [
+        "what", "who", "whom", "when", "where", "why", "how", "which",
+    ]
+
+    /// Trim a trailing interrogative clause off an extracted article
+    /// subject. "Tell me about the war of 1812 what were the causes?"
+    /// captures the WHOLE tail as the title, misses the ZIM, and search-
+    /// rescue lands on "1812 Louisiana hurricane" (device capture
+    /// 2026-08-03). The clause cut requires interrogative + auxiliary so
+    /// a title merely containing a question word ("Doctor Who") is never
+    /// truncated; the caller keeps the full user text as the grounded
+    /// question, so the facet the clause asked about survives.
+    public static func strippingTrailingInterrogativeClause(_ subject: String) -> String {
+        let tokens = subject.split(separator: " ").map(String.init)
+        guard tokens.count >= 3 else { return subject }
+        for i in 1 ..< (tokens.count - 1) {
+            let word = tokens[i].lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",;:"))
+            guard interrogativeOpeners.contains(word),
+                  interrogativeAuxiliaries.contains(tokens[i + 1].lowercased())
+            else { continue }
+            let head = tokens[..<i].joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-–—"))
+            return head.isEmpty ? subject : head
+        }
+        return subject
+    }
+
+    /// True when a stateless-parsed article `title` actually names the
+    /// subject already in hand. The raw substring check misses anaphora
+    /// with a leading article: "How many people died on each side in the
+    /// war?" parses a title of "the war", which is not a substring of
+    /// "war of 1812" — so the turn LEFT the pinned discussion, hit the
+    /// ambiguity gate, and threw away a warm KV cache (device capture
+    /// 2026-08-03). Article-strip the title and accept a token-subset
+    /// match: "war" ⊆ {war, of, 1812} stays; "art" ⊄ {stuttgart} still
+    /// leaves, because tokens — unlike substrings — respect word bounds.
+    public static func titleNamesPinnedSubject(
+        _ title: String, inHand: [String]
+    ) -> Bool {
+        let lower = title.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !lower.isEmpty else { return false }
+        if inHand.contains(where: { $0.contains(lower) || lower.contains($0) }) {
+            return true
+        }
+        var tokens = lower.split(separator: " ").map(String.init)
+        if let first = tokens.first, ["the", "a", "an"].contains(first) {
+            tokens.removeFirst()
+        }
+        guard !tokens.isEmpty else { return false }
+        let titleTokens = Set(tokens)
+        return inHand.contains { name in
+            titleTokens.isSubset(of: Set(name.split(separator: " ").map(String.init)))
+        }
     }
 
     /// True when the user is asking to keep reading the article currently

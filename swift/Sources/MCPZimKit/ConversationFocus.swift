@@ -162,6 +162,23 @@ public struct ConversationFocus: Equatable, Sendable {
     /// / compared titles), in DISPLAY order — index 0 is "the first one".
     public private(set) var lastList: [FocusEntity] = []
 
+    /// WHY `lastList` was shown. Selection ("the second one") works on any
+    /// kind, but some routing is kind-specific: comparison follow-ups
+    /// ("how many died in each?") must fire only on a genuine compared
+    /// pair. A disambiguation offer also produces a two-topic list, and
+    /// treating it as a comparison pair routed a casualty question to
+    /// compare_articles(War of 1812, French invasion of Russia) — Mac
+    /// replay of the 2026-08-03 field session.
+    public enum ListKind: String, Sendable {
+        /// Search / places results the user may pick from.
+        case listing
+        /// The two subjects of an explicit "compare A and B".
+        case comparison
+        /// Alternate meanings we offered for ONE reference.
+        case disambiguation
+    }
+    public private(set) var lastListKind: ListKind = .listing
+
     /// Vetted drift candidates from the last result.
     public private(set) var openThreads: [DiscoveryThread] = []
 
@@ -201,6 +218,7 @@ public struct ConversationFocus: Equatable, Sendable {
     public mutating func reset() {
         entities = []
         lastList = []
+        lastListKind = .listing
         openThreads = []
         turn = 0
     }
@@ -222,8 +240,11 @@ public struct ConversationFocus: Equatable, Sendable {
     /// Replace the "list on screen". Pass the items in display order. The
     /// first item also becomes the primary entity (the user was just shown
     /// it), but the whole list is retained for ordinal selection.
-    public mutating func setLastList(_ items: [FocusEntity]) {
+    public mutating func setLastList(
+        _ items: [FocusEntity], kind: ListKind = .listing
+    ) {
         lastList = items
+        lastListKind = kind
         if let head = items.first { remember(head) }
     }
 

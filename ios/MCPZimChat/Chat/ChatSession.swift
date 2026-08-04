@@ -250,6 +250,26 @@ public final class ChatSession {
     }
     private var groundedPromptCache: GroundedPromptCache?
 
+    /// The question that hit `.ambiguous` and the candidates we offered,
+    /// held for exactly one turn. When the user's next turn picks one
+    /// (by name, position, or negation — `ReferenceResolver
+    /// .clarificationPick`), we re-run THIS question against the pick.
+    /// Without the stash, the pick text itself became the question:
+    /// "Not the one about capital punishment" answered start/end dates
+    /// and the casualty facet the user actually asked for was lost
+    /// (device capture 2026-08-03).
+    private struct PendingDisambiguation {
+        let question: String
+        let candidates: [FocusEntity]
+    }
+    private var pendingDisambiguation: PendingDisambiguation?
+
+    /// One-shot override for the grounded single-shot's question, set by
+    /// the clarification-pick path. `executeDirectIntent` normally reads
+    /// the question from the LAST user message — which, on a pick turn,
+    /// is the pick itself rather than what the user wants answered.
+    private var groundedQuestionOverride: String?
+
     /// Tools whose intent means the user has LEFT a "discuss X" session
     /// (navigation/places, or a fresh discuss/compare). `article_overview`
     /// is intentionally absent: mid-discussion "tell me about its economy"
@@ -291,9 +311,13 @@ public final class ChatSession {
         var inHand = state.sources.map { $0.title.lowercased() }
         inHand.append(state.topic.lowercased())
         inHand.append(state.anchorTitle.lowercased())
-        // Same subject when either name contains the other
-        // ("putin" ⊂ "vladimir putin").
-        if inHand.contains(where: { $0.contains(title) || title.contains($0) }) {
+        // Same subject when either name contains the other ("putin" ⊂
+        // "vladimir putin"), or when the article-stripped title's tokens
+        // all name the pinned subject ("the war" while discussing War of
+        // 1812 — the raw substring check missed that anaphora and the turn
+        // left the discussion, dropping a warm KV cache; device capture
+        // 2026-08-03).
+        if IntentRouter.titleNamesPinnedSubject(title, inHand: inHand) {
             return false
         }
         // Explicit deictics are stronger than the stateless article parse:
@@ -2495,6 +2519,7 @@ public final class ChatSession {
         preambleLocationSnapshot = nil
         focus.reset()
         pendingFactoidPredicate = nil
+        pendingDisambiguation = nil
         recentlyOfferedThreadKeys.removeAll()
         if #available(macOS 26.0, iOS 19.0, *),
            let fm = selectedModel as? FoundationModelsProvider {
@@ -2625,6 +2650,49 @@ public final class ChatSession {
                 return IntentRouter.factoidSelectionIntent(
                     text, predicate: predicate, focus: focus)
             }()
+            // Answer to OUR disambiguation question ("Which one do you
+            // mean — X or Y?"): bind the pick and re-run the ORIGINAL
+            // question against it. The pick text is an instruction, not a
+            // query — answering it directly lost the asked-for facet
+            // ("Not the one about capital punishment" → the reply covered
+            // the war's dates, not its casualties; device capture
+            // 2026-08-03). Like the factoid predicate above, the stash
+            // lives for exactly one turn.
+            if let pending = pendingDisambiguation {
+                pendingDisambiguation = nil
+                if let picked = ReferenceResolver.clarificationPick(
+                    text, candidates: pending.candidates)
+                {
+                    activeQueryTelemetry?.setRoute("clarification_pick")
+                    // A section-qualified candidate ("Article § Section")
+                    // fetches its article; grounding covers the section.
+                    let articleTitle = picked.name.split(separator: "§").first
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        ?? picked.name
+                    debug("clarification pick: \(picked.name) → re-running “\(pending.question)”",
+                          category: "Router")
+                    // Collapse the list to the pick so any LATER reference
+                    // ("that one", "the war") binds without a re-ask.
+                    focus.setLastList([picked])
+                    groundedQuestionOverride = pending.question
+                    let intent = DirectIntent(
+                        toolName: "article_overview",
+                        args: ["title": .string(articleTitle)])
+                    let handled = await executeDirectIntent(intent)
+                    groundedQuestionOverride = nil
+                    if handled {
+                        isGenerating = false
+                        if let idx = messages.indices.last,
+                           messages[idx].role == .assistant
+                        {
+                            messages[idx].finishedAt = Date()
+                        }
+                        return
+                    }
+                }
+                // No pick (or the fetch missed): the turn is a fresh query
+                // and normal routing below handles it.
+            }
             // A tentative factoid may be tried while deciding whether a turn
             // leaves a pinned discussion. If that probe misses and the turn
             // then falls through to normal routing, do not dispatch the exact
@@ -2736,6 +2804,8 @@ public final class ChatSession {
                 if let intent = switchIntent,
                    intent.toolName == "article_factoid" {
                     if intentLeavesDiscussion(intent, state: ds, userText: text) {
+                        debug("discussion leave (factoid): title=\((intent.anyArgs["title"] as? String) ?? "?") vs pinned \(ds.topic)",
+                              category: "Router")
                         discussionState = nil
                         groundedPromptCache = nil
                     }
@@ -2763,6 +2833,8 @@ public final class ChatSession {
                     }
                 } else if let intent = switchIntent,
                           intentLeavesDiscussion(intent, state: ds, userText: text) {
+                    debug("discussion leave: \(intent.toolName)(\((intent.anyArgs["title"] as? String) ?? "-")) vs pinned \(ds.topic)",
+                          category: "Router")
                     discussionState = nil   // topic change → normal routing below
                     groundedPromptCache = nil
                 } else {
@@ -2785,8 +2857,25 @@ public final class ChatSession {
             // second one" / the name) resolves next turn.
             let reference = ReferenceResolver.resolve(text, focus: focus)
             if case .ambiguous(let candidates) = reference.binding,
+               candidates.count > 1,
+               // A turn that literally names one candidate is not ambiguous.
+               // Bind it silently and let routing continue — re-asking
+               // "which one?" against a turn containing the full title was
+               // the field re-ask loop (2026-08-03).
+               let selfResolved = ReferenceResolver.namedCandidate(
+                   in: text, candidates: candidates)
+            {
+                focus.setLastList([selfResolved])
+                debug("ambiguity self-resolved: \(selfResolved.name)",
+                      category: "Router")
+            } else if case .ambiguous(let candidates) = reference.binding,
                candidates.count > 1 {
                 activeQueryTelemetry?.setRoute("clarification")
+                // Remember what was actually ASKED so the user's pick next
+                // turn re-runs this question instead of being answered
+                // itself (device capture 2026-08-03).
+                pendingDisambiguation = PendingDisambiguation(
+                    question: text, candidates: Array(candidates.prefix(3)))
                 let names = candidates.prefix(3).map(\.name)
                 let list = names.count == 2
                     ? "\(names[0]) or \(names[1])"
@@ -5470,7 +5559,8 @@ public final class ChatSession {
                 // a previous question verbatim instead of summarising
                 // (device + Mac captures 2026-07-02, "And tell me about
                 // Donald Trump" → reply "How about his mother?").
-                let question = messages.last(where: { $0.role == .user })?.text
+                let question = groundedQuestionOverride
+                    ?? messages.last(where: { $0.role == .user })?.text
                     ?? "Tell me about this."
                 var sources: [(title: String, sections: [ArticleSection])] = []
                 func sections(from dict: [String: Any]) -> [ArticleSection] {
@@ -5534,7 +5624,8 @@ public final class ChatSession {
                                 guard let t = a["title"] as? String else { return nil }
                                 return FocusEntity(name: t, kind: .topic,
                                                    zimPath: a["path"] as? String)
-                            })
+                            },
+                            kind: .disambiguation)
                         debug("disambiguation offered: \(names.joined(separator: " | "))",
                               category: "Router")
                     }
@@ -5580,12 +5671,15 @@ public final class ChatSession {
                 || errText.contains("no matching")
             if placesAndRouting.contains(intent.toolName), isGeocodeMiss {
                 let subject = placeSubject(from: dictArgs) ?? "that place"
-                updateAssistant(
-                    "I can't find \"\(subject)\" in the loaded maps. "
+                let miss = "I can't find \"\(subject)\" in the loaded maps. "
                     + "The current streetzim may not cover that area — "
                     + "try a place within its region, or load a "
                     + "streetzim that includes it."
-                )
+                updateAssistant(miss)
+                // Log the reply: the 2026-08-03 "k1 kart" triage could not
+                // tell from the field log whether this message ever
+                // rendered, because only generated paths logged Assistant.
+                debug(miss, category: "Assistant")
                 return true
             }
             if let idx = messages.indices.last,
@@ -5676,7 +5770,7 @@ public final class ChatSession {
         if toolName == "compare_articles", let titles = args["titles"] as? [String] {
             let list = titles.filter { !$0.isEmpty }
                 .map { FocusEntity(name: $0, kind: .topic) }
-            if !list.isEmpty { focus.setLastList(list) }
+            if !list.isEmpty { focus.setLastList(list, kind: .comparison) }
         }
 
         if toolName == "route_from_places" {

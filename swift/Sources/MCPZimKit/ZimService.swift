@@ -866,7 +866,8 @@ public actor DefaultZimService: ZimService {
     /// state suffix) and " in " (natural-language phrasings from TTS
     /// like "Union Square in San Francisco"). Keeps the left-most
     /// fragment only, since that's almost always the venue name.
-    private static func geocodeVariants(of query: String) -> [String] {
+    /// Internal (not private) so tests can pin the ordering contract.
+    static func geocodeVariants(of query: String) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
         func push(_ s: String) {
@@ -880,6 +881,23 @@ public actor DefaultZimService: ZimService {
         }
         if let c = query.range(of: " in ", options: [.caseInsensitive]) {
             push(String(query[..<c.lowerBound]))
+        }
+        // Progressive trailing-token drop, tried only after the variants
+        // above. Field evidence 2026-08-03: locate("k1 kart") threw
+        // noMatch even though the index holds "K1 Speed" — the query has
+        // no comma and no " in ", so the ONLY attempt was the full
+        // phrase, and name.contains("k1 kart") matches nothing. Dropping
+        // trailing tokens ("k1 kart" → "k1") lets Geocoder.rank surface
+        // the venue by prefix. Ordered last so exact/full matches always
+        // win; the ≥2-char floor keeps a bare initial from matching half
+        // the index; the cap keeps a long phrase from fanning out into a
+        // dozen chunk scans.
+        var tokens = (out.last ?? query).split(whereSeparator: { $0.isWhitespace })
+        while tokens.count > 1, out.count < 5 {
+            tokens.removeLast()
+            let candidate = tokens.joined(separator: " ")
+            if candidate.count < 2 { break }
+            push(candidate)
         }
         return out
     }
@@ -921,7 +939,17 @@ public actor DefaultZimService: ZimService {
         let isGeneric = (kinds?.isEmpty ?? true)
         let effectiveKinds: Set<String>
         if let kinds, !kinds.isEmpty {
-            effectiveKinds = Set(kinds.map { $0.lowercased() })
+            // Canonicalize common phrasings ("drugstore" → "pharmacy")
+            // BEFORE fan-out, not just inside `chipsFor` — the chip
+            // lookup, the niche/broad decision, and scanRecords' subtype
+            // filter must all see the same term. Mapping only at chip
+            // lookup would send "drugstore" to the health chip but then
+            // return the WHOLE chip (the AFA0ECA1 "211 hospitals" shape),
+            // because nicheChipKinds and the filter still saw "drugstore".
+            effectiveKinds = Set(kinds.map {
+                let k = $0.lowercased()
+                return Self.kindSynonyms[k] ?? k
+            })
         } else {
             effectiveKinds = ["poi", "place"]
         }
@@ -1021,6 +1049,12 @@ public actor DefaultZimService: ZimService {
                 + "\(Self.maxFullScanRecords) cap) — skipping the full scan to "
                 + "avoid OOM; returning \(hits.count) chip/category hit(s) from "
                 + "\(pair.name). Specific kinds hit a chip and don't need this.")
+            if !isGeneric, hits.isEmpty {
+                try nearPlacesNameSearchFallback(
+                    pair: pair, kinds: effectiveKinds,
+                    centerLat: lat, centerLon: lon, radiusMeters: radiusM,
+                    requireWiki: hasWiki, hits: &hits)
+            }
             return summarize(hits: hits, limit: limit)
         }
         log("nearPlaces full scan: \(manifest.count) chunk(s) in \(pair.name)")
@@ -1032,7 +1066,123 @@ public actor DefaultZimService: ZimService {
                         radiusMeters: radiusM,
                         requireWiki: hasWiki, hits: &hits)
         }
+        // Even a completed full scan finds nothing for a kind the subtype /
+        // synonym filters don't know ("go cart place") — the venue is only
+        // discoverable by NAME. Same bounded fallback as the guard path.
+        if !isGeneric, hits.isEmpty {
+            try nearPlacesNameSearchFallback(
+                pair: pair, kinds: effectiveKinds,
+                centerLat: lat, centerLon: lon, radiusMeters: radiusM,
+                requireWiki: hasWiki, hits: &hits)
+        }
         return summarize(hits: hits, limit: limit)
+    }
+
+    /// Budgets for `nearPlacesNameSearchFallback`: chunk/leaf loads bound
+    /// time (a hot prefix can span 256 leaves — never walk them all for a
+    /// best-effort fallback), the match cap bounds accumulation. Small on
+    /// purpose: this path must stay "a few chunks", never a full scan.
+    static let maxFallbackChunkLoads = 48
+    static let maxFallbackMatches = 200
+
+    /// Content words shorter than a name-search term or too generic to be
+    /// one — "place" as a substring would match half the index by name.
+    private static let fallbackFillerWords: Set<String> = [
+        "place", "places", "near", "nearby", "the", "a", "an", "and", "of",
+    ]
+
+    /// Bounded last-resort NAME search for `near_places` kinds that map to
+    /// no chip: load ONLY the search-data prefix chunks selected by the
+    /// kind phrase's own words (the same manifest/sub-chunk machinery
+    /// `geocodeResolved` uses) and keep in-radius poi/place records whose
+    /// name contains a term. Field evidence 2026-08-03: near_places(kinds:
+    /// ["go cart place"]) on the statewide California ZIM matched no chip
+    /// and the OOM guard (correctly) refused the full scan → 0 hits in
+    /// 2 ms with no fallback attempted, even though "Go Cart Raceway"-
+    /// style records sit in the name index. When this also misses, the
+    /// result stays a clean fast empty — never a full scan.
+    private func nearPlacesNameSearchFallback(
+        pair: (name: String, reader: ZimReader),
+        kinds: Set<String>,
+        centerLat: Double, centerLon: Double,
+        radiusMeters: Double,
+        requireWiki: Bool,
+        hits: inout [(Place, Double)]
+    ) throws {
+        var loadBudget = Self.maxFallbackChunkLoads
+        let manifest = try loadManifest(pair: pair)
+        // Only kinds with no chip are eligible — mapped kinds already had
+        // their shot at the partitioned index / synonym filters.
+        for kind in kinds.sorted() where Self.chipsFor(kind).isEmpty {
+            // Terms, most-specific first: the full phrase, each content
+            // word (≥3 chars, filler dropped), then the filler-stripped
+            // phrase spaced and compacted ("go cart place" → "go cart",
+            // "gocart"). No spelling variants (kart≠cart) on purpose —
+            // literal containment only, same semantics as the geocoder.
+            var terms: [String] = []
+            var seenTerms = Set<String>()
+            func addTerm(_ t: String) {
+                let v = t.lowercased()
+                guard v.count >= 3, terms.count < 4,
+                      seenTerms.insert(v).inserted else { return }
+                terms.append(v)
+            }
+            let words = kind.lowercased()
+                .split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            addTerm(kind)
+            for w in words where w.count >= 3 && !Self.fallbackFillerWords.contains(w) {
+                addTerm(w)
+            }
+            let kept = words.filter { !Self.fallbackFillerWords.contains($0) }
+            if kept != words { addTerm(kept.joined(separator: " ")) }
+            if kept.count > 1 { addTerm(kept.joined()) }
+
+            var prefixesTried: [String] = []
+            var found = 0
+            for term in terms {
+                let prefix = Geocoder.normalizePrefix(term)
+                let subLeaves = subChunkLeaves(pair: pair, prefix: prefix)
+                let leaves: [String]
+                if manifest[prefix] != nil {
+                    leaves = [prefix]
+                } else if !subLeaves.isEmpty {
+                    leaves = subLeaves
+                } else if manifest.isEmpty {
+                    leaves = [prefix]   // legacy build, no manifest — try direct
+                } else {
+                    continue            // prefix absent → no read at all
+                }
+                if !prefixesTried.contains(prefix) { prefixesTried.append(prefix) }
+                for leaf in leaves {
+                    guard loadBudget > 0, hits.count < Self.maxFallbackMatches else { break }
+                    loadBudget -= 1
+                    // Same memory discipline as geocodeResolved: drain the
+                    // multi-MB parsed shard per leaf, retain only the name
+                    // matches. Streets/addresses are excluded for the same
+                    // reason the default kind filter excludes them — a name
+                    // hit on "Descartes Street" answers nothing.
+                    let matches: [[String: Any]] = try autoreleasepool {
+                        let records = leaves.count == 1
+                            ? try loadChunk(pair: pair, prefix: leaf)
+                            : try loadLeafChunk(pair: pair, leaf: leaf)
+                        return records.filter { rec in
+                            let t = ((rec["t"] as? String) ?? "").lowercased()
+                            guard t == "poi" || t == "place" else { return false }
+                            return (((rec["n"] as? String) ?? "")
+                                .lowercased().contains(term))
+                        }
+                    }
+                    let before = hits.count
+                    scanRecords(matches, filter: [], applyKindFilter: false,
+                                centerLat: centerLat, centerLon: centerLon,
+                                radiusMeters: radiusMeters,
+                                requireWiki: requireWiki, hits: &hits)
+                    found += hits.count - before
+                }
+            }
+            log("nearPlaces: kind '\(kind)' unmapped — name-search fallback "
+                + "over prefixes \(prefixesTried) found \(found)")
+        }
     }
 
     /// Compute breakdown-by-subtype + top-N-by-distance from an
@@ -1396,15 +1546,51 @@ public actor DefaultZimService: ZimService {
     /// only bounds the generic / no-chip fallback.
     static let maxFullScanRecords = 500_000
 
+    /// Common user phrasings → the canonical `chipsForKind` term they
+    /// mean. Consulted by `chipsFor` and by `nearPlaces`' kind
+    /// canonicalization so field phrasings land on the existing 11 chips
+    /// instead of falling through to the (correctly) OOM-guarded — and
+    /// thus empty — search-data scan. Values MUST be `chipsForKind` keys
+    /// and never other synonym keys: both call sites apply the map
+    /// exactly once. Kept small: only phrasings that unambiguously mean
+    /// an existing chip belong here; anything else is served by the
+    /// name-search fallback instead.
+    static let kindSynonyms: [String: String] = [
+        // fuel
+        "petrol": "fuel", "petrol station": "fuel", "gasoline": "fuel",
+        // health
+        "drugstore": "pharmacy", "chemist": "pharmacy",
+        "er": "hospital", "emergency room": "hospital",
+        "urgent care": "clinic",
+        // cafes
+        "coffee house": "cafe", "coffeehouse": "cafe",
+        // bars
+        "tavern": "bar", "boozer": "bar",
+        // hotels
+        "inn": "hotel", "bnb": "hotel", "b&b": "hotel",
+        "bed and breakfast": "hotel",
+        // museums
+        "art gallery": "gallery",
+        // parks
+        "playground": "park", "garden": "park", "gardens": "park",
+        // shops
+        "bookstore": "shop", "bookshop": "shop", "market": "shop",
+    ]
+
     /// Resolve a (possibly multi-word) `kinds` term to chip id(s),
     /// tolerating the phrasings models actually emit. Tries the term as-is,
-    /// the underscore form (`ice cream`→`ice_cream`), then each word
-    /// (`coffee shop`→`coffee`→cafes, `gas station`→`gas`→fuel). Without
-    /// this, a two-word kind missed every chip and fell through to the
-    /// search-data scan — which jetsams the app on a statewide ZIM.
+    /// its synonym, the underscore form (`ice cream`→`ice_cream`), then
+    /// each word (`coffee shop`→`coffee`→cafes, `gas station`→`gas`→fuel).
+    /// Without this, a two-word kind missed every chip and fell through to
+    /// the search-data scan — which jetsams the app on a statewide ZIM.
     static func chipsFor(_ kind: String) -> [String] {
         let k = kind.lowercased()
         if let c = chipsForKind[k] { return c }
+        // Synonyms sit between the exact and word-split passes on
+        // purpose: "bed and breakfast" must land on hotels via its
+        // synonym before the word-split sees "breakfast" and misroutes
+        // it to restaurants.
+        if let canonical = kindSynonyms[k], let c = chipsForKind[canonical] { return c }
         let underscored = k.replacingOccurrences(of: " ", with: "_")
         if let c = chipsForKind[underscored] { return c }
         for word in k.split(separator: " ") {
