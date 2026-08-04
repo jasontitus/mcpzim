@@ -90,6 +90,7 @@ final class ZimSwarmController: ObservableObject {
             manager.stopHosting()
             stopDiscoveryIfIdle()
         }
+        updateSleepBlocker()
     }
 
     /// Re-seeds with the current library contents (called after an import so
@@ -223,6 +224,10 @@ final class ZimSwarmController: ObservableObject {
     }
 
     private func updateSleepBlocker() {
-        SleepBlocker.set(engineBusy, reason: "nearby-share")
+        // The *sender* must stay awake too: if the sharing device dozes, iOS
+        // suspends the app, the AWDL listener dies, and the friend's copy
+        // stalls mid-transfer. Sharing is an explicit, session-scoped toggle,
+        // so treating it as "keep me awake" is what the user asked for.
+        SleepBlocker.set(engineBusy || isSharingLibrary, reason: "nearby-share")
     }
 }
