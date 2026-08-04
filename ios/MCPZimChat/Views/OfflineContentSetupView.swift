@@ -51,7 +51,7 @@ struct OfflineContentSetupView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Copy from a friend nearby")
                                     .font(.headline)
-                                Text("Did someone with Zimfo recommend the app? Their Wikipedia, maps, and AI model copy straight to this device over Wi-Fi — fast, free, and no internet needed.")
+                                Text("Did someone with Zimfo recommend the app? Their Wikipedia, maps, and AI models — chat and voice — copy straight to this device over Wi-Fi, no internet needed.")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                                 if let summary = swarm.lastImportSummary {

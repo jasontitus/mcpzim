@@ -11,13 +11,27 @@ public enum Chunker {
         case unreadable(URL)
     }
 
-    /// Produces a manifest plus the source URLs in manifest-file order (so a
-    /// seeding `ChunkStore` can map file index -> URL).
+    /// Convenience over the `items:` variant for flat shares — every file
+    /// keeps its bare filename as the manifest path.
     public static func buildManifest(name: String,
                                      fileURLs: [URL],
                                      chunkSize: Int = defaultChunkSize,
                                      progress: (@Sendable (Double) -> Void)? = nil) throws -> (manifest: SwarmManifest, orderedURLs: [URL]) {
-        guard !fileURLs.isEmpty else { throw ChunkerError.noFiles }
+        try buildManifest(name: name,
+                          items: fileURLs.map { ShareItem(url: $0) },
+                          chunkSize: chunkSize,
+                          progress: progress)
+    }
+
+    /// Produces a manifest plus the source URLs in manifest-file order (so a
+    /// seeding `ChunkStore` can map file index -> URL). Each item carries the
+    /// relative path it gets in the manifest, allowing directory shares whose
+    /// layout the receiver recreates.
+    public static func buildManifest(name: String,
+                                     items: [ShareItem],
+                                     chunkSize: Int = defaultChunkSize,
+                                     progress: (@Sendable (Double) -> Void)? = nil) throws -> (manifest: SwarmManifest, orderedURLs: [URL]) {
+        guard !items.isEmpty else { throw ChunkerError.noFiles }
 
         var files: [SwarmFile] = []
         var hashes: [String] = []
@@ -26,10 +40,11 @@ public enum Chunker {
         var total: Int64 = 0
 
         // Total bytes to hash, so progress can be reported as a fraction.
-        let grandTotal = (try? fileURLs.reduce(Int64(0)) { try $0 + fileSize(of: $1) }) ?? 0
+        let grandTotal = (try? items.reduce(Int64(0)) { try $0 + fileSize(of: $1.url) }) ?? 0
         var hashed: Int64 = 0
 
-        for url in fileURLs {
+        for item in items {
+            let url = item.url
             let size = try fileSize(of: url)
             let startIndex = globalIndex
 
@@ -61,7 +76,7 @@ public enum Chunker {
             }
 
             let endIndex = size > 0 ? globalIndex - 1 : startIndex
-            files.append(SwarmFile(path: url.lastPathComponent,
+            files.append(SwarmFile(path: item.relativePath,
                                    sizeBytes: size,
                                    startChunkIndex: startIndex,
                                    endChunkIndex: endIndex))

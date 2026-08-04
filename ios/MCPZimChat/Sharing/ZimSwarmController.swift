@@ -42,9 +42,12 @@ final class ZimSwarmController: ObservableObject {
     /// Offers a received file to the model providers; true means a provider
     /// claimed it and moved it into its own cache slot.
     var importModelFile: ((URL) async -> Bool)?
-    /// Whether the share also seeds the AI model, so the friend can chat
+    /// Whether the share also seeds the chat model, so the friend can chat
     /// entirely offline. On by default — that's the point of the bootstrap.
     @Published private(set) var includeModelInShare = true
+    /// Whether the share also seeds the voice models (Kokoro MLX assets +
+    /// Supertonic Core ML bundles), shared as whole directories.
+    @Published private(set) var includeVoiceInShare = true
 
     private var browsingViewCount = 0
     private var cancellable: AnyCancellable?
@@ -85,14 +88,46 @@ final class ZimSwarmController: ObservableObject {
 
     var hasShareableFiles: Bool { !currentShareSet().isEmpty }
 
-    /// Everything the share seeds right now: enabled library ZIMs, plus the
-    /// selected model's GGUF when the toggle is on.
+    /// Everything the share seeds right now: enabled library ZIMs, the
+    /// selected model's GGUF, and the voice-model folders, per the toggles.
     private func currentShareSet() -> [URL] {
         var urls = shareableFiles()
         if includeModelInShare {
             urls.append(contentsOf: shareableModelFiles())
         }
+        if includeVoiceInShare {
+            urls.append(contentsOf: Self.shareableVoiceDirectories)
+        }
         return urls
+    }
+
+    /// Voice-model folders worth seeding, shared as directories — the engine
+    /// preserves their internal layout, and the receiver routes them back
+    /// into `Application Support/models/`.
+    nonisolated static var shareableVoiceDirectories: [URL] {
+        var directories: [URL] = []
+        if KokoroAssets.isDownloaded {
+            directories.append(KokoroAssets.modelDirectory)
+        }
+        #if canImport(FluidAudio)
+        if Supertonic3Assets.currentBytesOnDisk > 0 {
+            directories.append(Supertonic3Assets.modelDirectory)
+        }
+        #endif
+        return directories
+    }
+
+    /// Bytes across every shareable voice asset — for the UI's toggle label.
+    /// Zero means "nothing to offer" and the toggle hides.
+    nonisolated static var shareableVoiceBytes: Int64 {
+        var total: Int64 = 0
+        if KokoroAssets.isDownloaded {
+            total += KokoroAssets.currentBytesOnDisk
+        }
+        #if canImport(FluidAudio)
+        total += Supertonic3Assets.currentBytesOnDisk
+        #endif
+        return total
     }
 
     func setSharing(_ enabled: Bool) {
@@ -112,11 +147,18 @@ final class ZimSwarmController: ObservableObject {
         updateSleepBlocker()
     }
 
-    /// Flips whether the AI model rides along; if sharing is live, re-hosts
+    /// Flips whether the chat model rides along; if sharing is live, re-hosts
     /// so the advertised file list matches the toggle immediately.
     func setIncludeModel(_ on: Bool) {
         guard includeModelInShare != on else { return }
         includeModelInShare = on
+        refreshSharingIfActive()
+    }
+
+    /// Same, for the voice models.
+    func setIncludeVoice(_ on: Bool) {
+        guard includeVoiceInShare != on else { return }
+        includeVoiceInShare = on
         refreshSharingIfActive()
     }
 
@@ -177,15 +219,29 @@ final class ZimSwarmController: ObservableObject {
         var imported: [URL] = []
         var importedBytes: Int64 = 0
         var importedModelCount = 0
+        var importedVoiceCount = 0
         var skipped = 0
+        let swarmDir = stagingBase?.appendingPathComponent(swarmID, isDirectory: true)
 
         // Move *everything* out of the per-swarm staging folder (which gets
-        // cleaned up below). .zim files are imported into the library; a
-        // .gguf is first offered to the model providers, which adopt it into
-        // their own cache slot; anything else a generic LocalSwarm peer sent
-        // just lands in Documents, where the library scan ignores it.
+        // cleaned up below). Voice-model trees ("kokoro_mlx/…",
+        // "supertonic_3/…") route back into Application Support/models where
+        // the TTS engines look; .zim files are imported into the library; a
+        // .gguf is offered to the model providers, which adopt it into their
+        // own cache slot; anything else a generic LocalSwarm peer sent just
+        // lands in Documents, where the library scan ignores it.
         for source in fileURLs {
             let isZim = source.pathExtension.lowercased() == "zim"
+            if let swarmDir,
+               let relative = Self.relativePath(of: source, under: swarmDir),
+               let voiceDestination = Self.voiceModelDestination(forRelativePath: relative) {
+                if moveReplacing(source: source, destination: voiceDestination) {
+                    importedVoiceCount += 1
+                } else {
+                    skipped += 1
+                }
+                continue
+            }
             if source.pathExtension.lowercased() == "gguf",
                await importModelFile?(source) == true {
                 importedModelCount += 1
@@ -223,7 +279,7 @@ final class ZimSwarmController: ObservableObject {
         cleanupStagingFolder(swarmID: swarmID)
 
         lastSkippedCount = skipped
-        if !imported.isEmpty || importedModelCount > 0 {
+        if !imported.isEmpty || importedModelCount > 0 || importedVoiceCount > 0 {
             var parts: [String] = []
             if !imported.isEmpty {
                 let size = ByteCountFormatter.string(fromByteCount: importedBytes, countStyle: .file)
@@ -232,7 +288,10 @@ final class ZimSwarmController: ObservableObject {
                     : "Added \(imported.count) files (\(size))")
             }
             if importedModelCount > 0 {
-                parts.append(parts.isEmpty ? "AI model installed" : "AI model included")
+                parts.append(parts.isEmpty ? "Chat model installed" : "chat model included")
+            }
+            if importedVoiceCount > 0 {
+                parts.append(parts.isEmpty ? "Voice models installed" : "voice models included")
             }
             lastImportSummary = parts.joined(separator: " · ")
             if !imported.isEmpty {
@@ -241,6 +300,55 @@ final class ZimSwarmController: ObservableObject {
             refreshSharingIfActive()
         }
         updateSleepBlocker()
+    }
+
+    /// The manifest-relative path of a received file ("kokoro_mlx/voices.npz"),
+    /// or nil when the file isn't under the swarm's staging folder.
+    nonisolated static func relativePath(of file: URL, under directory: URL) -> String? {
+        let root = directory.standardizedFileURL.path
+        let path = file.standardizedFileURL.path
+        guard path.hasPrefix(root + "/") else { return nil }
+        return String(path.dropFirst(root.count + 1))
+    }
+
+    /// Where a received voice-model file belongs, or nil when it isn't one.
+    /// Only the two known top-level folders are honored — an arbitrary swarm
+    /// can never write elsewhere into Application Support.
+    nonisolated static func voiceModelDestination(forRelativePath relative: String) -> URL? {
+        let components = relative.split(separator: "/").map(String.init)
+        guard components.count >= 2 else { return nil }
+        let base: URL
+        switch components[0] {
+        case "kokoro_mlx":
+            base = KokoroAssets.modelDirectory
+        case "supertonic_3":
+            #if canImport(FluidAudio)
+            base = Supertonic3Assets.modelDirectory
+            #else
+            return nil
+            #endif
+        default:
+            return nil
+        }
+        return components.dropFirst().reduce(base) { $0.appendingPathComponent($1) }
+    }
+
+    /// Moves `source` over `destination`, creating parent directories and
+    /// replacing an existing file (voice assets are interchangeable published
+    /// files — a friend's copy and a downloaded copy are the same bytes).
+    private nonisolated func moveReplacing(source: URL, destination: URL) -> Bool {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: destination.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: source, to: destination)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func uniqueDestination(for filename: String, in directory: URL) -> URL {
@@ -258,13 +366,23 @@ final class ZimSwarmController: ObservableObject {
         guard let stagingBase else { return }
         let dir = stagingBase.appendingPathComponent(swarmID, isDirectory: true)
         let fm = FileManager.default
-        // Remove the per-swarm folder only once nothing useful remains —
-        // just the bitfield sidecars — so a move failure never turns into
-        // data loss here.
-        if let leftovers = try? fm.contentsOfDirectory(atPath: dir.path),
-           leftovers.allSatisfy({ $0.hasSuffix(".lsbits") || $0 == ".DS_Store" }) {
-            try? fm.removeItem(at: dir)
+        // Remove the per-swarm folder only when nothing but the engine's
+        // sidecars and emptied-out subdirectories remain (a directory share
+        // leaves its folder skeleton behind after the files move out) — so a
+        // move failure never turns into data loss here.
+        let disposable: Set<String> = [".localswarm-bitfield",
+                                       ".localswarm-manifest.json",
+                                       ".DS_Store"]
+        guard let enumerator = fm.enumerator(at: dir,
+                                             includingPropertiesForKeys: [.isRegularFileKey])
+        else { return }
+        for case let url as URL in enumerator {
+            let isFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            if isFile, !disposable.contains(url.lastPathComponent) {
+                return // real data still inside — keep everything
+            }
         }
+        try? fm.removeItem(at: dir)
     }
 
     private func updateSleepBlocker() {

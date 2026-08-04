@@ -1,9 +1,11 @@
 # Vendored LocalSwarmEngine
 
 Vendored from https://github.com/jasontitus/localswarm at commit
-`c7ac473942f37a24ebd7bd93e3a17c74c22b5387` (engine `Sources/` + `Tests/` +
-`Package.swift` only — the upstream repo's own SwiftUI app, Android app, and Go
-peer are not vendored).
+`b43f007` on branch `claude/mcpzim-local-swarm-fex4ts` (engine `Sources/` +
+`Tests/` + `Package.swift` only — the upstream repo's own SwiftUI app,
+Android app, and Go peer are not vendored). That commit adds directory
+shares (`ShareItem` relative paths + `hostFiles` expansion), which Zimfo
+uses to hand over multi-file voice-model folders.
 
 LocalSwarmEngine is the local-first peer-to-peer file swarming engine Zimfo
 uses for **Nearby Sharing**: seeding your ZIM library to nearby devices over

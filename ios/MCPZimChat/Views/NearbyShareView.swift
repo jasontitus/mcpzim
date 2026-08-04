@@ -100,8 +100,21 @@ private struct NearbyShareContent: View {
                     get: { controller.includeModelInShare },
                     set: { controller.setIncludeModel($0) })) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Include AI model (\(modelSize))")
+                        Text("Include chat model (\(modelSize))")
                         Text("Lets your friend chat entirely offline — no model download needed.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let voiceSize = shareableVoiceSizeLabel {
+                Toggle(isOn: Binding(
+                    get: { controller.includeVoiceInShare },
+                    set: { controller.setIncludeVoice($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include voice models (\(voiceSize))")
+                        Text("Spoken answers work offline too — Kokoro and Supertonic install automatically.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -145,7 +158,7 @@ private struct NearbyShareContent: View {
         if !controller.hasShareableFiles {
             return "Nothing to share yet — add Wikipedia or a map first"
         }
-        return "Let a friend copy your Wikipedia, maps, and AI model"
+        return "Let a friend copy your Wikipedia, maps, and AI models"
     }
 
     /// Size label for the selected model's shareable file, nil when the
@@ -156,6 +169,13 @@ private struct NearbyShareContent: View {
                   .flatMap({ $0 })
         else { return nil }
         return SwarmFormat.bytes(size)
+    }
+
+    /// Size label for the voice-model folders, nil when none are on disk.
+    private var shareableVoiceSizeLabel: String? {
+        let bytes = ZimSwarmController.shareableVoiceBytes
+        guard bytes > 0 else { return nil }
+        return SwarmFormat.bytes(bytes)
     }
 
     // MARK: Nearby libraries
@@ -320,7 +340,10 @@ private struct SwarmFileSelectionSheet: View {
                                     HStack(spacing: 6) {
                                         Text(SwarmFormat.bytes(file.sizeBytes))
                                         if file.path.lowercased().hasSuffix(".gguf") {
-                                            Text("· AI model — installs automatically")
+                                            Text("· chat model — installs automatically")
+                                        } else if file.path.hasPrefix("kokoro_mlx/")
+                                                    || file.path.hasPrefix("supertonic_3/") {
+                                            Text("· voice model — installs automatically")
                                         } else if !file.path.lowercased().hasSuffix(".zim") {
                                             Text("· not a ZIM — saved but not loaded")
                                         }

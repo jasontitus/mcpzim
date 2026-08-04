@@ -350,6 +350,18 @@ headless builds.
   device has no working model (`.notLoaded`/`.failed`), the adopted model
   is auto-selected and loaded. MLX safetensors models are multi-file HF
   snapshots and stay download-only for now. Pinned by `ModelSharingTests`.
+- **Voice models ride along too**: the share seeds
+  `Application Support/models/kokoro_mlx/` (Kokoro weights + voices) and
+  `models/supertonic_3/` (Supertonic Core ML bundles) as *directory shares*
+  — the vendored engine expands a directory URL into
+  `<dirname>/<subpath>` manifest items and the receiver recreates the tree
+  (upstream commit `b43f007`). On import, only those two known top-level
+  names route back into `Application Support/models/…` (an arbitrary swarm
+  can never write elsewhere); the TTS engines pick the files up on next
+  prepare, with no activation step. Caveat: Supertonic's compiled
+  `.mlmodelc` bundles are same-platform artifacts — phone→phone is the
+  supported flow; a cross-platform copy that fails to load just falls back
+  to FluidAudio's normal re-download.
 - **`ZimDownloadManager`** is a background-`URLSession` downloader
   (`sessionSendsLaunchEvents`, resume-data persisted under Application
   Support) for the catalog: transfers survive suspension and termination;

@@ -1,5 +1,20 @@
 import Foundation
 
+/// One file offered to a swarm, together with the relative path it gets in
+/// the manifest. Flat shares use the bare filename; sharing a *directory*
+/// preserves its internal layout ("kokoro_mlx/voices.npz"), which the
+/// receiving `ChunkStore` recreates — `Manifest.validate()` has always
+/// accepted safe nested relative paths, this is the sending-side handle.
+public struct ShareItem: Sendable, Hashable {
+    public let url: URL
+    public let relativePath: String
+
+    public init(url: URL, relativePath: String? = nil) {
+        self.url = url
+        self.relativePath = relativePath ?? url.lastPathComponent
+    }
+}
+
 /// A swarm available to download, aggregated across every nearby peer that
 /// advertises the same content (`swarmID`). `peers` are the parallel sources.
 public struct DiscoveredSwarm: Identifiable, Hashable, Sendable {
