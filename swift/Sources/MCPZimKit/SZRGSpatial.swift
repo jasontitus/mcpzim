@@ -175,9 +175,20 @@ public struct SZRCCell: Sendable {
     /// Decode a cell-local geom index to [(lat, lon)] points. Zigzag-
     /// varint format, identical to SZRG/SZGM polyline blobs.
     public func decodeGeom(localIdx gi: Int) throws -> [(lat: Double, lon: Double)] {
+        // geomOffsets are raw UInt32 from an untrusted SZRC cell; validate the
+        // index and the resulting window against the blob before any pointer
+        // read, or a crafted offset drives readInt32LE/readVarintLE out of
+        // bounds of geomBlob (DS4 high finding 2026-08-03; reachable per route
+        // edge via SpatialGraph.decodeGeomForEdge).
+        guard gi >= 0, gi + 1 < geomOffsets.count else {
+            throw SZCIError.truncated("geom index \(gi) out of range (\(geomOffsets.count) offsets)")
+        }
         let start = Int(geomOffsets[gi])
         let end = Int(geomOffsets[gi + 1])
         if end <= start { return [] }
+        guard start >= 0, end <= geomBlob.count else {
+            throw SZCIError.truncated("geom window [\(start)..\(end)] exceeds blob \(geomBlob.count)")
+        }
         return geomBlob.withUnsafeBufferPointer { bp -> [(lat: Double, lon: Double)] in
             let base = UnsafeRawBufferPointer(bp)
             let lon0 = SZRGInt.readInt32LE(base, at: start)

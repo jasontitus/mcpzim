@@ -55,7 +55,12 @@ public class Qwen35MoEModel: Qwen35Model {
 
         for l in 0 ..< languageModel.configuration.hiddenLayers {
             let prefix = "language_model.model.layers.\(l).mlp"
-            let gateUpKey = "\(prefix).experts.gate_up_proj"
+            // Checkpoints store params under <name>.weight; the lookups
+            // omitted the suffix so the whole expert rewrite silently no-op'd
+            // on a real Qwen3.5-MoE checkpoint (DS4 2026-08-03; matches the
+            // Python qwen3_5_moe.py sanitizer and the sibling Qwen3MoE.swift).
+            let gateUpKey = "\(prefix).experts.gate_up_proj.weight"
+            let downKey = "\(prefix).experts.down_proj.weight"
             if let gateUp = newWeights[gateUpKey] {
                 newWeights[gateUpKey] = nil
                 let mid = gateUp.dim(-2) / 2
@@ -63,8 +68,8 @@ public class Qwen35MoEModel: Qwen35Model {
                     gateUp[.ellipsis, ..<mid, 0...]
                 newWeights["\(prefix).switch_mlp.up_proj.weight"] =
                     gateUp[.ellipsis, mid..., 0...]
-                if let downProj = newWeights["\(prefix).experts.down_proj"] {
-                    newWeights["\(prefix).experts.down_proj"] = nil
+                if let downProj = newWeights[downKey] {
+                    newWeights[downKey] = nil
                     newWeights["\(prefix).switch_mlp.down_proj.weight"] = downProj
                 }
             }

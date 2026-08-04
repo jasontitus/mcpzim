@@ -190,7 +190,10 @@ public class SmolLM3Model: Module, LLMModel, KVCacheDimensionProvider {
 
         let identityRope = NoPE()
         for (idx, useRope) in args.noRopeLayers.enumerated() {
-            if useRope == 0 && idx < model.layers.count {
+            // noRopeLayers marks a NO-rope layer with 1 (config builds it as
+            // `(i+1) % interval != 0 ? 1 : 0`); NoPE must replace RoPE on those,
+            // not on the rope layers marked 0 (DS4 2026-08-03, was inverted).
+            if useRope == 1 && idx < model.layers.count {
                 model.layers[idx].attention.rope = identityRope
             }
         }

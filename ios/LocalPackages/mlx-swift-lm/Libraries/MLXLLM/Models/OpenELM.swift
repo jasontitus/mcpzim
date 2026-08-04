@@ -191,8 +191,11 @@ public class OpenELMModel: Module, LLMModel, KVCacheDimensionProvider {
 
         self.transformer = OpenELMModelInner(args)
         if !args.shareInputOutputLayers {
+            // The untied head maps the final hidden state (modelDim) to vocab;
+            // it was sized with numTransformerLayers, mismatching the
+            // checkpoint's [vocab, modelDim] weight (DS4 2026-08-03).
             self._lmHead.wrappedValue = Linear(
-                args.numTransformerLayers, args.vocabularySize, bias: false)
+                args.modelDim, args.vocabularySize, bias: false)
         }
     }
 

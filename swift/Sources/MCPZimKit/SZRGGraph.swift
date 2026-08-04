@@ -267,6 +267,18 @@ public struct SZRGGraph: Sendable {
             for n in 0..<numNames {
                 let s = namesBase + Int(nameOffsets[n])
                 let e = namesBase + Int(nameOffsets[n + 1])
+                // The offsets are raw UInt32 from the file; only the blob's
+                // total length was advanced-checked, not each entry. A
+                // crafted/corrupt graph.bin with an offset past the blob (or
+                // a non-monotonic pair) would make the UnsafeBufferPointer
+                // read out of bounds of `data` (DS4 high finding 2026-08-03).
+                // Reject before dereferencing — streetzims are downloaded
+                // content, so treat their offset table as untrusted.
+                guard s >= namesBase, e >= s,
+                      e <= namesBase + namesBytes else {
+                    throw SZRGError.truncated(
+                        "names offset out of range at \(n): [\(s)..\(e)] vs [\(namesBase)..\(namesBase + namesBytes)]")
+                }
                 let bytesPointer = raw.baseAddress!.advanced(by: s).assumingMemoryBound(to: UInt8.self)
                 let length = e - s
                 let buffer = UnsafeBufferPointer(start: bytesPointer, count: length)
