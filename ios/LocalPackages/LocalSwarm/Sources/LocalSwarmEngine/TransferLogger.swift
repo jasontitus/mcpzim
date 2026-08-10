@@ -21,6 +21,11 @@ public final class TransferLogger: @unchecked Sendable {
 
     private static let header =
         "iso_time,event,transport,role,swarm_id,name,completed_bytes,total_bytes,bytes_per_sec,mbps,peers,elapsed_sec\n"
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private init() {
         let base = (try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
@@ -80,8 +85,6 @@ public final class TransferLogger: @unchecked Sendable {
     }
 
     private static func iso() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: Date())
+        isoFormatter.string(from: Date())
     }
 }

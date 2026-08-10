@@ -27,6 +27,7 @@ tools/*/.build/
 tools/*/.build-xcode/
 tools/*/.swiftpm/
 DerivedData/
+web/**/.firebase/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/

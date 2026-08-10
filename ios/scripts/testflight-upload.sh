@@ -227,3 +227,12 @@ run_xcodebuild \
 
 echo "testflight: upload submitted · Zimfo $MARKETING_VERSION ($BUILD_NUMBER)"
 echo "testflight: archive retained at $ARCHIVE_PATH"
+
+if [[ "${MCPZIM_SKIP_INTERNAL_ASSIGNMENT:-0}" != "1" ]]; then
+  INTERNAL_GROUP="${MCPZIM_INTERNAL_GROUP:-InternalTesters}"
+  ASC_KEY_PATH="$ASC_KEY_PATH" \
+    ASC_KEY_ID="$ASC_KEY_ID" \
+    ASC_ISSUER_ID="$ASC_ISSUER_ID" \
+    MCPZIM_PROCESSING_TIMEOUT="${MCPZIM_PROCESSING_TIMEOUT:-900}" \
+    ruby "$SCRIPT_DIR/testflight-assign-internal.rb" "$BUILD_NUMBER" "$INTERNAL_GROUP"
+fi

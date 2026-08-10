@@ -55,6 +55,12 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(links.first?.title, "AT&T Building")
     }
 
+    func testWikiLinksDecodesDecimalAndHexNumericEntities() {
+        let html = #"<p><a href="Rock">Rock&#8217;n&#x2013;roll</a></p>"#
+        let links = WikiLinks.parse(html: html)
+        XCTAssertEqual(links.first?.title, "Rock’n–roll")
+    }
+
     func testWikiLinksRespectsCap() {
         let html = (1...20).map {
             "<a href=\"Article_\($0)\">Article \($0)</a>"

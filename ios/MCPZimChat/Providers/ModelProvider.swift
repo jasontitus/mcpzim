@@ -188,14 +188,15 @@ public extension ModelProvider {
     /// Generic fallback template — `<|role|>\n…` blocks, ending on an open
     /// assistant turn. Providers with a native template should override.
     func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String {
-        var out = ""
+        var parts: [String] = []
+        parts.reserveCapacity(turns.count + 2)
         if !systemPreamble.isEmpty {
-            out += "<|system|>\n\(systemPreamble)\n"
+            parts.append("<|system|>\n\(systemPreamble)\n")
         }
         for t in turns {
-            out += "<|\(t.role.rawValue)|>\n\(t.text)\n"
+            parts.append("<|\(t.role.rawValue)|>\n\(t.text)\n")
         }
-        out += "<|assistant|>\n"
-        return out
+        parts.append("<|assistant|>\n")
+        return parts.joined()
     }
 }

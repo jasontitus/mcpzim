@@ -320,10 +320,16 @@ public class Gemma3Model: Module {
             layerCache = Array(repeating: nil as KVCache?, count: layers.count)
         }
 
-        let globalMask = createAttentionMask(h: h, cache: cache?[config.slidingWindowPattern - 1])
+        func cacheEntry(_ index: Int) -> KVCache? {
+            guard let cache, cache.indices.contains(index) else { return nil }
+            return cache[index]
+        }
+
+        let globalMask = createAttentionMask(
+            h: h, cache: cacheEntry(config.slidingWindowPattern - 1))
         let slidingWindowMask =
             if config.slidingWindowPattern > 1 {
-                createAttentionMask(h: h, cache: cache?[0], windowSize: config.slidingWindow)
+                createAttentionMask(h: h, cache: cacheEntry(0), windowSize: config.slidingWindow)
             } else {
                 MLXFast.ScaledDotProductAttentionMaskMode.none
             }

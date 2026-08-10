@@ -136,10 +136,12 @@ struct DebugPaneView: View {
                     // Mac can pick it out of the idevicesyslog
                     // buffer. Returns a short hash the UI flashes
                     // so the user can tell me which one to fetch.
-                    let hash = session.emitDebugReport()
-                    lastReportHash = hash
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                        if lastReportHash == hash { lastReportHash = nil }
+                    Task {
+                        let hash = await session.emitDebugReport()
+                        lastReportHash = hash
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            if lastReportHash == hash { lastReportHash = nil }
+                        }
                     }
                 } label: {
                     if let h = lastReportHash {

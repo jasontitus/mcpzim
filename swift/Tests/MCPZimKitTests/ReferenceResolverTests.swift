@@ -89,11 +89,29 @@ final class ReferenceResolverTests: XCTestCase {
         }
     }
 
+    func testOrdinalInOrdinaryProseDoesNotSelectListSlot() {
+        let f = focusWithList(["Old North Church", "Trinity Church"])
+        let r = ReferenceResolver.resolve(
+            "first of all, tell me about architecture", focus: f)
+        if case .listSelection = r.binding {
+            XCTFail("ordinary prose beginning with an ordinal must not pick a list item")
+        }
+    }
+
     func testTheOtherOneInTwoItemList() {
         let f = focusWithList(["North Korea", "South Korea"])
         // primaryEntity is the list head (North Korea); "the other" → South.
         let r = ReferenceResolver.resolve("what about the other one", focus: f)
         XCTAssertEqual(r.boundEntity?.name, "South Korea")
+    }
+
+    func testTheOtherRequiresPrimaryToBelongToList() {
+        var f = focusWithList(["North Korea", "South Korea"])
+        f.remember(FocusEntity(name: "Japan", kind: .place))
+        let r = ReferenceResolver.resolve("what about the other one", focus: f)
+        if case .listSelection = r.binding {
+            XCTFail("the other must not guess a list slot when its anchor is outside the list")
+        }
     }
 
     func testTheLastOne() {

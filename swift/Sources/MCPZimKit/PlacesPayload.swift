@@ -20,6 +20,40 @@ public let placesToolNames: Set<String> = [
     "locate",
 ]
 
+/// Last-chance UI gate for a places trace. The router and tool adapter remain
+/// responsible for deciding intent; this only prevents malformed instruction
+/// prose from allocating MapLibre/WebKit after it accidentally reached a
+/// places tool. It is intentionally conservative for `near_named_place` and
+/// otherwise leaves valid place families untouched.
+public func placesToolArgumentsAreRenderable(
+    toolName: String, arguments: String
+) -> Bool {
+    guard placesToolNames.contains(toolName) else { return false }
+    guard let data = arguments.data(using: .utf8),
+          let json = try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any]
+    else { return false }
+    guard toolName == "near_named_place" else { return true }
+    guard let place = json["place"] as? String,
+          !place.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          place.count <= 120
+    else { return false }
+    let kinds = json["kinds"] as? [String] ?? []
+    guard kinds.count <= 6 else { return false }
+    for rawKind in kinds {
+        let kind = rawKind.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if kind.isEmpty || kind.count > 80 { return false }
+        let words = kind.split(whereSeparator: { !$0.isLetter }).count
+        if words > 7 { return false }
+        let instruction = #"^(?:i|we|you)\b|\b(?:want(?:ing)?\s+to\s+know|how\s+many|people\s+died|tell\s+me|look\s+up|explain)\b"#
+        if kind.range(of: instruction, options: .regularExpression) != nil {
+            return false
+        }
+    }
+    return true
+}
+
 public struct PlacesPayload: Equatable, Sendable {
     public struct Place: Equatable, Hashable, Sendable {
         public let lat: Double

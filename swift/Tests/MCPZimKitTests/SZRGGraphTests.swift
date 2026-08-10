@@ -35,6 +35,23 @@ final class SZRGGraphTests: XCTestCase {
         XCTAssertEqual(graph.names, ["", "North Rd", "West Rd"])
     }
 
+    func testParseRejectsImpossibleCountsBeforeAllocation() {
+        var blob = Data([0x53, 0x5A, 0x52, 0x47])
+        func append(_ value: UInt32) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { blob.append(contentsOf: $0) }
+        }
+        append(2)                   // version
+        append(UInt32.max)          // forged node count
+        append(0)                   // edges
+        append(0)                   // geoms
+        append(0)                   // geom bytes
+        append(0)                   // names
+        append(0)                   // name bytes
+
+        XCTAssertThrowsError(try SZRGGraph.parse(blob))
+    }
+
     func testAStarPicksFasterNamedRoute() throws {
         let blob = Self.buildGridBlob()
         let graph = try SZRGGraph.parse(blob)

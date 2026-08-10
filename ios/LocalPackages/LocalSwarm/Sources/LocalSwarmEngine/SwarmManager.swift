@@ -53,6 +53,7 @@ public final class SwarmManager: ObservableObject {
         let manifest: SwarmManifest
         let files: [SwarmFile]
         var swarm: DiscoveredSwarm
+        let pin: String?
     }
     private var downloadParams: [String: DownloadParams] = [:]
 
@@ -377,14 +378,14 @@ public final class SwarmManager: ObservableObject {
     /// manifest, then downloads every file. Use this when the UI doesn't let the
     /// user pick a subset (the manifest fetch for a big swarm is otherwise a
     /// silent wait).
-    public func receive(_ swarm: DiscoveredSwarm) {
+    public func receive(_ swarm: DiscoveredSwarm, pin: String? = nil) {
         guard statusByID[swarm.swarmID] == nil,
               !pendingReceives.contains(where: { $0.swarmID == swarm.swarmID }) else { return }
         pendingReceives.append(PendingReceive(swarmID: swarm.swarmID, name: swarm.name))
         Task { @MainActor in
-            let manifest = await fetchManifest(for: swarm)
+            let manifest = await fetchManifest(for: swarm, pin: pin)
             if let manifest {
-                startDownload(manifest: manifest, selecting: [], from: swarm)
+                startDownload(manifest: manifest, selecting: [], from: swarm, pin: pin)
             }
             // Cleared after startDownload has seeded its initial row, so the
             // "Connecting…" entry hands off to the transfer row with no gap.
@@ -423,7 +424,6 @@ public final class SwarmManager: ObservableObject {
         let indices = files.isEmpty
             ? Array(0..<manifest.chunkCount)
             : manifest.chunkIndices(for: files).sorted()
-        downloadManifests[manifest.swarmID] = manifest // for completedFileURLs(swarmID:)
         let directory = directory(for: manifest)
         let sources = swarm.peers(for: transport)
         let selectedBytes = files.isEmpty
@@ -440,8 +440,10 @@ public final class SwarmManager: ObservableObject {
             return
         }
 
+        downloadManifests[manifest.swarmID] = manifest // for completedFileURLs(swarmID:)
         suppressedSwarmIDs.remove(manifest.swarmID)
-        downloadParams[manifest.swarmID] = DownloadParams(manifest: manifest, files: files, swarm: swarm)
+        downloadParams[manifest.swarmID] = DownloadParams(
+            manifest: manifest, files: files, swarm: swarm, pin: pin)
         // Stop advertising app-wide while this download runs (AWDL role conflict).
         activeDownloads.insert(manifest.swarmID)
         updateAdvertisingForDownloads()
@@ -500,6 +502,8 @@ public final class SwarmManager: ObservableObject {
                     // and showed a row — undo both so hosting stays discoverable
                     // and the failed transfer doesn't linger.
                     self.activeDownloads.remove(manifest.swarmID)
+                    self.downloadManifests[manifest.swarmID] = nil
+                    self.downloadParams[manifest.swarmID] = nil
                     self.updateAdvertisingForDownloads()
                     self.statusByID[manifest.swarmID] = nil
                     self.recomputeTransfers()
@@ -540,7 +544,11 @@ public final class SwarmManager: ObservableObject {
             lastError = "No source nearby to resume “\(params.manifest.name)”."
             return
         }
-        startDownload(manifest: params.manifest, selecting: params.files, from: params.swarm)
+        startDownload(
+            manifest: params.manifest,
+            selecting: params.files,
+            from: params.swarm,
+            pin: params.pin)
     }
 
     /// Stops a download (active or paused) and deletes its partial data. A
@@ -555,6 +563,7 @@ public final class SwarmManager: ObservableObject {
         let manifest = downloadParams[swarmID]?.manifest
         downloadSessions[swarmID] = nil
         downloadParams[swarmID] = nil
+        downloadManifests[swarmID] = nil
         statusByID[swarmID] = nil
         activeDownloads.remove(swarmID)
         updateAdvertisingForDownloads()
@@ -573,7 +582,11 @@ public final class SwarmManager: ObservableObject {
     public func runBenchmark(manifest: SwarmManifest, selecting files: [SwarmFile], from swarm: DiscoveredSwarm) {
         guard !benchmarkRunning else { return }
         let indices = files.isEmpty ? Array(0..<manifest.chunkCount) : manifest.chunkIndices(for: files).sorted()
-        let total = indices.reduce(Int64(0)) { $0 + Int64(manifest.length(ofChunk: $1)) }
+        let chunkLengths = manifest.chunkLayout().map(\.length)
+        let total = indices.reduce(Int64(0)) { result, index in
+            guard index >= 0, index < chunkLengths.count else { return result }
+            return result + Int64(chunkLengths[index])
+        }
         let order: [Transport] = [.tcp, .quic].filter { swarm.availableTransports.contains($0) }
         guard !order.isEmpty else { lastError = "No sources available to benchmark."; return }
 

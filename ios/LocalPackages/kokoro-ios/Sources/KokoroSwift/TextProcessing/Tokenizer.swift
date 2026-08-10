@@ -15,7 +15,7 @@ final class Tokenizer {
   ///   - phonemizedText: Phonemized text to tokenize
   /// - Returns: Tokenized array that can then be passed to TTS system
   static func tokenize(phonemizedText text: String) -> [Int] {
-    guard let vocab = KokoroConfig.config?.vocab else { return [] }
+    let vocab = KokoroConfig.vocabulary()
     // Single fused pass — the old map→filter→map chain walked the string
     // three times and still needed the per-Character String key.
     var out: [Int] = []

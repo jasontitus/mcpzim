@@ -190,7 +190,7 @@ public struct SZRCCell: Sendable {
         let start = Int(geomOffsets[gi])
         let end = Int(geomOffsets[gi + 1])
         if end <= start { return [] }
-        guard start >= 0, end <= geomBlob.count else {
+        guard start >= 0, end <= geomBlob.count, end - start >= 8 else {
             throw SZCIError.truncated("geom window [\(start)..\(end)] exceeds blob \(geomBlob.count)")
         }
         return try geomBlob.withUnsafeBufferPointer { bp -> [(lat: Double, lon: Double)] in
@@ -276,10 +276,15 @@ public actor SpatialGraph {
         guard let local = cell.localIdx(for: UInt32(globalNodeIdx)) else { return [] }
         let eStart = Int(cell.cellAdj[local])
         let eEnd = Int(cell.cellAdj[local + 1])
+        guard eStart >= 0, eStart <= eEnd, eEnd <= cell.edgeCount else {
+            throw SZCIError.truncated(
+                "cell adjacency [\(eStart)..\(eEnd)] exceeds \(cell.edgeCount) edges")
+        }
         var out: [SpatialEdge] = []
         out.reserveCapacity(eEnd - eStart)
         for ei in eStart..<eEnd {
             let base = ei * 5
+            guard cell.edges[base] < UInt32(index.numNodes) else { continue }
             out.append(SpatialEdge(
                 target: cell.edges[base],
                 speedDist: cell.edges[base + 1],
@@ -506,6 +511,13 @@ public extension SZRCCell {
             }
             try requireBytes(edgeCount, perEntry: 20, remaining: raw.count - off,
                              label: "cell edges")
+            guard cellAdj.first == 0,
+                  cellAdj.last == UInt32(edgeCount),
+                  zip(cellAdj, cellAdj.dropFirst()).allSatisfy({ $0 <= $1 }),
+                  cellAdj.allSatisfy({ $0 <= UInt32(edgeCount) })
+            else {
+                throw SZCIError.truncated("invalid cell adjacency offsets")
+            }
             var edges = [UInt32](); edges.reserveCapacity(edgeCount * 5)
             for _ in 0..<(edgeCount * 5) {
                 edges.append(SZRGInt.readUInt32LE(raw, at: off))

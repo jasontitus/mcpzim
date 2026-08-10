@@ -778,10 +778,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // output verbatim.
                     var decodedSoFar = ""
                     var tokenIDs: [Int32] = []
-                    // Parallel Int copy for the tokenizer API — the old
-                    // `tokenIDs.map { Int($0) }` allocated a fresh n-element
-                    // array on every generated token.
-                    var tokenIDsInt: [Int] = []
+                    var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
                     // Cache the length of `tokenIDs` at the point where
                     // ChatSession will cut the assistant turn (either a
                     // `<tool_call|>` closing marker, or the stop marker
@@ -797,20 +794,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     chunkLoop: for await event in tokenStream {
                         guard case .token(let id) = event else { continue }
                         tokenIDs.append(Int32(id))
-                        tokenIDsInt.append(Int(id))
-                        let fullDecoded = tokenizer.decode(
-                            tokenIds: tokenIDsInt,
-                            skipSpecialTokens: false)
-                        let newText: String
-                        if fullDecoded.hasPrefix(decodedSoFar) {
-                            newText = String(fullDecoded.dropFirst(decodedSoFar.count))
-                        } else {
-                            // Tokenizer rewrote earlier spans (rare with
-                            // BPE). Reset the diff anchor so we don't
-                            // miss content.
-                            newText = fullDecoded
-                        }
-                        decodedSoFar = fullDecoded
+                        detokenizer.append(token: Int(id))
+                        guard let newText = detokenizer.next() else { continue }
+                        decodedSoFar += newText
                         if newText.isEmpty { continue }
                         if !firstChunkSeen {
                             let now = Date()

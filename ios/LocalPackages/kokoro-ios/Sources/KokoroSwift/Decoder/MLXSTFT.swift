@@ -133,7 +133,7 @@ func mlxIstft(
 
   let xTransposed = x.transposed(1, 0)
   let t = (xTransposed.shape[0] - 1) * hopLen + winLen
-  let windowModLen = 20 / 5
+  let windowModLen = max(1, winLen / hopLen)
 
   let wSquared = w * w
   let totalWsquared = MLX.concatenated(Array(repeating: wSquared, count: t / winLen))

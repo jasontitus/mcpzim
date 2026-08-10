@@ -72,11 +72,21 @@ public enum AnswerAttribution {
             for (i, ptoks) in passageTokens.enumerated() {
                 var covered = 0.0
                 var total = 0.0
+                var hasUnmatchedNumeric = false
                 for (token, weight) in tokens {
                     total += weight
-                    if ptoks.contains(token) { covered += weight }
+                    if ptoks.contains(token) {
+                        covered += weight
+                    } else if weight > 1 {
+                        hasUnmatchedNumeric = true
+                    }
                 }
-                let score = total > 0 ? covered / total : 0
+                // A passage must contain every numeric claim verbatim. A high
+                // noun overlap must not bless an invented date, count, rank,
+                // or measurement.
+                let lexicalScore = total > 0 ? covered / total : 0
+                let score = hasUnmatchedNumeric
+                    ? min(lexicalScore, supportThreshold.nextDown) : lexicalScore
                 if score > bestScore {
                     bestScore = score
                     bestIdx = i
@@ -143,7 +153,7 @@ public enum AnswerAttribution {
             let w = String(raw)
             if w.allSatisfy(\.isNumber) {
                 // Years/counts/measurements — the highest-signal tokens.
-                if w.count >= 2 { out.append((w, 3)) }
+                out.append((w, 3))
                 continue
             }
             guard w.count >= 3, !functionWords.contains(w) else { continue }
@@ -157,7 +167,7 @@ public enum AnswerAttribution {
         for raw in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
             let w = String(raw)
             if w.allSatisfy(\.isNumber) {
-                if w.count >= 2 { set.insert(w) }
+                set.insert(w)
                 continue
             }
             guard w.count >= 3 else { continue }

@@ -89,7 +89,7 @@ final class DurationEncoder {
     x = MLX.concatenated([x, s], axis: -1)
     
     // Step 4: Apply mask to zero out padding positions
-    x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(1, 0, 2), MLXArray.zeros(like: x), x)
+    x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(1, 0, 2), 0.0, x)
     
     // Step 5: Transpose to [batch, dModel + styDim, seq_len] for layer processing
     x = x.transposed(1, 2, 0)
@@ -106,7 +106,7 @@ final class DurationEncoder {
         x = MLX.concatenated([x, s.transposed(1, 2, 0)], axis: 1)
         
         // Reapply mask to maintain padding
-        x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(0, 2, 1), MLXArray.zeros(like: x), x)
+        x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(0, 2, 1), 0.0, x)
         
       // Handle LSTM blocks
       } else if let lstm = block as? LSTM {

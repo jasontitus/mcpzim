@@ -115,6 +115,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     private var model: OpaquePointer?
     private var ctx: OpaquePointer?
     private var vocab: OpaquePointer?
+    private static let defaultSequenceIDs: [llama_seq_id] = [0]
 
     /// KV-cache mirror for follow-up LCP matching. Analogous to
     /// `Gemma4Provider.cachedTokens`. llama.cpp itself keeps the cache
@@ -133,8 +134,16 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     public var debugSink: (@Sendable (String) -> Void)?
 
     /// Uniform cross-runtime stats for the last completed generate().
-    /// Written at the same point as the `perf complete` log line.
-    public private(set) var lastGenerationStats: GenerationStats?
+    /// Generation writes this from a detached worker while ChatSession reads
+    /// it on the main actor, so use a dedicated lock rather than relying on
+    /// the model lock (which generation already holds for the whole turn).
+    private let generationStatsLock = NSLock()
+    private var storedGenerationStats: GenerationStats?
+    public var lastGenerationStats: GenerationStats? {
+        generationStatsLock.lock()
+        defer { generationStatsLock.unlock() }
+        return storedGenerationStats
+    }
 
     // MARK: - Init
 
@@ -766,7 +775,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                         &batch,
                         token: prefixTokens[j],
                         pos: pos,
-                        seqIds: [0],
+                        seqIds: Self.defaultSequenceIDs,
                         logits: j == prefixTokens.count - 1)
                     pos += 1
                 }
@@ -1090,7 +1099,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                 let isFinalOfPrompt = (j == tokens.count - 1)
                 Self.batchAdd(
                     &batch, token: tokens[j], pos: pos,
-                    seqIds: [0], logits: isFinalOfPrompt)
+                    seqIds: Self.defaultSequenceIDs, logits: isFinalOfPrompt)
                 pos += 1
             }
             let rc = llama_decode(ctx, batch)
@@ -1222,7 +1231,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             batch.n_tokens = 0
             Self.batchAdd(
                 &batch, token: id, pos: pos,
-                seqIds: [0], logits: true)
+                seqIds: Self.defaultSequenceIDs, logits: true)
             pos += 1
             if llama_decode(ctx, batch) != 0 {
                 throw LlamaCppError.custom("llama_decode step failed at pos=\(pos)")
@@ -1252,7 +1261,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             requestFinished - requestStarted, stopReason,
             Self.thermalStateLabel(), memoryFinished,
             memoryFinished - memoryStarted))
-        lastGenerationStats = GenerationStats(
+        let completedStats = GenerationStats(
             runtime: "llamacpp", modelID: id,
             promptTokens: tokens.count, reusedTokens: lcp,
             prefillSeconds: prefillSeconds, ttftSeconds: ttft,
@@ -1261,6 +1270,9 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             totalSeconds: requestFinished - requestStarted,
             peakFootprintMB: max(prefillMemory, memoryFinished),
             stopReason: stopReason)
+        generationStatsLock.lock()
+        storedGenerationStats = completedStats
+        generationStatsLock.unlock()
         log.notice("generate: \(newTokens) new tokens")
     }
 

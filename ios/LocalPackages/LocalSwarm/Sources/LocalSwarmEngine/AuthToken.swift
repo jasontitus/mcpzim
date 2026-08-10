@@ -8,7 +8,7 @@ import CryptoKit
 /// channel. Byte-for-byte identical to peer-go's AuthToken.
 public func swarmAuthToken(swarmID: String, pin: String) -> String {
     let digest = SHA256.hash(data: Data((swarmID + ":" + pin).utf8))
-    return digest.map { String(format: "%02x", $0) }.joined()
+    return Hashing.sha256Hex(of: digest)
 }
 
 extension String {

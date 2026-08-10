@@ -33,8 +33,10 @@ and runtime state.
 
 This is an experimental iOS path and must stay behind physical-device
 memory/liveness testing. The runtime is pinned to Prism commit `62061f9`
-(`prism-b9591`) because upstream llama.cpp does not contain Bonsai's custom
-low-bit kernels.
+(`prism-b9591`), the exact build used for the measured phone results. Stock
+llama.cpp now supports Bonsai Q1, but it has not yet beaten this pin in a
+controlled app benchmark, and the app's Mac ternary GGUF still uses Prism's
+fork-only group-128 Q2 format.
 
 Official model/runtime references:
 
@@ -318,7 +320,7 @@ the same native tool-role transcript format used at inference.
 QVAC Fabric is not currently a drop-in Bonsai training path. Its published
 fine-tuning architectures list Qwen 3, Gemma 3, and BitNet, while Bonsai's
 GGUF identifies as `qwen35`. Its documented quantization choices also do not
-include Bonsai's custom Q1_0_g128 representation.
+include an explicitly supported Bonsai Q1 export target.
 
 If the fine-tuning gate is crossed, first ask QVAC to confirm all three items
 before spending a training run:

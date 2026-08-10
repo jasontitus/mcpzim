@@ -564,6 +564,12 @@ public actor DefaultZimService: ZimService {
             .joined(separator: " ")
     }
 
+    private static let wikipediaLanguagePrefixes: Set<String> = [
+        "ar", "cs", "da", "de", "el", "en", "es", "fi", "fr", "he",
+        "hi", "hu", "id", "it", "ja", "ko", "nl", "no", "pl", "pt",
+        "ro", "ru", "sv", "th", "tr", "uk", "vi", "zh",
+    ]
+
     public func articleByTitle(title: String, zim: String?, section: String? = "lead")
         async throws -> (zim: String, path: String, title: String, section: ArticleSection)
     {
@@ -571,10 +577,10 @@ public actor DefaultZimService: ZimService {
         let cleanedTitle: String = {
             if let r = title.range(of: ":"), r.lowerBound != title.startIndex {
                 let prefix = String(title[..<r.lowerBound])
-                // Only strip if the prefix is a 2–3 char language code.
-                if (2...3).contains(prefix.count),
-                   prefix.allSatisfy({ $0.isLetter })
-                {
+                // Strip only a known lowercase Wikipedia language tag. A
+                // generic 2–3 letter rule corrupts legitimate titles such as
+                // "TV: The Movie" and "US: The Book".
+                if Self.wikipediaLanguagePrefixes.contains(prefix) {
                     return String(title[r.upperBound...])
                 }
             }

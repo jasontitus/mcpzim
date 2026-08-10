@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "tiltastech-zimfo"
+  },
+  "targets": {
+    "tiltastech-zimfo": {
+      "hosting": {
+        "zimfo": [
+          "tiltastech-zimfo"
+        ]
+      }
+    }
+  }
+}

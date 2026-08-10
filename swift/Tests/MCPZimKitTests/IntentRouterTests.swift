@@ -59,6 +59,36 @@ final class IntentRouterTests: XCTestCase {
         XCTAssertEqual(i?.args["place"], .string("san francisco"))
     }
 
+    func testFactualCorrectionNeverRoutesAsNamedPlace() {
+        let query = "No, I am wanting to know how many people died during "
+            + "the Japanese attack in World War II"
+        XCTAssertTrue(IntentRouter.isConversationalKnowledgeRequest(query))
+        XCTAssertNotEqual(
+            IntentRouter.classify(query)?.toolName, "near_named_place")
+    }
+
+    func testPearlHarborAttackSpokenAliasUsesEventArticle() {
+        for query in [
+            "Let's talk about the Japanese attack on Pearl Harbor",
+            "Tell me about the Pearl Harbor attack",
+        ] {
+            let intent = IntentRouter.classify(query)
+            XCTAssertTrue(
+                intent?.toolName == "discuss_article"
+                    || intent?.toolName == "article_overview", query)
+            XCTAssertEqual(
+                intent?.args["title"], .string("attack on pearl harbor"), query)
+        }
+    }
+
+    func testPearlHarborDeathFactoidUsesEventArticleWithoutToolLoop() {
+        let intent = IntentRouter.classify(
+            "How many people died in Pearl Harbor")
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(
+            intent?.args["title"], .string("attack on pearl harbor"))
+    }
+
     // MARK: - "continue" / "keep reading" paging
 
     func testContinueReadingPositives() {
@@ -1319,6 +1349,17 @@ final class IntentRouterTests: XCTestCase {
             ["Russian Civil War"])
         XCTAssertTrue(ArticleHeuristics.namedEventArticleCandidates(
             sections, question: "When was the revolution?").isEmpty)
+    }
+
+    func testPearlHarborCasualtyQuestionPrefersDedicatedAttackArticle() {
+        let sections = [ArticleSection(
+            title: "Naval presence", level: 2,
+            text: "Pearl Harbor was attacked by the Imperial Japanese Navy "
+                + "during World War II. A later shipyard shooting occurred in 2019.")]
+        XCTAssertEqual(ArticleHeuristics.namedEventArticleCandidates(
+            sections,
+            question: "How many people died in the Japanese attack?"),
+            ["Attack on Pearl Harbor"])
     }
 }
 

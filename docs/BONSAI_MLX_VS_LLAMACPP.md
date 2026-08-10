@@ -86,9 +86,12 @@ with the experiment once llama.cpp won the A/B.
 
 ## Dependency state after this work
 
-- **llama.cpp:** PrismML fork xcframework `prism-b9591` — checked their
-  HEAD (2026-07-18): only x86/CUDA/CI commits since our pin; Metal
-  kernels unchanged, no rebuild needed.
+- **llama.cpp:** PrismML fork xcframework `prism-b9591` — rechecked the
+  Prism branch on 2026-08-10. Its eight commits since our pin affect
+  CUDA, x86, server behavior, packaging, and DSpark integrated-GPU
+  selection; its Metal kernels are unchanged. Stock llama.cpp now supports
+  Bonsai Q1 and is worth a controlled A/B once the machine is idle, but the
+  existing Mac ternary GGUF uses Prism's fork-only group-128 Q2 format.
 - **mlx-swift:** back on upstream (`.upToNextMinor("0.31.3")` /
   kokoro-ios `from: "0.29.1"`). The Prism fork pin used for the q1-mlx
   leg (revision e40e0a57a6f7ad08dc3fd87ad598a7aa6407d230) was retired

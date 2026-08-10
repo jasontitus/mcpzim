@@ -303,4 +303,14 @@ final class PlacesPayloadTests: XCTestCase {
         XCTAssertFalse(placesToolNames.contains("plan_driving_route"))
         XCTAssertFalse(placesToolNames.contains("search"))
     }
+
+    func testMapGateRejectsInstructionProseAsPlaceKind() {
+        let malformed = #"{"kinds":["i am wanting to know how many people died during the japanese attack"],"place":"the world war ii","radius_km":5}"#
+        XCTAssertFalse(placesToolArgumentsAreRenderable(
+            toolName: "near_named_place", arguments: malformed))
+
+        let valid = #"{"kinds":["museum","memorial"],"place":"pearl harbor","radius_km":5}"#
+        XCTAssertTrue(placesToolArgumentsAreRenderable(
+            toolName: "near_named_place", arguments: valid))
+    }
 }

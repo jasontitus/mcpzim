@@ -440,6 +440,8 @@ private struct VoiceModelSection: View {
     @State private var selectedBackend = TTSBackendPreference.current
     @State private var selectedVoice: String = KokoroVoicePreference.current
     @State private var isDownloaded: Bool = KokoroAssets.isDownloaded
+    @State private var supertonicBytesOnDisk: Int64?
+    @State private var kokoroBytesOnDisk: Int64?
     #if canImport(FluidAudio)
     @State private var selectedSupertonicVoice = SupertonicVoicePreference.current
     #endif
@@ -460,6 +462,9 @@ private struct VoiceModelSection: View {
         } footer: {
             Text("Engine and voice changes apply the next time voice chat starts.")
         }
+        .task(id: selectedBackend) {
+            await refreshDiskUsage()
+        }
     }
 
     @ViewBuilder
@@ -477,7 +482,7 @@ private struct VoiceModelSection: View {
             HStack {
                 Text("Size on disk")
                 Spacer()
-                Text(formatBytes(Supertonic3Assets.currentBytesOnDisk))
+                Text(supertonicBytesOnDisk.map(formatBytes) ?? "Calculating…")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -503,7 +508,7 @@ private struct VoiceModelSection: View {
         HStack {
             Text("Size on disk")
             Spacer()
-            Text(formatBytes(KokoroAssets.currentBytesOnDisk)
+            Text((kokoroBytesOnDisk.map(formatBytes) ?? "Calculating…")
                  + " / " + formatBytes(KokoroAssets.totalExpectedBytes))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -522,6 +527,7 @@ private struct VoiceModelSection: View {
                 Button(role: .destructive) {
                     try? KokoroAssets.deleteAll()
                     isDownloaded = KokoroAssets.isDownloaded
+                    kokoroBytesOnDisk = 0
                 } label: {
                     Label("Remove Kokoro voice", systemImage: "trash")
                 }
@@ -530,6 +536,7 @@ private struct VoiceModelSection: View {
                     Task {
                         await downloader.downloadIfNeeded()
                         isDownloaded = KokoroAssets.isDownloaded
+                        await refreshDiskUsage()
                     }
                 } label: {
                     Label("Download Kokoro voice (~\(formatBytes(KokoroAssets.totalExpectedBytes)))",
@@ -560,11 +567,30 @@ private struct VoiceModelSection: View {
             .foregroundStyle(.secondary)
     }
 
-    private func formatBytes(_ b: Int64) -> String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useMB, .useGB]
-        f.countStyle = .file
-        return f.string(fromByteCount: b)
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        Self.byteFormatter.string(fromByteCount: bytes)
+    }
+
+    @MainActor
+    private func refreshDiskUsage() async {
+        #if canImport(FluidAudio)
+        let sizes = await Task.detached(priority: .utility) {
+            (Supertonic3Assets.currentBytesOnDisk, KokoroAssets.currentBytesOnDisk)
+        }.value
+        supertonicBytesOnDisk = sizes.0
+        kokoroBytesOnDisk = sizes.1
+        #else
+        kokoroBytesOnDisk = await Task.detached(priority: .utility) {
+            KokoroAssets.currentBytesOnDisk
+        }.value
+        #endif
     }
 }
 

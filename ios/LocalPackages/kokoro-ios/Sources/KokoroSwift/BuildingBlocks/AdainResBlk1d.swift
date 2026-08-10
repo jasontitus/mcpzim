@@ -119,9 +119,8 @@ class AdainResBlk1d {
       }
       x = MLX.padded(x, widths: [IntOrPair([0, 0]), IntOrPair([1, 0]), IntOrPair([0, 0])])
     }
-    x = MLX.swappedAxes(x, 2, 1)
-
-    x = MLX.swappedAxes(x, 2, 1)
+    // `x` is already channels-last after the upsample/pool path. The former
+    // pair of identical axis swaps canceled out while adding two graph nodes.
     x = conv1(x, conv: MLX.conv1d)
     x = MLX.swappedAxes(x, 2, 1)
 

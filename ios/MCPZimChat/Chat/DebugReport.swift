@@ -110,7 +110,7 @@ extension ChatSession {
     /// the user can confirm to me which report to pull ("crappy
     /// results, hash AB12").
     @discardableResult
-    public func emitDebugReport() -> String {
+    public func emitDebugReport() async -> String {
         let report = SerializedDebugReport(
             generatedAt: Date(),
             appBuild: Bundle.main.infoDictionary?[
@@ -141,17 +141,21 @@ extension ChatSession {
                 )
             }
         )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let json = (try? encoder.encode(report)) ?? Data()
-        let hash = shortHash(json)
+        // Clear the captured entries before suspending so any new log rows
+        // produced while encoding become part of the next report.
+        debugEntries.removeAll()
+        let (json, hash) = await Task.detached(priority: .utility) {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let json = (try? encoder.encode(report)) ?? Data()
+            return (json, Self.shortHash(json))
+        }.value
 
         // Base64 + the chunked os_log loop scale with conversation size
         // (a long session with tool payloads can exceed the 250 ms
         // main-thread hang bar on the user's "send report" tap) — run
-        // them detached at utility QoS. The encode above stays sync
-        // because the returned hash derives from it; the log lines
-        // remain ordered because one task emits them all.
+        // them detached at utility QoS as well; one task emits all lines so
+        // their ordering remains stable.
         Task.detached(priority: .utility) { [json, hash] in
             let b64 = json.base64EncodedString()
             let chunkSize = 500
@@ -204,10 +208,6 @@ extension ChatSession {
         }
         #endif
 
-        // Clear the debug log so the next bad query produces a clean
-        // report. We keep the messages themselves — the user may want
-        // to retry within the same conversation.
-        debugEntries.removeAll()
         return hash
     }
 
@@ -271,7 +271,7 @@ extension ChatSession {
     }
     #endif
 
-    private func shortHash(_ data: Data) -> String {
+    private nonisolated static func shortHash(_ data: Data) -> String {
         #if canImport(CryptoKit)
         let digest = SHA256.hash(data: data)
         return digest.prefix(4)

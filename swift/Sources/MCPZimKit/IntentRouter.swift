@@ -164,6 +164,21 @@ public enum IntentRouter {
             return factoid
         }
 
+        // Pearl Harbor casualty questions are a high-confidence named-event
+        // factoid, not a request about every death at the modern naval base.
+        // Route straight to the event article so the extractive death-count
+        // path can quote its casualty sentence. This avoids a full 12-tool
+        // prefill and prevents the model from inventing a breakdown around an
+        // otherwise correct total (TestFlight build 20260810203059).
+        if lower.contains("pearl harbor"),
+           ["died", "dead", "death", "killed", "fatalit", "casualt"]
+            .contains(where: { lower.contains($0) })
+        {
+            return DirectIntent(toolName: "article_overview", args: [
+                "title": .string("attack on pearl harbor"),
+            ])
+        }
+
         // Context-aware fast path. When the host supplies a conversation
         // focus and this turn reads as a follow-up that BINDS to a known
         // entity ("who built it", "the second one", "tell me more"), resolve
@@ -350,10 +365,16 @@ public enum IntentRouter {
             let skipLeadingWords: Set<String> = [
                 "what", "where", "when", "why", "how", "who",
                 "tell", "show", "find", "can", "could", "would",
-                "should", "is", "are", "do", "does", "did"
+                "should", "is", "are", "do", "does", "did",
+                // First-person prose here is normally a factual request,
+                // not a POI category. Real TestFlight crash 2026-08-10:
+                // “I am wanting to know how many people died … in World
+                // War II” became a 12-word `kinds` value and launched a map.
+                "i", "i'm", "im", "we", "no", "please"
             ]
             let firstWord = lower.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
-            if !skipLeadingWords.contains(firstWord) {
+            if !skipLeadingWords.contains(firstWord),
+               !isConversationalKnowledgeRequest(text) {
                 return DirectIntent(toolName: "near_named_place", args: [
                     "place":     .string(place),
                     "kinds":     .array([.string(kind)]),
@@ -393,7 +414,7 @@ public enum IntentRouter {
             ]
             if !subject.isEmpty, !navPronouns.contains(firstWord) {
                 return DirectIntent(toolName: "discuss_article", args: [
-                    "title": .string(subject)
+                    "title": .string(canonicalArticleSubject(subject))
                 ])
             }
         }
@@ -535,7 +556,8 @@ public enum IntentRouter {
             // `article_overview(title: entity)` succeeds and its
             // `pickOverview` already prioritises the classic facet
             // sections ("early life", "career", …).
-            let title = Self.stripPossessiveFacet(from: reducedSubject)
+            let title = canonicalArticleSubject(
+                Self.stripPossessiveFacet(from: reducedSubject))
             return DirectIntent(toolName: "article_overview", args: [
                 "title": .string(title)
             ])
@@ -851,23 +873,23 @@ public enum IntentRouter {
     /// life" → "vladimir putin". Leaves the subject untouched unless
     /// the trailing phrase is a whitelisted facet.
     static func stripPossessiveFacet(from subject: String) -> String {
-        let lower = subject.lowercased()
         // "<entity>'s <facet>"
-        if let r = lower.range(of: "'s ", options: .backwards) {
-            let facet = String(lower[r.upperBound...])
+        if let r = subject.range(
+            of: "'s ", options: [.backwards, .caseInsensitive])
+        {
+            let facet = String(subject[r.upperBound...]).lowercased()
                 .trimmingCharacters(in: .whitespaces)
             if possessiveFacets.contains(facet) {
-                return String(subject[..<subject.index(
-                    subject.startIndex,
-                    offsetBy: lower.distance(from: lower.startIndex, to: r.lowerBound)
-                )]).trimmingCharacters(in: .whitespaces)
+                return String(subject[..<r.lowerBound])
+                    .trimmingCharacters(in: .whitespaces)
             }
         }
         // "<entity> and (his|her|its|their) <facet>"
-        if let m = match(lower, pattern:
+        if let m = match(subject, pattern:
             #"^(.+?)\s+and\s+(?:his|her|its|their)\s+(.+)$"#),
            m.count >= 2,
-           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces))
+           possessiveFacets.contains(
+               m[1].lowercased().trimmingCharacters(in: .whitespaces))
         {
             let entityLen = m[0].trimmingCharacters(in: .whitespaces).count
             return String(subject.prefix(entityLen))
@@ -885,9 +907,10 @@ public enum IntentRouter {
     public static func stripPossessiveFacetAggressive(from subject: String) -> String {
         let conservative = stripPossessiveFacet(from: subject)
         if conservative != subject { return conservative }
-        if let m = match(subject.lowercased(), pattern: #"^(.+?)s\s+(.+)$"#),
+        if let m = match(subject, pattern: #"^(.+?)s\s+(.+)$"#),
            m.count >= 2,
-           possessiveFacets.contains(m[1].trimmingCharacters(in: .whitespaces)),
+           possessiveFacets.contains(
+               m[1].lowercased().trimmingCharacters(in: .whitespaces)),
            m[0].count >= 4
         {
             return m[0].trimmingCharacters(in: .whitespaces)
@@ -987,6 +1010,26 @@ public enum IntentRouter {
         return inHand.contains { name in
             titleTokens.isSubset(of: Set(name.split(separator: " ").map(String.init)))
         }
+    }
+
+    /// Normalize a few high-confidence spoken event aliases whose literal
+    /// wording otherwise resolves to a similarly named side article. Keep the
+    /// list deliberately tiny: this runs before Wikipedia disambiguation and
+    /// therefore must never guess on a merely similar title.
+    private static func canonicalArticleSubject(_ raw: String) -> String {
+        let subject = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = subject.lowercased().replacingOccurrences(
+            of: #"^the\s+"#, with: "", options: .regularExpression)
+        let pearlHarborAliases: Set<String> = [
+            "japanese attack on pearl harbor",
+            "japanese attack at pearl harbor",
+            "pearl harbor attack",
+            "attack at pearl harbor",
+            "battle of pearl harbor",
+        ]
+        return pearlHarborAliases.contains(normalized)
+            ? "attack on pearl harbor"
+            : subject
     }
 
     /// True when the user is asking to keep reading the article currently
@@ -1129,6 +1172,21 @@ public enum IntentRouter {
             "talk about something else", "move on", "forget it",
         ]
         return exits.contains(t)
+    }
+
+    /// True when a sentence is shaped like a request for knowledge rather
+    /// than a compact POI category. This is also a defense-in-depth signal for
+    /// hosts with a pinned article: a correction containing a preposition must
+    /// not eject the conversation into StreetZIM routing.
+    public static func isConversationalKnowledgeRequest(_ raw: String) -> Bool {
+        var text = raw.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        text = text.replacingOccurrences(
+            of: #"^(?:no|nope|wait|actually|sorry)[,.:;\s]+"#,
+            with: "", options: .regularExpression)
+        let opener = #"^(?:what|which|who|when|where|why|how)\b|^(?:i|we)\s+(?:am\s+|are\s+)?(?:want(?:ing)?|trying|asking)\s+to\s+(?:know|learn|understand|find\s+out)\b|^(?:can|could|would)\s+you\s+(?:tell|explain|look\s+up|find\s+out)\b"#
+        return text.range(of: opener, options: .regularExpression) != nil
     }
 
     /// Whether the speaker explicitly presents a fresh subject, rather than
@@ -1702,15 +1760,21 @@ public enum IntentRouter {
 
         let sentences = factoidSentences(text)
         guard !sentences.isEmpty else { return nil }
+        let verbRegex = RegexCache.shared.compiled(
+            #"\b(?:founded|established|formed|created|incorporated)\b"#,
+            options: [.caseInsensitive])
+        let yearRegex = RegexCache.shared.compiled(
+            #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#)
+        func contains(_ regex: NSRegularExpression?, in string: String) -> Bool {
+            guard let regex else { return false }
+            return regex.firstMatch(
+                in: string, range: NSRange(string.startIndex..., in: string)) != nil
+        }
         func hasVerb(_ s: String) -> Bool {
-            s.range(
-                of: #"\b(?:founded|established|formed|created|incorporated)\b"#,
-                options: [.regularExpression, .caseInsensitive]
-            ) != nil
+            contains(verbRegex, in: s)
         }
         func hasYear(_ s: String) -> Bool {
-            s.range(of: #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#,
-                    options: .regularExpression) != nil
+            contains(yearRegex, in: s)
         }
 
         for i in sentences.indices {
@@ -1760,21 +1824,35 @@ public enum IntentRouter {
         guard !text.isEmpty else { return nil }
 
         let sentences = factoidSentences(text)
-        func hasYear(_ sentence: String) -> Bool {
-            sentence.range(
-                of: #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#,
-                options: .regularExpression
-            ) != nil
+        let yearRegex = RegexCache.shared.compiled(
+            #"\b(?:1[0-9]{3}|20[0-9]{2})\b"#)
+        let foundingRegex = RegexCache.shared.compiled(
+            #"\b(?:founded|founding\s+date)\b"#, options: [.caseInsensitive])
+        let statehoodRegex = RegexCache.shared.compiled(
+            #"\b(?:admitted\s+to\s+(?:the\s+)?union|became\s+(?:a|the)\s+state|statehood)\b"#,
+            options: [.caseInsensitive])
+        let arrivalRegex = RegexCache.shared.compiled(
+            #"\b(?:arrived|landed)\b"#, options: [.caseInsensitive])
+        let settlementRegex = RegexCache.shared.compiled(
+            #"\bsettlement\b"#, options: [.caseInsensitive])
+        let namedRegex = RegexCache.shared.compiled(
+            #"\b(?:named|moved|established|founded)\b"#, options: [.caseInsensitive])
+        let incorporationRegex = RegexCache.shared.compiled(
+            #"\b(?:incorporated|re-incorporated)\b"#, options: [.caseInsensitive])
+        let placeTypeRegex = RegexCache.shared.compiled(
+            #"\b(?:city|town)\b"#, options: [.caseInsensitive])
+        func contains(_ regex: NSRegularExpression?, in string: String) -> Bool {
+            guard let regex else { return false }
+            return regex.firstMatch(
+                in: string, range: NSRange(string.startIndex..., in: string)) != nil
         }
-        func matches(_ pattern: String, _ sentence: String) -> Bool {
-            sentence.range(
-                of: pattern, options: [.regularExpression, .caseInsensitive]
-            ) != nil
+        func hasYear(_ sentence: String) -> Bool {
+            contains(yearRegex, in: sentence)
         }
 
         // Prefer an explicit founding statement in the same sentence.
         for sentence in sentences where hasYear(sentence) {
-            if matches(#"\b(?:founded|founding\s+date)\b"#, sentence) {
+            if contains(foundingRegex, in: sentence) {
                 return sentence
             }
         }
@@ -1783,8 +1861,7 @@ public enum IntentRouter {
         // an earlier treaty may describe how the territory was acquired but
         // not when the state came into existence.
         for sentence in sentences where hasYear(sentence) {
-            if matches(#"\b(?:admitted\s+to\s+(?:the\s+)?union|became\s+(?:a|the)\s+state|statehood)\b"#,
-                       sentence) {
+            if contains(statehoodRegex, in: sentence) {
                 return sentence
             }
         }
@@ -1792,13 +1869,13 @@ public enum IntentRouter {
         // Real city leads often define the modern settlement as a dated
         // settlers' arrival followed immediately by "The settlement ...".
         for i in sentences.indices where hasYear(sentences[i]) {
-            guard matches(#"\b(?:arrived|landed)\b"#, sentences[i]) else {
+            guard contains(arrivalRegex, in: sentences[i]) else {
                 continue
             }
             let next = i + 1 < sentences.count ? sentences[i + 1] : ""
             let context = sentences[i] + " " + next
-            guard matches(#"\bsettlement\b"#, context),
-                  matches(#"\b(?:named|moved|established|founded)\b"#, context)
+            guard contains(settlementRegex, in: context),
+                  contains(namedRegex, in: context)
             else { continue }
             return context.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -1806,8 +1883,8 @@ public enum IntentRouter {
         // If no settlement origin is stated, a formal city/town
         // incorporation is a clear and reproducible age basis.
         for sentence in sentences where hasYear(sentence) {
-            if matches(#"\b(?:incorporated|re-incorporated)\b"#, sentence),
-               matches(#"\b(?:city|town)\b"#, sentence) {
+            if contains(incorporationRegex, in: sentence),
+               contains(placeTypeRegex, in: sentence) {
                 return sentence
             }
         }

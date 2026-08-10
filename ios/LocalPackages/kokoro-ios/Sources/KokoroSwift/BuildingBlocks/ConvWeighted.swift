@@ -17,6 +17,7 @@ class ConvWeighted: Module {
   /// generator hot path. The bias is likewise pre-reshaped to its
   /// broadcast form instead of re-reshaped per call.
   private let normalizedWeight: MLXArray
+  private let transposedNormalizedWeight: MLXArray
 
   let stride: Int
   let padding: Int
@@ -43,7 +44,9 @@ class ConvWeighted: Module {
     self.weightG = weightG
     self.weightV = weightV
     self.bias = bias?.reshaped([1, 1, -1])
-    self.normalizedWeight = Self.weightNorm(weightV: weightV, weightG: weightG, dim: 0)
+    let normalizedWeight = Self.weightNorm(weightV: weightV, weightG: weightG, dim: 0)
+    self.normalizedWeight = normalizedWeight
+    self.transposedNormalizedWeight = normalizedWeight.transposed()
 
     super.init()
   }
@@ -127,7 +130,7 @@ class ConvWeighted: Module {
     if x.shape.last == weight.shape.last || groups > 1 {
       return applyConv(x: x, weightToUse: weight)
     } else {
-      return applyConv(x: x, weightToUse: weight.transposed())
+      return applyConv(x: x, weightToUse: transposedNormalizedWeight)
     }
   }
   
@@ -155,7 +158,7 @@ class ConvWeighted: Module {
     if x.shape.last == weight.shape.last || groups > 1 {
       return applyConv(x: x, weightToUse: weight)
     } else {
-      return applyConv(x: x, weightToUse: weight.transposed())
+      return applyConv(x: x, weightToUse: transposedNormalizedWeight)
     }
   }
 }

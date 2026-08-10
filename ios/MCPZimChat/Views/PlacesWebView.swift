@@ -23,7 +23,14 @@ import MCPZimKit
 func traceHasPlaces(_ trace: ToolCallTrace) -> Bool {
     guard trace.succeeded else { return false }
     guard placesToolNames.contains(trace.name) else { return false }
-    return !parsePlaces(from: trace).places.isEmpty
+    guard placesToolArgumentsAreRenderable(
+        toolName: trace.name, arguments: trace.arguments) else { return false }
+    let places = parsePlaces(from: trace).places
+    // A chat preview does not need an unbounded pin set. Besides making the
+    // map unreadable, a malformed high-cardinality result can force WebKit to
+    // reserve a large JavaScript heap while the model and StreetZIM indexes
+    // are still resident.
+    return !places.isEmpty && places.count <= 100
 }
 
 /// Thin adapter — the real `parsePlacesJSON` + `PlacesPayload` type

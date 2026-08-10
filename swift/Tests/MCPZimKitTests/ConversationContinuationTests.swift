@@ -162,6 +162,15 @@ final class ConversationContinuationTests: XCTestCase {
             "hitchhiker's guide to the galaxy")
     }
 
+    func testPossessiveFacetUsesOriginalStringIndicesAndCase() {
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "İrem's early life"),
+            "İrem")
+        XCTAssertEqual(
+            IntentRouter.stripPossessiveFacet(from: "MÁRIE and her career"),
+            "MÁRIE")
+    }
+
     func testTellMeAboutPossessiveFacetRoutesToEntityOverview() {
         let intent = IntentRouter.classify("Tell me about Putin’s early life")
         XCTAssertEqual(intent?.toolName, "article_overview")

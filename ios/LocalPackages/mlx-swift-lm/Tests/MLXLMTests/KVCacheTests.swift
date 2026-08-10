@@ -153,6 +153,39 @@ func testCacheSerialization(creator: (() -> any KVCache)) async throws {
     #expect(child1.metaState == rotating.metaState)
 }
 
+@Test(.serialized)
+func testQuantizedCacheRoundTripPreservesQuantizationParameters() throws {
+    let cache = QuantizedKVCache(groupSize: 32, bits: 4)
+    let keys = MLXArray.ones([1, 4, 8, 64], dtype: .bfloat16)
+    let values = MLXArray.ones([1, 4, 8, 64], dtype: .float32)
+    _ = cache.updateQuantized(keys: keys, values: values)
+
+    let url = tempURL()
+    try savePromptCache(url: url, cache: [cache], metadata: [:])
+    let (loaded, _) = try loadPromptCache(url: url)
+
+    let restored = try #require(loaded.first as? QuantizedKVCache)
+    #expect(restored.groupSize == 32)
+    #expect(restored.bits == 4)
+    #expect(restored.metaState == cache.metaState)
+    assertArraysClose(restored.state, cache.state)
+}
+
+@Test(.serialized)
+func testCacheListTrimReturnsSmallestActualTrim() {
+    let short = KVCacheSimple()
+    let long = KVCacheSimple()
+    let shortKeys = MLXArray.ones([1, 1, 2, 8], dtype: .float32)
+    let longKeys = MLXArray.ones([1, 1, 5, 8], dtype: .float32)
+    _ = short.update(keys: shortKeys, values: shortKeys)
+    _ = long.update(keys: longKeys, values: longKeys)
+
+    let cache = CacheList(short, long)
+    #expect(cache.trim(4) == 2)
+    #expect(short.offset == 0)
+    #expect(long.offset == 1)
+}
+
 // MARK: - CacheList with hybrid (MambaCache + KVCacheSimple)
 
 @Test func testCacheListHybrid() throws {

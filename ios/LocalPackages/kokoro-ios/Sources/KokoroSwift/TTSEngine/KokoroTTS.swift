@@ -25,6 +25,9 @@ import MLXUtilsLibrary
 public final class KokoroTTS {
   /// Errors from the TTS side
   public enum KokoroTTSError: Error {
+    /// Thrown when G2P/tokenization yields no model tokens.
+    case emptyInput
+
     /// Thrown when input text exceeds maximum token count
     case tooManyTokens
   }
@@ -262,6 +265,10 @@ public final class KokoroTTS {
   private func prepareInputTensors(_ phonemizedText: String) throws -> (MLXArray, MLXArray, MLXArray, MLXArray, [Int]) {
     // Tokenize phonemized text
     let inputIds = Tokenizer.tokenize(phonemizedText: phonemizedText)
+
+    guard !inputIds.isEmpty else {
+      throw KokoroTTSError.emptyInput
+    }
     
     // Check token count limit
     guard inputIds.count <= Constants.maxTokenCount else {

@@ -15,7 +15,8 @@ import Foundation
 /// Configuration is loaded from a JSON file bundled with the module.
 struct KokoroConfig: Decodable {
   /// Shared configuration instance cached after first load
-  nonisolated(unsafe) static var config: KokoroConfig?
+  private nonisolated(unsafe) static var config: KokoroConfig?
+  private static let configLock = NSLock()
 
   /// Configuration for the iSTFT (Inverse Short-Time Fourier Transform) decoder network.
   /// Defines the architecture of the decoder that converts mel-spectrograms to audio.
@@ -153,6 +154,13 @@ struct KokoroConfig: Decodable {
   /// - Note: Uses forced unwrapping (try!) as configuration loading is critical
   ///         and should fail fast if the file is missing or malformed
   nonisolated static func loadConfig() -> KokoroConfig {
+    configLock.lock()
+    defer { configLock.unlock() }
+
+    if let config {
+      return config
+    }
+
     // Locate config.json in the module bundle
     let fileURL = Bundle.module.url(forResource: "config", withExtension: "json", subdirectory: "Resources")!
     
@@ -160,8 +168,16 @@ struct KokoroConfig: Decodable {
     let configJSON = try! String(contentsOf: fileURL, encoding: .utf8)
     
     // Parse JSON and cache the result
-    KokoroConfig.config = try! JSONDecoder().decode(KokoroConfig.self, from: configJSON.data(using: .utf8)!)
+    let decoded = try! JSONDecoder().decode(KokoroConfig.self, from: configJSON.data(using: .utf8)!)
+    KokoroConfig.config = decoded
     
-    return KokoroConfig.config!
+    return decoded
+  }
+
+  /// Returns the immutable tokenizer vocabulary after ensuring the bundled
+  /// configuration has been loaded. Access goes through the same lock as the
+  /// lazy initialization so concurrent first-use calls cannot race.
+  nonisolated static func vocabulary() -> [String: Int] {
+    loadConfig().vocab
   }
 }

@@ -150,7 +150,26 @@ public struct SZRGGraph: Sendable {
                 + "geoms=\(numGeoms) geomBytes=\(geomBytes) "
                 + "names=\(numNames) namesBytes=\(namesBytes) size=\(data.count)"
 
+            func requireTable(_ count: Int, stride: Int, label: String) throws {
+                let (bytes, overflow) = count.multipliedReportingOverflow(by: stride)
+                guard !overflow, count >= 0, bytes <= data.count - p.pos else {
+                    throw SZRGError.truncatedAt(
+                        label, pos: p.pos, size: data.count, header: headerStr)
+                }
+            }
+
+            // A geometry can be referenced by multiple directed edges, but a
+            // valid writer never emits more geometry records than edges. This
+            // also prevents a forged v5 header from allocating billions of
+            // empty Swift arrays even though no geometry table is inline.
+            guard numGeoms <= numEdges else {
+                throw SZRGError.truncatedAt(
+                    "geometry count exceeds edge count",
+                    pos: p.pos, size: data.count, header: headerStr)
+            }
+
             // Nodes — lat/lon in 1e-7 degrees.
+            try requireTable(numNodes, stride: 8, label: "nodes")
             var lat = [Double](); lat.reserveCapacity(numNodes)
             var lon = [Double](); lon.reserveCapacity(numNodes)
             for _ in 0..<numNodes {
@@ -160,9 +179,12 @@ public struct SZRGGraph: Sendable {
                 lon.append(Double(lonE7) / 1e7)
             }
 
+            try requireTable(numNodes + 1, stride: 4, label: "adjacency offsets")
             var adjOffsets = [UInt32](); adjOffsets.reserveCapacity(numNodes + 1)
             for _ in 0...numNodes { adjOffsets.append(try p.readU32()) }
 
+            try requireTable(
+                numEdges, stride: version >= 4 ? 20 : 16, label: "edges")
             var edgeTargets = [UInt32](); edgeTargets.reserveCapacity(numEdges)
             var edgeDistMeters = [Double](); edgeDistMeters.reserveCapacity(numEdges)
             var edgeSpeedKmh = [UInt8](); edgeSpeedKmh.reserveCapacity(numEdges)
@@ -206,6 +228,7 @@ public struct SZRGGraph: Sendable {
             var geomOffsets: [UInt32] = []
             var inlineGeomBase = 0
             if version != 5 {
+                try requireTable(numGeoms + 1, stride: 4, label: "geometry offsets")
                 geomOffsets.reserveCapacity(numGeoms + 1)
                 for _ in 0...numGeoms { geomOffsets.append(try p.readU32()) }
                 inlineGeomBase = p.pos
@@ -227,6 +250,7 @@ public struct SZRGGraph: Sendable {
             }
 
             // Name offsets + blob.
+            try requireTable(numNames + 1, stride: 4, label: "name offsets")
             var nameOffsets = [UInt32](); nameOffsets.reserveCapacity(numNames + 1)
             for _ in 0...numNames { nameOffsets.append(try p.readU32()) }
             let namesBase = p.pos
@@ -336,6 +360,11 @@ public struct SZRGGraph: Sendable {
                     "numGeoms \(numGeoms) != SZRG header \(expectedGeoms)"
                 )
             }
+            let (offsetBytes, overflow) = (numGeoms + 1)
+                .multipliedReportingOverflow(by: 4)
+            guard !overflow, offsetBytes <= data.count - p.pos else {
+                throw SZRGError.companionMismatch("truncated geometry offset table")
+            }
             var offsets = [UInt32](); offsets.reserveCapacity(numGeoms + 1)
             for _ in 0...numGeoms { offsets.append(try p.readU32()) }
             let base = p.pos
@@ -366,6 +395,9 @@ public struct SZRGGraph: Sendable {
         end: Int
     ) throws -> [(lat: Double, lon: Double)] {
         if end <= start { return [] }
+        guard end - start >= 8 else {
+            throw SZRGError.truncated("geom header")
+        }
         var cursor = RawCursor(base: raw, count: end, pos: start)
         let lon0 = try cursor.readI32()
         let lat0 = try cursor.readI32()

@@ -1,0 +1,484 @@
+{
+  "schema_version": 1,
+  "name": "mcpzim real-conversation regression set",
+  "description": "Mac-first, grounded multi-turn checks derived from real mcpzim voice and chat sessions. Answer anchors are intentionally tolerant of wording while still requiring the key Wikipedia facts.",
+  "conversations": [
+    {
+      "id": "prepared_russia_history_followups",
+      "description": "Regression for a real prepared Russia chat: historical follow-ups should be substantive, and a population question must remain pinned to Russia rather than opening The Population Bomb.",
+      "tags": ["smoke", "wikipedia", "prepared_discussion", "history", "followup", "topic_continuity"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Russia",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "When did it expand into Siberia?",
+          "expected_source_titles": ["Russia"],
+          "expected_source_sections": ["Tsardom of Russia", "lead"],
+          "anchor_groups": [["Siberia"], ["Ivan IV", "Yermak", "Khanate of Sibir", "1580"]],
+          "minimum_answer_sentences": 2,
+          "must_not_suggest": ["go to school", "legacy been assessed"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What were the sides in the civil war?",
+          "expected_source_titles": ["Russian Civil War"],
+          "anchor_groups": [["Red Army", "Bolshevik"], ["White Army", "White movement", "Whites"]],
+          "minimum_answer_sentences": 2,
+          "must_not_contain": ["does not specify", "don't see"],
+          "max_seconds_advisory": 60
+        },
+        {
+          "user": "What is the population?",
+          "expected_source_titles": ["Russia"],
+          "expected_source_sections": ["Demographics", "lead"],
+          "anchor_groups": [["140 million", "146.0 million", "146 million"]],
+          "must_not_contain": ["Population Bomb", "I don't see it"],
+          "must_not_suggest": ["go to school", "legacy been assessed"],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "prepared_mongolia_topic_chat",
+      "description": "Exercises the explicit prepare-then-discuss flow across widely separated sections of one full Wikipedia article.",
+      "tags": ["smoke", "wikipedia", "prepared_discussion", "history", "culture"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Mongolia",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "Tell me about its early history",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["lead", "Prehistory and antiquity", "Early states", "Mongol empire to early 20th century"],
+          "anchor_groups": [["Xiongnu", "nomadic", "Genghis Khan"], ["empire", "khaganate", "tribes"]],
+          "must_not_contain": ["I don't know what 'its' refers to"],
+          "must_not_suggest": ["go to school", "legacy been assessed"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "How did it become a Soviet-aligned socialist state?",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Modern history"],
+          "anchor_groups": [["1921", "1924"], ["Soviet", "Bolshevik"], ["Mongolian People's Republic", "socialist"]],
+          "must_not_suggest": ["go to school", "legacy been assessed"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What happens at Naadam?",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Sports and festivals"],
+          "anchor_groups": [["wrestling"], ["horse", "horse-racing"], ["archery"]],
+          "must_not_suggest": ["go to school", "legacy been assessed"],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "prepared_mongolia_religion_continuity",
+      "description": "Regression for a real voice chat where a deictic Buddhism follow-up must remain grounded in Mongolia, and the next Soviet-era question must preserve both the country and religious facet.",
+      "tags": ["smoke", "wikipedia", "prepared_discussion", "religion", "followup", "topic_continuity", "voice_regression"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Mongolia",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "Tell me about Buddhism there",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Religion"],
+          "anchor_groups": [["Buddhism", "Buddhist"], ["Tibetan", "Vajrayana", "Gelug", "religion"]],
+          "minimum_answer_sentences": 2,
+          "must_not_contain": ["Theravāda is described", "Theravada is described", "Therevada Buddhism", "I don't see information"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "Then what happened in Soviet times",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Religion", "Modern history"],
+          "anchor_groups": [["Soviet", "socialist", "communist"], ["Buddhism", "Buddhist", "monasteries", "religion", "clergy", "purge"]],
+          "minimum_answer_sentences": 2,
+          "must_not_contain": ["Theravāda Buddhism", "Theravada Buddhism", "I don't see information"],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "prepared_mongolia_mongols_continuity",
+      "description": "Regression for the real device sequence where a bare people follow-up must retrieve Mongol history rather than the similarly named Mongolian cuisine section after earlier facets are cached.",
+      "tags": ["smoke", "wikipedia", "prepared_discussion", "history", "people", "followup", "topic_continuity", "voice_regression"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Mongolia",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "How about Buddhism",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Religion"],
+          "anchor_groups": [["Buddhism", "Buddhist"], ["Tibetan", "Vajrayana", "Gelug", "religion"]],
+          "must_not_contain": ["Theravāda is described", "Theravada is described", "Therevada Buddhism"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What about geography and climate?",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Geography and climate", "Climate"],
+          "anchor_groups": [["Gobi", "desert", "mountain", "plateau", "grassland", "climate", "sunny", "summer", "winter"]],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "How about the Mongols?",
+          "expected_source_titles": ["Mongolia"],
+          "expected_source_sections": ["Mongol empire to early 20th century", "Prehistory and antiquity", "Ethnic groups and languages"],
+          "anchor_groups": [["Mongol", "Mongols"], ["Genghis Khan", "empire", "ethnic", "people"]],
+          "must_not_contain": ["traditional diet", "staple food", "cooked mutton", "steamed dumplings", "Mongolian cuisine"],
+          "max_seconds_advisory": 60
+        }
+      ]
+    },
+    {
+      "id": "prepared_lithuania_christianity_continuity",
+
+      "description": "Regression for a real voice chat where an elliptical Christianity follow-up must remain about Lithuania rather than opening the global Christianity article.",
+      "tags": ["smoke", "wikipedia", "prepared_discussion", "religion", "followup", "topic_continuity", "voice_regression"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Lithuania",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "The first grand Duke",
+          "expected_source_titles": ["Lithuania"],
+          "expected_source_sections": ["Kingdom of Lithuania, Grand Duchy of Lithuania and Polish–Lithuanian Commonwealth"],
+          "anchor_groups": [["Mindaugas"], ["1253", "13th century"]],
+          "must_not_contain": ["I don't know what you mean"],
+          "max_seconds_advisory": 60
+        },
+        {
+          "user": "And how about Christianity?",
+          "expected_source_titles": ["Lithuania"],
+          "expected_source_sections": ["Religion", "Christianization and dynastic unions with Poland", "Early contacts with Christianity"],
+          "anchor_groups": [["Christian", "Christianity", "Catholic"], ["Lithuania", "Lithuanian", "1387", "Christianization"]],
+          "minimum_answer_sentences": 2,
+          "must_not_contain": ["world’s largest faith", "world's largest faith", "2.3 billion adherents", "global population"],
+          "max_seconds_advisory": 60
+        }
+      ]
+    },
+    {
+      "id": "putin_biography_followups",
+      "description": "A biography overview followed by short pronoun-bearing questions.",
+      "tags": ["smoke", "wikipedia", "biography", "followup", "pronoun"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Tell me about Vladimir Putin",
+          "expected_tool": "article_overview",
+          "expected_source_titles": ["Vladimir Putin"],
+          "anchor_groups": [["Russian"], ["president", "prime minister"], ["KGB", "intelligence"]],
+          "must_not_contain": ["I couldn't find", "offline knowledge"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What about his parents?",
+          "expected_source_titles": ["Vladimir Putin"],
+          "expected_source_sections": ["Early life and education", "Family"],
+          "anchor_groups": [["Vladimir Spiridonovich"], ["Maria Ivanovna"], ["Soviet Navy", "submarine fleet"], ["factory worker"]],
+          "must_not_contain": ["I don't know who you mean", "which person"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "Where did he go to school?",
+          "expected_source_titles": ["Vladimir Putin"],
+          "expected_source_sections": ["Education"],
+          "anchor_groups": [["Leningrad State University", "Saint Petersburg State University"], ["law", "School No. 193", "School 281"]],
+          "must_not_contain": ["I don't know who he refers to"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What did he do after graduating?",
+          "expected_source_titles": ["Vladimir Putin"],
+          "expected_source_sections": ["Intelligence career"],
+          "anchor_groups": [["KGB"], ["1975", "intelligence"]],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "george_washington_followups",
+      "description": "A second famous-person chain checks that the conversational behavior is not person-specific.",
+      "tags": ["wikipedia", "biography", "followup", "pronoun"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Tell me about George Washington",
+          "expected_tool": "article_overview",
+          "expected_source_titles": ["George Washington"],
+          "anchor_groups": [["first president"], ["Continental Army", "American Revolutionary War"], ["United States"]],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "Who were his parents?",
+          "expected_source_titles": ["George Washington"],
+          "anchor_groups": [["Augustine Washington", "Augustine and Mary Ball Washington"], ["Mary Ball Washington", "Mary Ball"]],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "Did he go to college?",
+          "expected_source_titles": ["George Washington"],
+          "anchor_groups": [["did not attend college", "no college", "never attended college", "formal education"]],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "alamo_event_followups",
+      "description": "An event date followed by casualty and participant questions that depend on retained topic context.",
+      "tags": ["smoke", "wikipedia", "history", "event", "followup"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "When was the Battle of the Alamo?",
+          "expected_source_titles": ["Battle of the Alamo"],
+          "anchor_groups": [["February 23", "Feb. 23", "Feb 23"], ["March 6"], ["1836"]],
+          "must_not_contain": ["founded", "I couldn't find"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "How many people died there?",
+          "expected_source_titles": ["Battle of the Alamo"],
+          "expected_source_sections": ["Casualties"],
+          "anchor_groups": [["182", "257", "nearly all", "most of the Texian"], ["Mexican", "Santa Anna"], ["60–200", "60-200", "60 to 200"]],
+          "must_not_contain": ["I don't know where there is", "400–600 dead", "400-600 dead", "400 to 600 dead"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "Who were the combatants?",
+          "expected_source_titles": ["Battle of the Alamo"],
+          "anchor_groups": [["Texian", "Texas"], ["Mexican", "Mexico"]],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "gravitational_wave_followups",
+      "description": "A science explanation chain that distinguishes gravitational waves from atmospheric gravity waves.",
+      "tags": ["smoke", "wikipedia", "science", "followup", "disambiguation"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "How are gravitational waves created?",
+          "expected_source_titles": ["Gravitational wave"],
+          "anchor_groups": [["spacetime"], ["accelerat", "orbit"], ["mass", "massive"]],
+          "must_not_contain": ["ocean wave", "atmospheric wave"],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "What kinds of events make the strongest ones?",
+          "expected_source_titles": ["Gravitational wave"],
+          "anchor_groups": [["black hole"], ["neutron star", "compact object"], ["merger", "binary", "collision"]],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "How does LIGO detect them?",
+          "expected_source_titles": ["Gravitational wave", "LIGO"],
+          "anchor_groups": [["laser"], ["interferometer", "interference"], ["arm", "distance", "length", "separation", "separated"]],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "washington_age_disambiguation_state",
+      "description": "A deliberately ambiguous age question must ask before answering and retain the age predicate after selection.",
+      "tags": ["smoke", "wikipedia", "disambiguation", "factoid", "fast_path"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "How old is Washington?",
+          "expected_tool": "article_factoid",
+          "expected_clarification": true,
+          "anchor_groups": [["George Washington"], ["Washington (state)"], ["Washington, D.C."]],
+          "max_seconds_advisory": 2
+        },
+        {
+          "user": "The second one",
+          "expected_source_titles": ["Washington (state)"],
+          "anchor_groups": [["1889"], ["137 years", "about 137"]],
+          "must_not_contain": ["2021", "George Washington was founded"],
+          "max_seconds_advisory": 2
+        }
+      ]
+    },
+    {
+      "id": "washington_age_disambiguation_dc",
+      "description": "The D.C. branch must use the 1790 founding basis rather than a recent statehood bill.",
+      "tags": ["wikipedia", "disambiguation", "factoid", "fast_path"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "How old is Washington?",
+          "expected_tool": "article_factoid",
+          "expected_clarification": true,
+          "anchor_groups": [["George Washington"], ["Washington (state)"], ["Washington, D.C."]],
+          "max_seconds_advisory": 2
+        },
+        {
+          "user": "The third one",
+          "expected_source_titles": ["Washington, D.C."],
+          "anchor_groups": [["1790"], ["Residence Act"], ["236 years", "about 236"]],
+          "must_not_contain": ["2021", "statehood bill"],
+          "max_seconds_advisory": 2
+        }
+      ]
+    },
+    {
+      "id": "seattle_qualified_age",
+      "description": "A city-plus-state qualifier should resolve directly without falling into the general 6k-token tool router.",
+      "tags": ["smoke", "wikipedia", "qualification", "factoid", "fast_path"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "How old is Seattle, Washington?",
+          "expected_tool": "article_factoid",
+          "expected_source_titles": ["Seattle"],
+          "anchor_groups": [["1851"], ["175 years", "about 175"], ["Denny Party", "Arthur A. Denny"]],
+          "max_seconds_advisory": 2
+        }
+      ]
+    },
+    {
+      "id": "san_francisco_age_fast_path",
+      "description": "Regression for the six-call, multi-minute tool loop observed on device.",
+      "tags": ["smoke", "wikipedia", "factoid", "fast_path", "loop_guard"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "How old is San Francisco?",
+          "expected_tool": "article_factoid",
+          "expected_source_titles": ["San Francisco"],
+          "anchor_groups": [["1776"], ["250 years", "about 250"], ["Presidio", "Mission San Francisco de Asís", "Mission Dolores"]],
+          "must_not_contain": ["tool loop exhausted"],
+          "max_seconds_advisory": 2
+        }
+      ]
+    },
+    {
+      "id": "apple_truncated_voice_factoid",
+      "description": "A voice-style incomplete company question should avoid an 80-second general-router prefill.",
+      "tags": ["smoke", "wikipedia", "voice", "factoid", "fast_path"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "When was Apple",
+          "expected_tool": "article_factoid",
+          "expected_source_titles": ["Apple Inc."],
+          "anchor_groups": [["1976"], ["Steve Jobs"], ["Steve Wozniak"], ["Ronald Wayne"]],
+          "must_not_contain": ["fruit"],
+          "max_seconds_advisory": 2
+        }
+      ]
+    },
+    {
+      "id": "topic_switch_putin_to_alamo",
+      "description": "An explicit new subject must leave the pinned biography instead of treating it as a Putin follow-up.",
+      "tags": ["wikipedia", "topic_switch", "conversation"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Tell me about Vladimir Putin",
+          "expected_tool": "article_overview",
+          "expected_source_titles": ["Vladimir Putin"],
+          "anchor_groups": [["Russian"], ["president"]],
+          "max_seconds_advisory": 45
+        },
+        {
+          "user": "When was the Battle of the Alamo?",
+          "expected_source_titles": ["Battle of the Alamo"],
+          "anchor_groups": [["1836"], ["February 23", "Feb. 23", "Feb 23"], ["March 6"]],
+          "must_not_contain": ["Putin"],
+          "max_seconds_advisory": 45
+        }
+      ]
+    },
+    {
+      "id": "explicit_wikipedia_source_correction",
+      "description": "A user correction that names an exact Wikipedia article must override an ambiguous pinned article and every StreetZIM/location-shaped interpretation.",
+      "tags": ["smoke", "wikipedia", "source_control", "correction", "prepared_discussion", "voice_regression"],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Santa Rosa",
+          "expected_tool": "discuss_article",
+          "anchor_groups": [["preparing"], ["Ready"]],
+          "max_seconds_advisory": 20
+        },
+        {
+          "user": "I want you to look up the Wikipedia article on Santa Rosa California. I then want you to read what it says about the 1906 earthquake.",
+          "expected_tool": "discuss_article",
+          "expected_source_titles": ["Santa Rosa, California"],
+          "expected_source_sections": ["20th century"],
+          "anchor_groups": [["1906"], ["earthquake"], ["downtown", "destroyed"], ["population", "did not greatly suffer"]],
+          "must_not_contain": ["does not contain", "no information", "StreetZIM", "Paraguay", "Argentina"],
+          "max_seconds_advisory": 60
+        }
+      ]
+    },
+    {
+      "id": "streetzim_nearest_coffee_route",
+      "description": "A nearby-place result followed by an ordinal route request.",
+      "tags": ["streetzim", "location", "followup", "ordinal", "route"],
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Where is the nearest coffee shop?",
+          "expected_tool": "near_places",
+          "anchor_groups": [["nearest", "coffee"], ["map"]],
+          "max_seconds_advisory": 2
+        },
+        {
+          "user": "Directions to the second one",
+          "expected_tool": "plan_driving_route",
+          "anchor_groups": [["route", "directions", "drive"]],
+          "max_seconds_advisory": 5
+        }
+      ]
+    },
+    {
+      "id": "streetzim_named_landmark",
+      "description": "A named landmark should use the deterministic geocoder and never invoke the full model router.",
+      "tags": ["streetzim", "location", "geocoder", "fast_path"],
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Where is the HP Garage?",
+          "expected_tool": "locate",
+          "anchor_groups": [["HP Garage"], ["map"]],
+          "max_seconds_advisory": 2
+        }
+      ]
+    }
+  ]
+}

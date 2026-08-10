@@ -696,8 +696,8 @@ public actor MCPToolAdapter {
             ] as [String: Any]
         case "near_named_place":
             let place = (args["place"] as? String) ?? ""
-            let radius = (args["radius_km"] as? Double) ?? 1.0
-            let limit = (args["limit"] as? Int) ?? 25
+            let radius = max(0.05, min(100, (args["radius_km"] as? Double) ?? 1.0))
+            let limit = max(1, min(50, (args["limit"] as? Int) ?? 25))
             let combined = try await service.nearNamedPlace(
                 place: place,
                 radiusKm: radius,
@@ -756,8 +756,8 @@ public actor MCPToolAdapter {
                         + (args.keys.sorted().joined(separator: ", ")) + ")",
                 ]
             }
-            let radius = (args["radius_km"] as? Double) ?? 1.0
-            let limit = (args["limit"] as? Int) ?? 25
+            let radius = max(0.05, min(100, (args["radius_km"] as? Double) ?? 1.0))
+            let limit = max(1, min(50, (args["limit"] as? Int) ?? 25))
             let result = try await service.nearPlaces(
                 lat: lat, lon: lon, radiusKm: radius,
                 limit: limit, kinds: args["kinds"] as? [String],
@@ -2712,8 +2712,10 @@ public actor MCPToolAdapter {
             properties: [
                 ("place", ["type": "string", "description": "Free-text place name."]),
                 ("radius_km", ["type": "number", "default": 1.0,
+                               "minimum": 0.05, "maximum": 100.0,
                                "description": "Search radius. 0.5 ≈ walking distance, 2–5 ≈ neighborhood."]),
-                ("limit", ["type": "integer", "default": 10]),
+                ("limit", ["type": "integer", "default": 10,
+                           "minimum": 1, "maximum": 50]),
                 ("kinds", kindsSchema(vocabulary: vocabulary)),
                 ("zim", ["type": "string",
                          "description": "Specific streetzim filename, else try them all."]),
@@ -2750,8 +2752,10 @@ public actor MCPToolAdapter {
                 ("lat", ["type": "number", "description": "Center latitude. Use with `lon` for explicit coords; omit when `place` is set or the user's current GPS is the implicit center."]),
                 ("lon", ["type": "number", "description": "Center longitude (pair with `lat`)."]),
                 ("radius_km", ["type": "number", "default": 1.0,
+                               "minimum": 0.05, "maximum": 100.0,
                                "description": "Search radius in km. 0.5 ≈ walking distance, 2–5 ≈ neighborhood."]),
                 ("limit", ["type": "integer", "default": 10,
+                           "minimum": 1, "maximum": 50,
                            "description": "Max results, sorted nearest first."]),
                 ("kinds", kindsSchema(vocabulary: vocabulary)),
                 ("zim", ["type": "string",

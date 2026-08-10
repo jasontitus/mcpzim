@@ -340,16 +340,16 @@ public enum ReferenceResolver {
         // "the other one" / "the other" — only well-defined for a 2-item list.
         if lower.contains("the other") {
             guard list.count == 2 else { return nil }
-            let primaryKey = focus.primaryEntity?.matchKey
-            if let other = list.first(where: { $0.matchKey != primaryKey }) {
-                let idx = list.firstIndex(of: other) ?? 1
-                return .listSelection(index: idx, entity: other)
-            }
-            return .listSelection(index: 1, entity: list[1])
+            guard let primaryKey = focus.primaryEntity?.matchKey,
+                  list.contains(where: { $0.matchKey == primaryKey }),
+                  let other = list.first(where: { $0.matchKey != primaryKey }),
+                  let idx = list.firstIndex(of: other)
+            else { return nil }
+            return .listSelection(index: idx, entity: other)
         }
 
         // "the last one".
-        if lower.contains("the last"), let last = list.last {
+        if isOrdinalSelection(lower, word: "last"), let last = list.last {
             return .listSelection(index: list.count - 1, entity: last)
         }
 
@@ -365,9 +365,7 @@ public enum ReferenceResolver {
         // topic that merely contains an ordinal ("first world war").
         for (word, idx) in ordinals {
             guard words.contains(word) else { continue }
-            let looksLikePick = lower.contains("the \(word)")
-                || lower.hasPrefix(word)
-                || lower.contains("\(word) one")
+            let looksLikePick = isOrdinalSelection(lower, word: word)
             guard looksLikePick, idx < list.count else { continue }
             return .listSelection(index: idx, entity: list[idx])
         }
@@ -547,8 +545,7 @@ public enum ReferenceResolver {
         ]
         let words = lower.split(separator: " ").map(String.init)
         for (word, idx) in positional where words.contains(word) {
-            let looksLikePick = lower.contains("the \(word)")
-                || lower.hasPrefix(word) || lower.contains("\(word) one")
+            let looksLikePick = isOrdinalSelection(lower, word: word)
             if looksLikePick, idx < candidates.count { return candidates[idx] }
         }
 
@@ -772,6 +769,24 @@ public enum ReferenceResolver {
     private static func startsWithWord(_ text: String, _ phrase: String) -> Bool {
         if text == phrase { return true }
         return text.hasPrefix(phrase + " ")
+    }
+
+    /// Ordinals select an offered/list item only when the whole turn has a
+    /// selector shape. A prefix check alone made ordinary prose such as
+    /// "first of all" silently pick item zero.
+    private static func isOrdinalSelection(_ text: String, word: String) -> Bool {
+        let normalized = text.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let selectors = [word, "the \(word)", "\(word) one", "the \(word) one"]
+        if selectors.contains(normalized) { return true }
+
+        let wrappers = [
+            "tell me about", "what about", "how about", "show me",
+            "pick", "choose", "open", "directions to",
+        ]
+        return wrappers.contains { wrapper in
+            selectors.contains { normalized == "\(wrapper) \($0)" }
+        }
     }
 
     private static func firstMatch(_ text: String, pattern: String) -> String? {

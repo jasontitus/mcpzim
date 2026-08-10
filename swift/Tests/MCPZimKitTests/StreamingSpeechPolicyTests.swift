@@ -65,6 +65,28 @@ final class StreamingSpeechPolicyTests: XCTestCase {
             availableMemoryMB: 0, estimatedTTSMemoryMB: 2_800))
     }
 
+    func testThermalPressureDoesNotReplaceLowMemoryANEVoice() {
+        XCTAssertFalse(StreamingSpeechPolicy.requiresLightweightVoiceFallback(
+            availableMemoryMB: 2_300,
+            estimatedTTSMemoryMB: 96,
+            thermallyConstrained: true))
+    }
+
+    func testHeavyMLXVoiceFallsBackUnderThermalOrMemoryPressure() {
+        XCTAssertTrue(StreamingSpeechPolicy.requiresLightweightVoiceFallback(
+            availableMemoryMB: 5_000,
+            estimatedTTSMemoryMB: 2_800,
+            thermallyConstrained: true))
+        XCTAssertTrue(StreamingSpeechPolicy.requiresLightweightVoiceFallback(
+            availableMemoryMB: 3_100,
+            estimatedTTSMemoryMB: 2_800,
+            thermallyConstrained: false))
+        XCTAssertFalse(StreamingSpeechPolicy.requiresLightweightVoiceFallback(
+            availableMemoryMB: 3_600,
+            estimatedTTSMemoryMB: 2_800,
+            thermallyConstrained: false))
+    }
+
     func testCompletedGenerationFlushesWholeTail() {
         let text = "A final fragment without punctuation"
         let result = StreamingSpeechPolicy.takeSpeakablePrefix(

@@ -191,6 +191,29 @@ final class SZRGSpatialTests: XCTestCase {
         XCTAssertEqual(edges[4], 0x102) // class_access
     }
 
+    func testParseCellRejectsInvalidAdjacencyOffsets() {
+        let edge = SpatialEdge(
+            target: 1, speedDist: (50 << 24) | 100,
+            geomLocal: 0xFFFF_FFFF, nameIdx: 0, classAccess: 0)
+        let data = packCell(
+            cellId: 0,
+            nodesGlobal: [0, 1],
+            adjOffsets: [0, 2, 1],
+            edges: [edge])
+        XCTAssertThrowsError(try SZRCCell.parse(data))
+    }
+
+    func testDecodeGeomRejectsShortHeader() throws {
+        let data = packCell(
+            cellId: 0,
+            nodesGlobal: [0],
+            adjOffsets: [0, 0],
+            edges: [],
+            geoms: [Data([1, 2, 3, 4])])
+        let cell = try SZRCCell.parse(data)
+        XCTAssertThrowsError(try cell.decodeGeom(localIdx: 0))
+    }
+
     func testSpatialEdgeDecoderFlags() {
         let linkEdge = SpatialEdge(target: 0, speedDist: (60 << 24) | 1000,
                                     geomLocal: 0xFFFFFFFF,

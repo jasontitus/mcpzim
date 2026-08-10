@@ -239,24 +239,35 @@ private class Gemma4Attention: Module {
     let nHeads: Int
     let nKvHeads: Int
     let useKeqV: Bool
+    let isKvSharedConsumer: Bool
     let scale: Float
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
+    @ModuleInfo(key: "k_proj") var kProj: Linear?
     @ModuleInfo(key: "v_proj") var vProj: Linear?
     @ModuleInfo(key: "o_proj") var oProj: Linear
 
     @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
-    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
-    @ModuleInfo(key: "v_norm") var vNorm: RMSNormNoScale
+    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm?
+    @ModuleInfo(key: "v_norm") var vNorm: RMSNormNoScale?
 
     @ModuleInfo var rope: RoPELayer
 
     init(_ config: Gemma4TextConfiguration, layerIdx: Int) {
         self.config = config
         self.layerIdx = layerIdx
-        self.layerType = config.layerTypes[layerIdx]
+        let layerType = config.layerTypes[layerIdx]
+        self.layerType = layerType
         self.isSliding = layerType == "sliding_attention"
+        let firstKvSharedLayerIdx = config.numHiddenLayers - config.numKvSharedLayers
+        let donorRange = 0 ..< max(0, firstKvSharedLayerIdx)
+        let hasEarlierDonor = donorRange.contains {
+            config.layerTypes[$0] == layerType
+        }
+        self.isKvSharedConsumer =
+            firstKvSharedLayerIdx > 0
+            && layerIdx >= firstKvSharedLayerIdx
+            && hasEarlierDonor
 
         // Full attention uses globalHeadDim, sliding uses headDim
         self.effectiveHeadDim =
@@ -276,15 +287,19 @@ private class Gemma4Attention: Module {
         self.scale = 1.0
 
         self._qProj.wrappedValue = Linear(dim, nHeads * effectiveHeadDim, bias: false)
-        self._kProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
-        if !useKeqV {
-            self._vProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+        if !isKvSharedConsumer {
+            self._kProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+            if !useKeqV {
+                self._vProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+            }
         }
         self._oProj.wrappedValue = Linear(nHeads * effectiveHeadDim, dim, bias: false)
 
         self._qNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
-        self._vNorm.wrappedValue = RMSNormNoScale(eps: config.rmsNormEps)
+        if !isKvSharedConsumer {
+            self._kNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
+            self._vNorm.wrappedValue = RMSNormNoScale(eps: config.rmsNormEps)
+        }
 
         // RoPE: sliding uses default, full uses proportional with partial rotation
         if isSliding {
@@ -376,6 +391,9 @@ private class Gemma4Attention: Module {
         //    and emit the donor tuple that downstream shared layers will
         //    consume. Quantized caches emit `.quantized(...)`;
         //    unquantized caches (or the no-cache case) emit `.fp16(...)`.
+        guard let kProj, let kNorm, let vNorm else {
+            preconditionFailure("KV-shared Gemma 4 layer was called without donor K/V")
+        }
         var k = kProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
         k = kNorm(k)
         k = k.transposed(0, 2, 1, 3)

@@ -45,6 +45,16 @@ final class AnswerAttributionTests: XCTestCase {
                        "invented date must not attribute (support=\(attrs[0].support))")
     }
 
+    func testHallucinatedSingleDigitCountIsUnsupported() {
+        let evidence = [AnswerAttribution.Passage(
+            article: "Trip", section: "lead", text: "The trip took 7 days.")]
+        let attrs = AnswerAttribution.attribute(
+            answer: "The trip took 5 days.", passages: evidence)
+        XCTAssertEqual(attrs.count, 1)
+        XCTAssertFalse(attrs[0].isSupported,
+                       "single-digit numeric contradictions must affect grounding")
+    }
+
     func testTrainedDataFactIsUnsupported() {
         // True in the world, absent from the passages — exactly what the
         // user wants surfaced as "not from the offline library".

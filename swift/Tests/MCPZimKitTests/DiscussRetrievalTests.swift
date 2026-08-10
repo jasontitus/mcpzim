@@ -316,6 +316,31 @@ final class DiscussRetrievalTests: XCTestCase {
         XCTAssertFalse(answer!.hasPrefix("Santa Anna claimed"), "got: \(answer!)")
     }
 
+    func testDeathCountRejectsBiographyDeathDates() {
+        let evidence = """
+        He died on 2 November 2012, in Harrisburg, Pennsylvania. He died on 7 August 1994. He died on 27 February 2010.
+        """
+        XCTAssertNil(ArticleHeuristics.groundedExtractiveAnswer(
+            question: "How many people died in the Pearl Harbor attack?",
+            passages: [evidence],
+            passageLabels: [
+                "Radar warning of Pearl Harbor attack Key participants",
+            ]))
+    }
+
+    func testDeathCountUsesNamedEventLabelAndRejectsLaterIncident() {
+        let later = "On December 4, 2019, a US Navy sailor killed two civilian workers at the Pearl Harbor Naval Shipyard."
+        let attack = "A total of 2,403 Americans were killed and 1,178 others were wounded."
+        let answer = ArticleHeuristics.groundedExtractiveAnswer(
+            question: "How many people died in the Japanese attack?",
+            passages: [later, attack],
+            passageLabels: [
+                "Pearl Harbor Naval presence",
+                "Attack on Pearl Harbor Casualties",
+            ])
+        XCTAssertEqual(answer, attack)
+    }
+
     func testExtractiveAnswerLeavesOpenEndedTurnForBonsai() {
         XCTAssertNil(ArticleHeuristics.groundedExtractiveAnswer(
             question: "Why was the battle important?",

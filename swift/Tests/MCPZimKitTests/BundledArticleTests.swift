@@ -68,6 +68,16 @@ final class BundledArticleTests: XCTestCase {
         XCTAssertTrue(hit.section.text.contains("Full Wikipedia article body"))
     }
 
+    func testArticleTitlePrefixIsNotMistakenForLanguageCode() async throws {
+        let wiki = MapReader(
+            kind: .wikipedia,
+            ["A/TV:_The_Movie": "<h1>TV: The Movie</h1><p>A real article.</p>"])
+        let svc = DefaultZimService(readers: [(name: "wiki", reader: wiki)])
+        let hit = try await svc.articleByTitle(
+            title: "TV: The Movie", zim: nil, section: "lead")
+        XCTAssertEqual(hit.path, "A/TV:_The_Movie")
+    }
+
     func testThrowsWhenNeitherHasIt() async throws {
         let sz = MapReader(kind: .streetzim, ["wiki-article/Somewhere_Else": "<p>x</p>"])
         let svc = DefaultZimService(readers: [(name: "osm-ca", reader: sz)])

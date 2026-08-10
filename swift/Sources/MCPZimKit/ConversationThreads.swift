@@ -707,6 +707,21 @@ public enum WikiLinks {
             "&quot;": "\"", "&#39;": "'", "&apos;": "'", "&nbsp;": " ",
         ]
         for (k, v) in entities { t = t.replacingOccurrences(of: k, with: v) }
+        if let numeric = RegexCache.shared.compiled(#"&#(?:x[0-9a-fA-F]+|[0-9]+);"#) {
+            let mutable = NSMutableString(string: t)
+            let matches = numeric.matches(
+                in: t, range: NSRange(t.startIndex..., in: t))
+            for match in matches.reversed() {
+                let entity = mutable.substring(with: match.range)
+                let body = entity.dropFirst(entity.hasPrefix("&#x") ? 3 : 2).dropLast()
+                let radix = entity.hasPrefix("&#x") ? 16 : 10
+                guard let value = UInt32(body, radix: radix),
+                      let scalar = Unicode.Scalar(value)
+                else { continue }
+                mutable.replaceCharacters(in: match.range, with: String(scalar))
+            }
+            t = mutable as String
+        }
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

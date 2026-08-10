@@ -215,9 +215,11 @@ public final class SystemTTSService: NSObject, TTSService, @unchecked Sendable {
     public private(set) var isSpeaking: Bool = false
 
     private let synth = AVSpeechSynthesizer()
+    private let languageCode: String?
     private var continuation: CheckedContinuation<Void, Never>?
 
-    public override init() {
+    public init(languageCode: String? = nil) {
+        self.languageCode = languageCode
         super.init()
         synth.delegate = self
     }
@@ -228,7 +230,8 @@ public final class SystemTTSService: NSObject, TTSService, @unchecked Sendable {
         // Resolve the host language voice; AVSpeechUtterance picks the
         // user's default voice when this is nil.
         let utt = AVSpeechUtterance(string: trimmed)
-        utt.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+        utt.voice = AVSpeechSynthesisVoice(
+            language: languageCode ?? AVSpeechSynthesisVoice.currentLanguageCode())
             ?? AVSpeechSynthesisVoice(language: "en-US")
         utt.rate = AVSpeechUtteranceDefaultSpeechRate
         utt.pitchMultiplier = 1.0
@@ -299,7 +302,9 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     public let preferredStreamingChunkCharacters: Int? = nil
     public let preferredStreamingMinimumCharacters: Int? = nil
     #endif
-    public private(set) var isSpeaking: Bool = false
+    public var isSpeaking: Bool {
+        withLockedState { speaking in speaking }
+    }
 
     /// Fifty-four voices ship in `voices.npz`. Exposed for the UI
     /// picker; `voiceName` selects the current one.
@@ -317,8 +322,89 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     private let kokoro: KokoroTTS
     private let voices: [String: MLXArray]
     public let voiceName: String
+    private let stateLock = NSLock()
+    private var speaking = false
     private var stopFlag = false
+    private var playbackWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var isPrepared = false
+
+    private func withLockedState<T>(_ body: (Bool) -> T) -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return body(speaking)
+    }
+
+    private func beginSpeaking() {
+        stateLock.lock()
+        stopFlag = false
+        speaking = true
+        stateLock.unlock()
+    }
+
+    private func finishSpeaking() {
+        stateLock.lock()
+        speaking = false
+        stateLock.unlock()
+    }
+
+    private var shouldStop: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return stopFlag
+    }
+
+    /// Wait for a tail buffer without allowing `stop()` to strand the
+    /// continuation. Registration and scheduling share the state lock so a
+    /// concurrent stop either sees and resumes this waiter or happens first
+    /// and prevents the buffer from being queued.
+    private func scheduleAndAwaitPlayback(of buffer: AVAudioPCMBuffer) async {
+        let id = UUID()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            stateLock.lock()
+            guard !stopFlag else {
+                stateLock.unlock()
+                continuation.resume()
+                return
+            }
+            playbackWaiters[id] = continuation
+            player.scheduleBuffer(buffer, at: nil, options: []) { [self] in
+                stateLock.lock()
+                let waiter = playbackWaiters.removeValue(forKey: id)
+                stateLock.unlock()
+                waiter?.resume()
+            }
+            if !player.isPlaying { player.play() }
+            stateLock.unlock()
+        }
+    }
+
+    @discardableResult
+    private func scheduleForPlayback(_ buffer: AVAudioPCMBuffer) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !stopFlag else { return false }
+        player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        if !player.isPlaying { player.play() }
+        return true
+    }
+
+    /// Kokoro's synchronous MLX graph execution can take seconds for a long
+    /// clause. Keep that work off the caller's actor so the app remains
+    /// responsive while synthesis is running.
+    private func synthesizeOffMain(_ text: String) async throws -> [Float] {
+        try await Task.detached(priority: .userInitiated) { [self] in
+            guard let embedding = voices[voiceName + ".npy"] else {
+                throw TTSError.synthesisFailed(
+                    "Voice '\(voiceName)' not present in voices.npz.")
+            }
+            let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+            let (samples, _) = try kokoro.generateAudio(
+                voice: embedding, language: language, text: text, speed: 1.0
+            )
+            Memory.clearCache()
+            return samples
+        }.value
+    }
 
     public init(voice: String = "af_heart") throws {
         let modelURL = KokoroAssets.localURL(
@@ -356,17 +442,10 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     /// execution cost into the listening window rather than the first answer.
     public func prepareForConversation() async throws {
         guard !isPrepared else { return }
-        guard let embedding = voices[voiceName + ".npy"] else {
-            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
-        }
-        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
         let phrase = Self.prepForTTS(
             "Preparing a natural voice to answer the next question clearly."
         )
-        let (samples, _) = try kokoro.generateAudio(
-            voice: embedding, language: language, text: phrase, speed: 1.0
-        )
-        Memory.clearCache()
+        let samples = try await synthesizeOffMain(phrase)
         guard !samples.isEmpty else {
             throw TTSError.synthesisFailed("Kokoro preparation produced no audio.")
         }
@@ -420,15 +499,8 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         } else {
             trimmed = raw
         }
-        stopFlag = false
-        // `voices.npz` keys each voice with an `.npy` suffix, matching
-        // the on-disk archive layout.
-        guard let embedding = voices[voiceName + ".npy"] else {
-            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
-        }
-        // American voices are `a*`, British are `b*`. KokoroTTS uses
-        // the language hint to pick a G2P rule set.
-        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+        beginSpeaking()
+        defer { finishSpeaking() }
 
         // Kokoro caps each utterance at 510 phoneme tokens. Normalise
         // the text first (Kokoro's G2P mangles things like `(unnamed
@@ -440,21 +512,16 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         let cleaned = Self.prepForTTS(trimmed)
         let chunks = Self.chunkForTTS(cleaned)
         if !engine.isRunning { try engine.start() }
-        isSpeaking = true
-        defer { isSpeaking = false }
-
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                    sampleRate: 24_000, channels: 1, interleaved: false)!
         let lastIdx = chunks.count - 1
         for (i, chunk) in chunks.enumerated() {
-            if stopFlag { break }
-            let (nativeSamples, _) = try kokoro.generateAudio(
-                voice: embedding, language: language, text: chunk, speed: 1.0
-            )
+            if shouldStop { break }
+            let nativeSamples = try await synthesizeOffMain(chunk)
+            if shouldStop { break }
             // Gain applied during the buffer copy — one pass, no
             // normalized intermediate array per chunk.
             let gain = TTSPlaybackLevel.gain(for: nativeSamples)
-            Memory.clearCache()
             guard !nativeSamples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
                                              frameCapacity: AVAudioFrameCount(nativeSamples.count)) else {
@@ -473,16 +540,11 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
             if i == lastIdx {
                 // Only wait on the tail buffer — the earlier ones are
                 // queued and will play seamlessly.
-                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    player.scheduleBuffer(buf, at: nil, options: []) { cont.resume() }
-                    if !player.isPlaying { player.play() }
-                }
+                await scheduleAndAwaitPlayback(of: buf)
             } else {
-                player.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)
-                if !player.isPlaying { player.play() }
+                guard scheduleForPlayback(buf) else { break }
             }
         }
-        if stopFlag { player.stop() }
     }
 
     /// Streaming entry point: synthesise `text` and queue it on the
@@ -492,26 +554,19 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     public func speakChunk(_ text: String) async throws {
         let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
-        stopFlag = false
-        guard let embedding = voices[voiceName + ".npy"] else {
-            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
-        }
-        let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
+        beginSpeaking()
         let cleaned = Self.prepForTTS(raw)
         let subChunks = Self.chunkForTTS(cleaned)
         if !engine.isRunning { try engine.start() }
-        isSpeaking = true
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                    sampleRate: 24_000, channels: 1, interleaved: false)!
         for sub in subChunks {
-            if stopFlag { break }
-            let (nativeSamples, _) = try kokoro.generateAudio(
-                voice: embedding, language: language, text: sub, speed: 1.0
-            )
+            if shouldStop { break }
+            let nativeSamples = try await synthesizeOffMain(sub)
+            if shouldStop { break }
             // Gain applied during the buffer copy — one pass, no
             // normalized intermediate array per chunk.
             let gain = TTSPlaybackLevel.gain(for: nativeSamples)
-            Memory.clearCache()
             guard !nativeSamples.isEmpty else { continue }
             guard let buf = AVAudioPCMBuffer(pcmFormat: format,
                                              frameCapacity: AVAudioFrameCount(nativeSamples.count)) else {
@@ -527,8 +582,7 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
                     }
                 }
             }
-            player.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)
-            if !player.isPlaying { player.play() }
+            guard scheduleForPlayback(buf) else { break }
         }
     }
 
@@ -541,11 +595,8 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else { return }
         marker.frameLength = 1
         marker.floatChannelData?[0][0] = 0
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            player.scheduleBuffer(marker, at: nil, options: []) { cont.resume() }
-            if !player.isPlaying { player.play() }
-        }
-        isSpeaking = false
+        await scheduleAndAwaitPlayback(of: marker)
+        finishSpeaking()
     }
 
     /// Normalise text before it reaches Kokoro's G2P. The phonemiser is
@@ -680,10 +731,18 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     }
 
     public func stop() {
-        guard isSpeaking else { return }
+        stateLock.lock()
+        guard speaking || !playbackWaiters.isEmpty else {
+            stateLock.unlock()
+            return
+        }
         stopFlag = true
+        speaking = false
+        let waiters = Array(playbackWaiters.values)
+        playbackWaiters.removeAll(keepingCapacity: true)
         player.stop()
-        isSpeaking = false
+        stateLock.unlock()
+        for waiter in waiters { waiter.resume() }
     }
 }
 

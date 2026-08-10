@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Setup help and support for Zimfo offline AI, Wikipedia ZIM files, and StreetZIM maps.">
+  <meta name="theme-color" content="#0f624f">
+  <title>Support — Zimfo</title>
+  <link rel="icon" href="assets/zimfo-globe-chat.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav-shell" aria-label="Primary navigation">
+      <a class="brand" href="index.html" aria-label="Zimfo home"><span class="brand-mark" aria-hidden="true"></span>Zimfo</a>
+      <ul class="nav-links">
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="support.html" aria-current="page">Support</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+        <li><a class="nav-cta" href="beta.html">Open beta</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main">
+    <header class="page-hero">
+      <div class="shell">
+        <p class="eyebrow">Zimfo support</p>
+        <h1>Get your offline library talking.</h1>
+        <p class="lede">Setup help for models, Wikipedia archives, offline maps, voice, storage, and beta feedback.</p>
+      </div>
+    </header>
+
+    <div class="shell page-grid">
+      <aside class="page-aside">
+        <p>Quick links</p>
+        <nav aria-label="Support sections">
+          <a href="#start">Get started</a>
+          <a href="#wikipedia">Wikipedia</a>
+          <a href="#maps">Offline maps</a>
+          <a href="#models">Models &amp; speed</a>
+          <a href="#voice">Voice</a>
+          <a href="#faq">Common questions</a>
+          <a href="#contact">Contact</a>
+        </nav>
+      </aside>
+
+      <article class="prose">
+        <section id="start">
+          <h2>Get started</h2>
+          <ol>
+            <li>Install Zimfo from TestFlight and allow requested permissions only when you want to use those features.</li>
+            <li>Choose and download an on-device language model in Zimfo.</li>
+            <li>Download a compatible Wikipedia ZIM and, optionally, a StreetZIM map archive.</li>
+            <li>Open or import the archives into Zimfo, then ask a question or say, “Let’s talk about Mongolia.”</li>
+          </ol>
+          <div class="callout warning">
+            <p><strong>Plan for large downloads.</strong> A full no-picture English Wikipedia archive and capable AI models can each use several gigabytes. Use Wi‑Fi, keep the app open when requested, and confirm you have enough free storage.</p>
+          </div>
+        </section>
+
+        <section id="wikipedia">
+          <h2>Add offline Wikipedia</h2>
+          <p>Get a Wikipedia archive from the <a href="https://library.kiwix.org/?lang=eng&amp;category=wikipedia">Kiwix library</a>. Choose your language and scope. For phones, a <strong>no-picture</strong> or smaller topic edition is usually the best balance of coverage and storage.</p>
+          <p>After the download finishes, use Share or Open In to send the <code>.zim</code> file to Zimfo, or choose it from Zimfo’s library controls. Keep the original archive somewhere safe if you do not want to download it again.</p>
+        </section>
+
+        <section id="maps">
+          <h2>Add offline maps</h2>
+          <p>Visit <a href="https://streetzim.web.app/">streetzim.web.app</a> and choose the smallest state, region, or country archive that covers where you will travel. Import the downloaded <code>.zim</code> file into Zimfo.</p>
+          <p>Nearby-place search works best when the archive contains the relevant category indexes. Routing support depends on the StreetZIM package format and included spatial data. Offline data can become dated, so verify safety-critical directions and current road conditions when possible.</p>
+        </section>
+
+        <section id="models">
+          <h2>Models, storage, and speed</h2>
+          <p>Larger models can give richer answers but take longer to load and generate, especially on phones. First use may also prepare a reusable prompt cache. Subsequent requests should be faster when that cache remains available.</p>
+          <ul>
+            <li>Keep several gigabytes of free storage beyond the model and archives themselves.</li>
+            <li>Expect the device to warm during long generations; thermal limits can slow performance.</li>
+            <li>Leaving and returning to the app may release model memory and require some work to be repeated.</li>
+            <li>On Mac, use a larger model only when the extra quality is worth the memory and latency.</li>
+          </ul>
+        </section>
+
+        <section id="voice">
+          <h2>Voice and audio</h2>
+          <p>Zimfo needs microphone permission to hear you. If voice does not begin, check System Settings → Privacy &amp; Security → Microphone, confirm Zimfo is enabled, then fully quit and reopen the app. Also verify the active audio output and system volume before driving.</p>
+          <p>Speech recognition and synthesis are performed on device. Recognition can take a moment to initialize on first use, and noisy environments may reduce accuracy.</p>
+        </section>
+
+        <section id="faq">
+          <h2>Common questions</h2>
+          <div class="faq-grid">
+            <article class="faq-card"><h3>Does Zimfo include Wikipedia?</h3><p>No. You choose and download a compatible Kiwix ZIM archive, which keeps the app smaller and gives you control over language, images, and coverage.</p></article>
+            <article class="faq-card"><h3>Does it need internet?</h3><p>Core questions, article conversations, voice processing, and supported map functions run locally after the required model and archives are downloaded.</p></article>
+            <article class="faq-card"><h3>Why was an answer wrong?</h3><p>Local AI can misunderstand a request or select the wrong article. State the source explicitly—for example, “Use the Wikipedia article Santa Rosa, California and read the Seismicity section.”</p></article>
+            <article class="faq-card"><h3>Can I use it while driving?</h3><p>Voice is designed for hands-free conversations, but Zimfo is beta software. Set up downloads and permissions before driving, never interact with the screen while moving, and follow local laws.</p></article>
+          </div>
+        </section>
+
+        <section id="contact">
+          <div class="contact-card">
+            <div><h2>Still stuck?</h2><p>Include your device, OS version, Zimfo version, and what you expected to happen. Do not send private conversation text unless you choose to.</p></div>
+            <a class="button" href="mailto:support@tiltastech.com?subject=Zimfo%20support">Email support</a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <div class="footer-grid">
+        <div><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"></span>Zimfo</a><p class="footer-copy">A private, offline conversation with the knowledge and maps you choose to carry.</p></div>
+        <nav class="footer-links" aria-label="Footer navigation"><a href="beta.html">Open beta</a><a href="support.html">Support</a><a href="privacy.html">Privacy</a><a href="licenses.html">Licenses</a></nav>
+      </div>
+      <p class="footer-meta">© 2026 Tiltas Technologies.</p>
+    </div>
+  </footer>
+</body>
+</html>

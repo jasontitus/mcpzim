@@ -12,6 +12,11 @@ import CryptoKit
 /// source paths) under Application Support.
 enum ManifestCache {
 
+    /// Manifest entries can be several megabytes for very large shares. Bound
+    /// Application Support growth while retaining enough recent layouts for
+    /// normal re-hosting workflows.
+    static let maxEntries = 32
+
     private struct Entry: Codable {
         let manifest: SwarmManifest
         let orderedPaths: [String]
@@ -59,8 +64,13 @@ enum ManifestCache {
         guard let key = key(name: name, items: items) else { return }
         let entry = Entry(manifest: manifest, orderedPaths: ordered.map(\.path))
         guard let data = try? JSONEncoder().encode(entry) else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? data.write(to: fileURL(for: key), options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: fileURL(for: key), options: .atomic)
+            pruneIfNeeded()
+        } catch {
+            // Best-effort cache: a failed save only costs a future re-hash.
+        }
     }
 
     /// Flat-share conveniences (bare filenames as relative paths).
@@ -76,6 +86,34 @@ enum ManifestCache {
     /// Wipe the cache (also handy for tests).
     static func clear() {
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    static var entryCount: Int {
+        ((try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []).filter { $0.pathExtension == "json" }.count
+    }
+
+    private static func pruneIfNeeded() {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let entries = files.filter { $0.pathExtension == "json" }
+        guard entries.count > maxEntries else { return }
+        let oldestFirst = entries.sorted { lhs, rhs in
+            let left = (try? lhs.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
+            let right = (try? rhs.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
+            if left == right { return lhs.lastPathComponent < rhs.lastPathComponent }
+            return left < right
+        }
+        for url in oldestFirst.prefix(entries.count - maxEntries) {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private static var directory: URL {

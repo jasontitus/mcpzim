@@ -99,4 +99,23 @@ final class ManifestCacheTests: XCTestCase {
         XCTAssertNotEqual(flat.manifest.swarmID, nested.manifest.swarmID,
                           "relative path feeds the content address")
     }
+
+    func testCachePrunesOldEntriesToConfiguredLimit() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = try makeFile("model.bin", bytes: 4096, in: dir)
+        let (manifest, ordered) = try Chunker.buildManifest(name: "model", fileURLs: [file])
+
+        for index in 0..<(ManifestCache.maxEntries + 5) {
+            ManifestCache.store(
+                manifest: manifest,
+                ordered: ordered,
+                name: "model-\(index)",
+                urls: [file]
+            )
+        }
+
+        XCTAssertEqual(ManifestCache.entryCount, ManifestCache.maxEntries)
+    }
 }

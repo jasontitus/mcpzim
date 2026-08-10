@@ -66,33 +66,34 @@ public final class VoiceChatController {
         log("TTS backend initialized after capture — \(service.displayName)")
         return service
     }
-    /// Swap a too-heavy synthesis backend for the always-affordable system
-    /// voice when the device can't spare its peak. Called once per reply,
-    /// after `tts` is realized. On macOS `availableMemoryMB` is 0 (no jetsam
-    /// cap) so the gate is skipped and the chosen backend stands.
+    /// Swap a genuinely high-memory synthesis backend for the always-
+    /// affordable system voice when the device can't spare its peak. Small
+    /// Core ML/ANE voices such as Supertonic are preserved even under thermal
+    /// pressure; the safety fallback targets the multi-gigabyte Kokoro + LLM
+    /// overlap that has actually crashed on-device.
     private func ensureAffordableTTS() {
         guard let current = ttsStorage, !(current is SystemTTSService) else { return }
-        // Thermal gate first: at .serious the GPU is already throttled
-        // (the 2026-08-02 crash turn decoded at 3.1 tok/s) and MLX
-        // synthesis both stalls badly and aborts more readily under
-        // pressure. Memory alone doesn't capture this — the same crash
-        // session showed the swap must fire even when the estimate says
-        // the peak *barely* fits.
         let thermal = ProcessInfo.processInfo.thermalState
-        if thermal == .serious || thermal == .critical {
-            log("TTS backend \(current.displayName) skipped under \(thermal == .critical ? "critical" : "serious") thermal state — using system voice this session")
-            ttsStorage = SystemTTSService()
-            return
-        }
         let available = Self.availableMemoryMB()
-        guard available > 0 else { return }
-        let needed = Double(current.peakSynthesisMemoryMB)
-            + minimumEagerSpeechHeadroomMB
-        guard available < needed else { return }
-        log(String(format:
-            "TTS backend %@ needs ~%d MB peak but only %.0f MB free — using system voice this session (avoids MLX synthesis abort)",
-            current.displayName, current.peakSynthesisMemoryMB, available))
-        ttsStorage = SystemTTSService()   // ARC frees the heavy backend
+        let thermallyConstrained = thermal == .serious || thermal == .critical
+        guard StreamingSpeechPolicy.requiresLightweightVoiceFallback(
+            availableMemoryMB: available,
+            estimatedTTSMemoryMB: current.peakSynthesisMemoryMB,
+            minimumHeadroomMB: minimumEagerSpeechHeadroomMB,
+            thermallyConstrained: thermallyConstrained)
+        else { return }
+
+        ttsPreparation?.cancel()
+        ttsPreparation = nil
+        if thermallyConstrained {
+            log("High-memory TTS backend \(current.displayName) skipped under \(thermal == .critical ? "critical" : "serious") thermal state — using English system voice this session")
+        } else {
+            log(String(format:
+                "High-memory TTS backend %@ needs ~%d MB peak but only %.0f MB free — using English system voice this session (avoids MLX synthesis abort)",
+                current.displayName, current.peakSynthesisMemoryMB, available))
+        }
+        current.stop()
+        ttsStorage = SystemTTSService(languageCode: "en-US")
     }
 
     public let session: ChatSession
@@ -722,6 +723,12 @@ public final class VoiceChatController {
     /// memory rule used for overlapping synthesis and generation.
     private func beginTTSPreparationIfSafe() {
         guard ttsPreparation == nil else { return }
+        // Realize and pressure-check the selected service before a detached
+        // warm-up captures it. The old order could warm Supertonic for 12 s,
+        // replace it with the system voice, and still wait for the discarded
+        // preparation task before speaking.
+        _ = tts
+        ensureAffordableTTS()
         let availableMB = Self.availableMemoryMB()
         guard StreamingSpeechPolicy.allowsEagerSynthesis(
             availableMemoryMB: availableMB,
@@ -908,6 +915,11 @@ public final class VoiceChatController {
                                     toSpeak, boundary: ttsBoundary)
                             } catch {
                                 log("TTS chunk failed: \(error.localizedDescription)")
+                                // Leave `spokenUpTo` unchanged so the same
+                                // source text remains pending rather than
+                                // being silently discarded.
+                                try? await Task.sleep(nanoseconds: 75_000_000)
+                                continue
                             }
                             let synthesisSeconds =
                                 Date().timeIntervalSince(synthesisStarted)
@@ -947,11 +959,11 @@ public final class VoiceChatController {
                                     metrics.queueAheadSeconds,
                                     metrics.trimmedSeconds))
                             }
+                            // Advance by source characters, not the optional
+                            // comma added only for soft-wrap prosody.
+                            spokenUpTo += prefix.consumedCharacters
+                            advancedThisPass = true
                         }
-                        // Advance by source characters, not the optional comma
-                        // added only for soft-wrap prosody.
-                        spokenUpTo += prefix.consumedCharacters
-                        advancedThisPass = true
                     }
                 }
             }

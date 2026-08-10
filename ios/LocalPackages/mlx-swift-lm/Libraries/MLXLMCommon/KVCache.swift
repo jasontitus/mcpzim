@@ -729,8 +729,8 @@ public class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
     private var keys: (MLXArray, MLXArray, MLXArray?)?
     private var values: (MLXArray, MLXArray, MLXArray?)?
     private let step: Int
-    public let groupSize: Int
-    public let bits: Int
+    public private(set) var groupSize: Int
+    public private(set) var bits: Int
     public let mode: QuantizationMode
 
     public init(groupSize: Int = 64, bits: Int = 8, mode: QuantizationMode = .affine) {
@@ -847,7 +847,7 @@ public class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
             } else {
                 // Initialize new quantized cache
                 self.keys = initQuant(dim: kHeadDim, shape: shape, dtype: keys.dtype)
-                self.values = initQuant(dim: vHeadDim, shape: shape, dtype: keys.dtype)
+                self.values = initQuant(dim: vHeadDim, shape: shape, dtype: values.dtype)
             }
         }
 
@@ -940,6 +940,12 @@ public class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
             }
 
             self.offset = Int(newValue[1]) ?? 0
+            if let savedGroupSize = Int(newValue[2]), savedGroupSize > 0 {
+                self.groupSize = savedGroupSize
+            }
+            if let savedBits = Int(newValue[3]), savedBits > 0 {
+                self.bits = savedBits
+            }
         }
     }
 
@@ -1279,9 +1285,10 @@ public class CacheList: BaseKVCache {
 
     @discardableResult
     public override func trim(_ n: Int) -> Int {
-        var result = 0
+        guard !caches.isEmpty else { return 0 }
+        var result = Int.max
         for cache in caches {
-            result = cache.trim(n)
+            result = min(result, cache.trim(n))
         }
         return result
     }
@@ -1500,7 +1507,14 @@ private func restoreCacheFromMetaState(
         return cache
 
     case "QuantizedKVCache":
-        let cache = QuantizedKVCache()
+        guard metaState.count == 4,
+            let groupSize = Int(metaState[2]), groupSize > 0,
+            let bits = Int(metaState[3]), bits > 0
+        else {
+            throw KVCacheError(
+                message: "Invalid QuantizedKVCache metaState - expected positive group size and bit count")
+        }
+        let cache = QuantizedKVCache(groupSize: groupSize, bits: bits)
         cache.state = state
         cache.metaState = metaState
         return cache

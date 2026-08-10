@@ -287,6 +287,9 @@ func aStarSpatial(
               let local = cell.localIdx(for: UInt32(current)) else { continue }
         let eStart = Int(cell.cellAdj[local])
         let eEnd = Int(cell.cellAdj[local + 1])
+        guard eStart >= 0, eStart <= eEnd, eEnd <= cell.edgeCount else {
+            return nil
+        }
         for ei in eStart..<eEnd {
             let base = ei * 5
             let target = Int(cell.edges[base])

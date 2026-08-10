@@ -408,10 +408,12 @@ public enum ArticleHeuristics {
     /// a killed-plus-wounded casualty total into a death count.
     public static func groundedExtractiveAnswer(
         question: String,
-        passages: [String]
+        passages: [String],
+        passageLabels: [String] = []
     ) -> String? {
         let lowerQuestion = question.lowercased()
-        let cleaned = passages.flatMap { passage -> [String] in
+        let evidence = passages.enumerated().flatMap {
+            index, passage -> [(sentence: String, label: String)] in
             var text = stripCitations(passage)
             // Section bodies can begin with Wikipedia navigation hatnotes.
             // They are useful links in the article UI but are not part of a
@@ -430,8 +432,10 @@ public enum ArticleHeuristics {
                 of: #"\(\s+"#, with: "(", options: .regularExpression)
             text = text.replacingOccurrences(
                 of: #"\s+\)"#, with: ")", options: .regularExpression)
-            return sentenceChunks(text)
+            let label = index < passageLabels.count ? passageLabels[index] : ""
+            return sentenceChunks(text).map { (sentence: $0, label: label) }
         }
+        let cleaned = evidence.map(\.sentence)
         guard !cleaned.isEmpty else { return nil }
 
         if ["parent", "mother", "father"]
@@ -444,7 +448,8 @@ public enum ArticleHeuristics {
             && ["died", "dead", "death", "killed", "fatalit"]
                 .contains(where: { lowerQuestion.contains($0) })
         if asksForDeathCount {
-            return extractDeathCountAnswer(sentences: cleaned)
+            return extractDeathCountAnswer(
+                question: lowerQuestion, evidence: evidence)
         }
         if lowerQuestion.contains("after"),
            lowerQuestion.contains("graduat") {
@@ -518,7 +523,8 @@ public enum ArticleHeuristics {
     }
 
     private static func extractDeathCountAnswer(
-        sentences: [String]
+        question: String,
+        evidence: [(sentence: String, label: String)]
     ) -> String? {
         struct Candidate {
             let index: Int
@@ -528,16 +534,45 @@ public enum ArticleHeuristics {
         }
         let deathTerms = ["killed", "dead", "died", "fatalit"]
         let casualtyTerms = deathTerms + ["wounded", "casualt"]
+        let contextTerms = questionKeywords(question).filter { term in
+            !["killed", "dead", "died", "death", "fatality", "fatalities",
+              "casualty", "casualties", "wounded"].contains(term)
+        }
         var candidates: [Candidate] = []
 
-        for (index, sentence) in sentences.enumerated() {
+        for (index, item) in evidence.enumerated() {
+            let sentence = item.sentence
             let lower = sentence.lowercased()
             guard lower.range(of: #"\d"#, options: .regularExpression) != nil,
                   casualtyTerms.contains(where: { lower.contains($0) })
             else { continue }
 
+            // Biography dates are not casualty counts. This exact shape
+            // produced “He died on 2 November 2012 …” three times for “How
+            // many people died at Pearl Harbor?” in TestFlight feedback.
+            if lower.range(
+                of: #"\b(?:he|she|they|[A-Z][a-z]+)\s+died\s+(?:on|in|at)\b"#,
+                options: [.regularExpression, .caseInsensitive]) != nil,
+               lower.range(
+                of: #"\b(?:\d[\d,]*\s+(?:people|persons|civilians|sailors|soldiers|troops|men|women|americans|japanese)|(?:killed|dead|fatalities)\s+(?:was|were|numbered|totaled)?\s*\d)\b"#,
+                options: [.regularExpression, .caseInsensitive]) == nil {
+                continue
+            }
+
             let explicitlyDeaths = deathTerms.contains(where: { lower.contains($0) })
             var score = explicitlyDeaths ? 4 : 1
+            if !contextTerms.isEmpty {
+                let context = (item.label + " " + sentence).lowercased()
+                let matches = contextTerms.filter { context.contains($0) }.count
+                // An explicitly named event must be represented either by
+                // the sentence or by its article/section label. This keeps a
+                // 2019 Pearl Harbor shipyard shooting from answering a
+                // question about the Japanese attack while still accepting
+                // “2,403 Americans were killed” from the correctly titled
+                // Attack on Pearl Harbor article.
+                guard matches > 0 else { continue }
+                score += matches * 3
+            }
             if lower.range(
                 of: #"\d[\d,]*\s*(?:[–—-]|to|and)\s*\d"#,
                 options: [.regularExpression, .caseInsensitive]) != nil {
@@ -885,13 +920,27 @@ public enum ArticleHeuristics {
     public static func namedEventArticleCandidates(
         _ sections: [ArticleSection], question: String
     ) -> [String] {
-        guard question.lowercased().contains("civil war"),
-              let regex = try? NSRegularExpression(
-                pattern: #"\b(?:[A-Z][\p{L}\p{M}'’.-]*\s+){1,4}Civil War\b"#)
-        else { return [] }
-
         var seen = Set<String>()
         var candidates: [String] = []
+        let lowerQuestion = question.lowercased()
+        let evidenceText = sections.map(\.text).joined(separator: " ").lowercased()
+
+        // A place article often mentions the historical event and links to
+        // its dedicated article. Prefer that identity before a noisy corpus
+        // search or a later incident in the same place section.
+        if (lowerQuestion.contains("pearl harbor")
+                || evidenceText.contains("pearl harbor")),
+           lowerQuestion.contains("attack"),
+           lowerQuestion.contains("japanese") {
+            seen.insert("attack on pearl harbor")
+            candidates.append("Attack on Pearl Harbor")
+        }
+
+        guard lowerQuestion.contains("civil war"),
+              let regex = try? NSRegularExpression(
+                pattern: #"\b(?:[A-Z][\p{L}\p{M}'’.-]*\s+){1,4}Civil War\b"#)
+        else { return candidates }
+
         for section in sections {
             let text = section.text as NSString
             let range = NSRange(location: 0, length: text.length)

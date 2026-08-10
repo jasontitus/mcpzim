@@ -4,6 +4,17 @@ import Foundation
 import MLX
 import MLXNN
 
+public enum WeightLoadingError: LocalizedError {
+    case unreadableDirectory(URL)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unreadableDirectory(let url):
+            return "Could not enumerate model weights in \(url.path)."
+        }
+    }
+}
+
 /// Load model weights.
 ///
 /// This is typically called via ``GenericModelFactory/load(from:using:configuration:useLatest:progressHandler:)``.
@@ -19,8 +30,11 @@ public func loadWeights(
     // load the weights and collect metadata from the first safetensor file
     var weights = [String: MLXArray]()
     var metadata = [String: String]()
-    let enumerator = FileManager.default.enumerator(
-        at: modelDirectory, includingPropertiesForKeys: nil)!
+    guard let enumerator = FileManager.default.enumerator(
+        at: modelDirectory, includingPropertiesForKeys: nil)
+    else {
+        throw WeightLoadingError.unreadableDirectory(modelDirectory)
+    }
     for case let url as URL in enumerator {
         if url.pathExtension == "safetensors" {
             let (w, m) = try loadArraysAndMetadata(url: url)

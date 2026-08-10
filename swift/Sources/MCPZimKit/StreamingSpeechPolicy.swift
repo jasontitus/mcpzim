@@ -159,6 +159,28 @@ public enum StreamingSpeechPolicy {
         return availableMemoryMB >= required
     }
 
+    /// Whether a selected neural voice is so expensive that the host should
+    /// replace it with a lightweight system voice for safety. Thermal pressure
+    /// alone must not replace small Core ML/ANE voices: Supertonic's measured
+    /// peak is under 100 MB, while the crash-prone Kokoro + large-LLM overlap
+    /// is measured in gigabytes. Keeping that distinction here prevents a
+    /// merely `.serious` phone from silently discarding the user's voice.
+    public static func requiresLightweightVoiceFallback(
+        availableMemoryMB: Double,
+        estimatedTTSMemoryMB: Int,
+        minimumHeadroomMB: Double = 700,
+        thermallyConstrained: Bool,
+        highMemoryBackendThresholdMB: Int = 512
+    ) -> Bool {
+        guard estimatedTTSMemoryMB >= highMemoryBackendThresholdMB else {
+            return false
+        }
+        if thermallyConstrained { return true }
+        guard availableMemoryMB > 0 else { return false }
+        return availableMemoryMB
+            < Double(estimatedTTSMemoryMB) + minimumHeadroomMB
+    }
+
     /// Avoid handing TTS tiny false sentences such as "Dr." or the first
     /// initial in "V. Putin". This intentionally favors a short allowlist and
     /// single-letter initials; ambiguous prose can wait for a clause boundary.

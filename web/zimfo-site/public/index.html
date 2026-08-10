@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Zimfo is an on-device AI guide for offline Wikipedia and maps on iPhone and Mac.">
+  <meta name="theme-color" content="#0f624f">
+  <title>Zimfo — Offline knowledge, ready to talk</title>
+  <link rel="icon" href="assets/zimfo-globe-chat.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav-shell" aria-label="Primary navigation">
+      <a class="brand" href="index.html" aria-label="Zimfo home"><span class="brand-mark" aria-hidden="true"></span>Zimfo</a>
+      <ul class="nav-links">
+        <li><a href="index.html" aria-current="page">Overview</a></li>
+        <li><a href="support.html">Support</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+        <li><a class="nav-cta" href="beta.html">Open beta</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="shell hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Private, on-device AI</p>
+        <h1>Offline knowledge, <span>ready to talk.</span></h1>
+        <p class="lede">Zimfo turns downloaded Wikipedia and map archives into a conversational guide—without needing an internet connection for everyday questions.</p>
+        <div class="button-row">
+          <a class="button" href="beta.html">Join the open beta</a>
+          <a class="button secondary" href="#setup">See how setup works</a>
+        </div>
+        <p class="hero-note">For iPhone and Mac · Bring your own offline library</p>
+      </div>
+
+      <div class="conversation-stage" aria-label="Example Zimfo conversation">
+        <div class="orbit" aria-hidden="true"></div>
+        <div class="conversation-card main">
+          <p class="message-label">You</p>
+          <p class="message">“Let’s talk about Mongolia. What happened to Buddhism during the Soviet era?”</p>
+          <span class="source-chip">Mongolia · Religion</span>
+        </div>
+        <div class="mini-card private"><span class="dot"></span>On-device</div>
+        <div class="mini-card offline"><span class="dot"></span>No signal needed</div>
+        <div class="conversation-card answer">
+          <p class="message-label">Zimfo</p>
+          <p class="message">“The communist government suppressed religious practice, closed monasteries, and persecuted lamas. Public practice returned after 1990…”</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="features-title">
+      <div class="section-head">
+        <p class="eyebrow">Your library, your device</p>
+        <h2 id="features-title">Useful when the network isn’t.</h2>
+        <p>Download the knowledge and maps that matter to you, then ask naturally by typing or speaking.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-number">01</span>
+          <h3>Talk with Wikipedia</h3>
+          <p>Explore articles, ask follow-up questions, focus on a section, or have an article read aloud from a Kiwix ZIM archive.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">02</span>
+          <h3>Find places offline</h3>
+          <p>Add a StreetZIM for your state, region, or country to search nearby places, view maps, and plan supported routes without cellular data.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">03</span>
+          <h3>Keep conversation local</h3>
+          <p>The language model, voice processing, transcripts, library contents, and GPS coordinates stay on your device. Diagnostic telemetry excludes what you ask and read.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" id="setup" aria-labelledby="setup-title">
+      <div class="setup-panel">
+        <div class="section-head">
+          <p class="eyebrow">Simple offline setup</p>
+          <h2 id="setup-title">Choose what you want to carry.</h2>
+          <p>Zimfo does not bundle a giant encyclopedia or map. You decide which archives live on your device.</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <span class="step-count">Step 1</span>
+            <h3>Install Zimfo</h3>
+            <p>Join the TestFlight beta, install the app, and choose an on-device language model that fits your hardware.</p>
+          </li>
+          <li>
+            <span class="step-count">Step 2</span>
+            <h3>Add Wikipedia</h3>
+            <p>Download a Wikipedia ZIM from <a href="https://library.kiwix.org/?lang=eng&amp;category=wikipedia">the Kiwix library</a>. The no-picture edition saves substantial storage.</p>
+          </li>
+          <li>
+            <span class="step-count">Step 3</span>
+            <h3>Add offline maps</h3>
+            <p>Visit <a href="https://streetzim.web.app/">StreetZIM</a> to download a map archive for your state, region, or country, then open it in Zimfo.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section shell">
+      <div class="trust-strip">
+        <div>
+          <h2>Designed to know less about you.</h2>
+          <p>Zimfo uses bounded Firebase diagnostics to improve reliability and performance, but never sends query text, article titles, ZIM filenames, voice recordings, transcripts, or precise location.</p>
+        </div>
+        <ul class="trust-points" aria-label="Privacy highlights">
+          <li>Questions stay on device</li>
+          <li>Voice and transcripts stay on device</li>
+          <li>GPS coordinates stay on device</li>
+          <li>Your archives stay on device</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="beta-title">
+      <div class="contact-card">
+        <div>
+          <h2 id="beta-title">Help shape the open beta.</h2>
+          <p>Try real conversations, report where Zimfo loses the thread, and help make offline knowledge feel natural.</p>
+        </div>
+        <a class="button" href="beta.html">Beta details</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"></span>Zimfo</a>
+          <p class="footer-copy">A private, offline conversation with the knowledge and maps you choose to carry.</p>
+        </div>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <a href="beta.html">Open beta</a>
+          <a href="support.html">Support</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="licenses.html">Licenses</a>
+          <a href="https://library.kiwix.org/?lang=eng&amp;category=wikipedia">Kiwix library</a>
+          <a href="https://streetzim.web.app/">StreetZIM</a>
+        </nav>
+      </div>
+      <p class="footer-meta">© 2026 Tiltas Technologies. Zimfo is not affiliated with Wikimedia Foundation, Kiwix, or OpenStreetMap.</p>
+    </div>
+  </footer>
+</body>
+</html>

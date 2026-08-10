@@ -69,6 +69,12 @@ public protocol StreamingDetokenizer: IteratorProtocol<String> {
 }
 
 public struct NaiveStreamingDetokenizer: StreamingDetokenizer {
+    /// Retaining the entire paragraph makes decode work grow quadratically.
+    /// One previous token is enough to preserve the tokenizer's boundary
+    /// context when starting a fresh segment (the same strategy already used
+    /// at newlines), so periodically roll the segment forward.
+    private static let maxSegmentTokens = 32
+
     let tokenizer: any Tokenizer
 
     var segmentTokens = [Int]()
@@ -103,7 +109,7 @@ public struct NaiveStreamingDetokenizer: StreamingDetokenizer {
             return nil
         }
 
-        if new.hasSuffix("\n") {
+        if new.hasSuffix("\n") || segmentTokens.count >= Self.maxSegmentTokens {
             startNewSegment()
         } else {
             self.segment = newSegment

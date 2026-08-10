@@ -101,7 +101,9 @@ final class ZimfoRunner {
         await adapter.installHostStateProvider {
             await ZimfoContext.shared.mcpSnapshot()
         }
-        let byName = Dictionary(uniqueKeysWithValues: readers.map { ($0.name, $0.reader) })
+        let byName = Dictionary(
+            readers.map { ($0.name, $0.reader) },
+            uniquingKeysWith: { first, _ in first })
         return ZimfoRunner(service: service, adapter: adapter, readersByName: byName)
     }
 
@@ -121,11 +123,6 @@ final class ZimfoRunner {
         // Geocode destination, then plan_driving_route.
         let hits = try await service.geocode(query: destination, limit: 1, zim: nil, kinds: nil)
         guard let dest = hits.first else { throw ZimServiceError.noMatch(destination) }
-        let route = try await service.planDrivingRoute(RouteRequest(
-            originLat: originLat, originLon: originLon,
-            destLat: dest.lat, destLon: dest.lon,
-            zim: nil
-        ))
         // Re-use the encoded form of route so we can reach into
         // polyline / distance fields uniformly with the in-app path.
         var body = await adapter.dispatchLocal_plan(req: RouteRequest(
@@ -136,7 +133,6 @@ final class ZimfoRunner {
             "name": dest.name, "lat": dest.lat, "lon": dest.lon,
             "type": dest.kind
         ] as [String: Any]
-        _ = route
         return body
     }
 

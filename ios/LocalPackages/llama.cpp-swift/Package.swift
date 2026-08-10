@@ -4,8 +4,10 @@
 //
 // Vendored from:
 //   PrismML-Eng/llama.cpp branch `prism`, commit 62061f9
-//   (`prism-b9591`). This fork supplies the Q1_0_g128 Metal kernels used by
-//   Bonsai 27B as well as the ordinary upstream quantizations.
+//   (`prism-b9591`). This build supplies the tested Q1_0_g128 Metal path for
+//   Bonsai 27B and the fork-only Q2_0_g128 path used by the Mac ternary model.
+//   Stock llama.cpp now supports Bonsai Q1, but its Q2 format is group-64 and
+//   is not interchangeable with Prism's existing group-128 GGUF.
 //
 // The XCFramework ships iOS device + iOS sim + macOS + visionOS (device+sim)
 // + tvOS (device+sim) slices with Metal embedded via
@@ -23,9 +25,9 @@
 //   6. Rebuild the app — any newly-renamed C symbols will surface as
 //      compile errors against our `LlamaCppProvider.swift` wrapper.
 //
-// Keep the exact commit pinned: Bonsai's packed Q1_0_g128 format depends on
-// fork-specific kernels that are not interchangeable with an arbitrary
-// upstream llama.cpp release.
+// Keep the exact commit pinned until a controlled Q1 benchmark and Q2 model
+// migration are complete. An arbitrary upstream XCFramework is not compatible
+// with the existing Prism group-128 ternary GGUF.
 
 import PackageDescription
 

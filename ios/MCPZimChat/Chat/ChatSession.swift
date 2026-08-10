@@ -148,6 +148,8 @@ public final class ChatSession {
     /// Debug-pane cap. Tuned for interactive use; tests that want to
     /// scan the full log can bump this before a long scenario.
     public var maxDebugEntries = 500
+    private var lastDebugMemorySampleAt = Date.distantPast
+    private var lastDebugMemorySample = "?"
 
     /// When true, after a routing tool (`route_from_places` /
     /// `plan_driving_route`) returns, skip the model's iter-1 summary
@@ -294,7 +296,17 @@ public final class ChatSession {
     private func intentLeavesDiscussion(
         _ intent: DirectIntent, state: DiscussionState, userText: String
     ) -> Bool {
-        if Self.exitsDiscussion(intent.toolName) { return true }
+        if Self.exitsDiscussion(intent.toolName) {
+            // A factual correction can contain a syntactic “X in Y” fragment
+            // that a stateless places regex mistakes for a POI request. Keep
+            // it pinned instead of launching a map. The classifier has the
+            // same guard; this host check prevents future regex drift from
+            // recreating the TestFlight 2026-08-10 crash path.
+            if IntentRouter.isConversationalKnowledgeRequest(userText) {
+                return false
+            }
+            return true
+        }
         let articleTools: Set<String> = [
             "article_overview", "article_factoid", "narrate_article",
             "get_article_section",
@@ -409,8 +421,13 @@ public final class ChatSession {
         // Prefix every log line with resident-memory so it's easy to eyeball
         // which step moved the needle. Uses `phys_footprint` — the same number
         // the OS uses to decide whether to jetsam this process.
-        let decorated = "\(message) · mem=\(MemoryStats.formatted())"
-        let entry = DebugEntry(timestamp: Date(), category: category, message: decorated)
+        let now = Date()
+        if now.timeIntervalSince(lastDebugMemorySampleAt) >= 0.25 {
+            lastDebugMemorySample = MemoryStats.formatted()
+            lastDebugMemorySampleAt = now
+        }
+        let decorated = "\(message) · mem=\(lastDebugMemorySample)"
+        let entry = DebugEntry(timestamp: now, category: category, message: decorated)
         debugEntries.append(entry)
         if debugEntries.count > maxDebugEntries {
             // Bulk-drop with slack: removeFirst(k) shifts the whole array,
@@ -1289,7 +1306,9 @@ public final class ChatSession {
     /// preamble tells the model to use `origin:"my location"` on
     /// route_from_places, but the geocoder has no concept of "me" —
     /// this is where that shortcut gets resolved.
-    private func substituteCurrentLocation(in args: [String: Any]) -> [String: Any] {
+    private func substituteCurrentLocation(
+        in args: [String: Any], toolName: String
+    ) -> [String: Any] {
         guard let here = currentLocation else { return args }
         let coord = String(format: "%.5f,%.5f", here.lat, here.lon)
         let synonyms: Set<String> = [
@@ -1382,7 +1401,9 @@ public final class ChatSession {
         // Final sweep: if the tool is route_from_places but has no
         // `origin` string at all and no origin_lat/lon, inject the
         // user's coords as the origin string.
-        if out["origin"] == nil, out["origin_lat"] == nil, out["origin_lon"] == nil {
+        let routingTools: Set<String> = ["route_from_places", "plan_driving_route"]
+        if routingTools.contains(toolName),
+           out["origin"] == nil, out["origin_lat"] == nil, out["origin_lon"] == nil {
             out["origin"] = coord
         }
         return out
@@ -3321,12 +3342,10 @@ public final class ChatSession {
             // to the eye and recovers most of the main-thread headroom.
             var lastUIPush = Date.distantPast
             let uiMinInterval: TimeInterval = 0.1
-            // Every tool-call opener across templates starts with "<" or a
-            // "```" fence, so until one of those characters has streamed in
-            // there is nothing for the parsers to find — skip the per-chunk
-            // whole-buffer scans (they made plain-prose streaming O(n²) in
-            // reply length). Once seen, scan per chunk as before.
-            var sawMarkerChar = false
+            // Do not turn on whole-buffer parsing for arbitrary prose/code
+            // containing '<' or a backtick. Wait for one of the concrete
+            // tool-call openers our templates accept.
+            var sawToolCallOpener = false
             do {
                 for try await chunk in selectedModel.generate(prompt: prompt, parameters: params) {
                     buffer += chunk
@@ -3336,10 +3355,10 @@ public final class ChatSession {
                         appendToAssistant(buffer)
                         lastUIPush = now
                     }
-                    if !sawMarkerChar {
-                        sawMarkerChar = chunk.contains("<") || chunk.contains("`")
+                    if !sawToolCallOpener {
+                        sawToolCallOpener = Self.containsToolCallOpener(buffer)
                     }
-                    if sawMarkerChar, let call = self.extractToolCall(in: buffer) {
+                    if sawToolCallOpener, let call = self.extractToolCall(in: buffer) {
                         appendToAssistant(buffer)
                         toolCall = call
                         break
@@ -3412,7 +3431,8 @@ public final class ChatSession {
             // geocoder doesn't try to find a place literally named "my
             // location". Covers the `origin` arg on `route_from_places` and
             // anywhere the model used the preamble's shortcut phrasing.
-            let resolvedArgs = substituteCurrentLocation(in: call.args)
+            let resolvedArgs = substituteCurrentLocation(
+                in: call.args, toolName: call.name)
             let argsData = try? JSONSerialization.data(
                 withJSONObject: resolvedArgs, options: [.sortedKeys])
             let argsStr = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -3489,7 +3509,7 @@ public final class ChatSession {
                     ]
                 }
                 if call.name == "search" {
-                    preTrim = self.enrichSearchHits(preTrim)
+                    preTrim = await self.enrichSearchHits(preTrim)
                 }
                 let result = Self.trimForModel(toolName: call.name, result: preTrim, articleCapKB: self.articleCapKB)
                 let resultData = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
@@ -3973,27 +3993,33 @@ public final class ChatSession {
     /// difference on disambiguation-prone queries (pizza → "origin"
     /// vs "Chicago-style"; plasma → "plasma actuators" vs
     /// "plasma (physics)").
-    private func enrichSearchHits(_ result: [String: Any]) -> [String: Any] {
+    private func enrichSearchHits(_ result: [String: Any]) async -> [String: Any] {
         guard var hits = result["hits"] as? [[String: Any]], !hits.isEmpty else { return result }
         let limit = min(hits.count, 3)
+        var reads: [(index: Int, reader: ZimReader, path: String)] = []
         for i in 0..<limit {
             guard let zim = hits[i]["zim"] as? String,
                   let path = hits[i]["path"] as? String,
                   let entry = library.first(where: {
                       $0.url.lastPathComponent == zim && $0.isEnabled
-                  }),
-                  let data = try? entry.reader.read(path: path)?.content
+                  })
             else { continue }
-            // Strip only a bounded prefix: the preview needs ~400 chars of
-            // cleaned lead, and stripHTML over a full multi-hundred-KB
-            // article per hit was the cost on the search hot path. The
-            // lossy UTF-8 decode absorbs a split trailing codepoint.
-            let html = String(decoding: data.prefix(64 * 1024), as: UTF8.self)
-            let stripped = ArticleSections.stripHTML(html)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // First ~400 chars of the cleaned lead is enough signal
-            // for the model to disambiguate without blowing the prompt.
-            let preview = String(stripped.prefix(400))
+            reads.append((i, entry.reader, path))
+        }
+        let previews = await Task.detached(priority: .userInitiated) {
+            reads.compactMap { read -> (Int, String)? in
+                guard let data = try? read.reader.read(path: read.path)?.content else {
+                    return nil
+                }
+                // Strip only a bounded prefix: the preview needs ~400 chars of
+                // cleaned lead. The lossy decode absorbs a split codepoint.
+                let html = String(decoding: data.prefix(64 * 1024), as: UTF8.self)
+                let stripped = ArticleSections.stripHTML(html)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (read.index, String(stripped.prefix(400)))
+            }
+        }.value
+        for (i, preview) in previews {
             var updated = hits[i]
             if !preview.isEmpty {
                 updated["preview"] = preview
@@ -4003,6 +4029,22 @@ public final class ChatSession {
         var out = result
         out["hits"] = hits
         return out
+    }
+
+    private static func containsToolCallOpener(_ buffer: String) -> Bool {
+        if buffer.contains("<|tool_call>") || buffer.contains("<tool_call>") {
+            return true
+        }
+        for marker in ["```tool_call", "```json", "```tool"]
+            where buffer.contains(marker)
+        {
+            return true
+        }
+        guard let fence = buffer.range(of: "```", options: .backwards) else {
+            return false
+        }
+        let tail = buffer[fence.upperBound...].drop(while: { $0.isWhitespace })
+        return tail.first == "{"
     }
 
     private func recordToolTrace(_ trace: ToolCallTrace) {
@@ -4514,17 +4556,21 @@ public final class ChatSession {
         }
         let asksAboutOpposingSides = ArticleHeuristics
             .asksAboutOpposingSides(contextualQuestion)
-        if (!coveredByHand || asksAboutOpposingSides), let adapter {
+        let preferredEventTitles = ArticleHeuristics.namedEventArticleCandidates(
+            state.sources.flatMap(\.sections), question: contextualQuestion)
+        let existingSourceTitles = Set(state.sources.map { $0.title.lowercased() })
+        let needsPreferredEvent = preferredEventTitles.contains {
+            !existingSourceTitles.contains($0.lowercased())
+        }
+        if (!coveredByHand || asksAboutOpposingSides || needsPreferredEvent),
+           let adapter {
             let kwList = ArticleHeuristics.questionKeywords(contextualQuestion)
             let query = (state.topic + " " + kwList.joined(separator: " "))
                 .trimmingCharacters(in: .whitespaces)
-            let existingTitles = Set(state.sources.map { $0.title.lowercased() })
-            let preferredTitles = ArticleHeuristics.namedEventArticleCandidates(
-                state.sources.flatMap(\.sections), question: contextualQuestion)
             if let pulled = await pullArticleForDiscussion(
                 query: query, keywords: kwList, zim: state.zim, adapter: adapter,
-                excludingTitles: existingTitles,
-                preferredTitles: preferredTitles,
+                excludingTitles: existingSourceTitles,
+                preferredTitles: preferredEventTitles,
                 allowedTitles: state.linkedArticleTitles) {
                 state.sources.append((pulled.title, pulled.sections))
                 state.linkedArticleTitles.formUnion(pulled.linkedTitles)
@@ -4912,7 +4958,11 @@ public final class ChatSession {
             // safely inspect the complete selected sections. Using the
             // compact model window here dropped an earlier 60–200 killed
             // estimate from the Alamo casualty section.
-            passages: picked.map { $0.section.text }) {
+            passages: picked.map { $0.section.text },
+            passageLabels: picked.map {
+                $0.article + " " + ($0.section.title.isEmpty
+                    ? "lead" : $0.section.title)
+            }) {
             updateAssistant(extractive)
             cache.turns = candidateTurns
                 + [ChatTurn(role: .assistant, text: extractive)]
@@ -5248,7 +5298,8 @@ public final class ChatSession {
         // location"` failed with `could not resolve my location`
         // (2026-04-23 gist aa8ca1dc, "Directions to San Jose
         // airport").
-        let dictArgs = substituteCurrentLocation(in: intent.anyArgs)
+        let dictArgs = substituteCurrentLocation(
+            in: intent.anyArgs, toolName: intent.toolName)
         let argsStr: String = {
             guard let data = try? JSONSerialization.data(
                 withJSONObject: dictArgs, options: [.sortedKeys]
