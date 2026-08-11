@@ -119,8 +119,17 @@ loop do
     "filter[version]" => build_number,
     "limit" => 10
   ).fetch("data", [])
-  build = one_matching(builds, "build #{build_number}") do |item|
+  matching_builds = builds.select do |item|
     item.dig("attributes", "version") == build_number
+  end
+  abort_with("found multiple matches for build #{build_number}") if matching_builds.length > 1
+  build = matching_builds.first
+  if build.nil?
+    abort_with("timed out waiting for build #{build_number} to appear") if Time.now >= deadline
+
+    puts "testflight: build #{build_number} is not available yet; waiting 30s"
+    sleep 30
+    next
   end
   state = build.dig("attributes", "processingState")
   break if state == "VALID"
