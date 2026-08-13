@@ -48,23 +48,40 @@ case "${1:-deploy}" in
   watch) ;;  # fall through to the watch loop below
   deploy)
     echo "== install =="
+    installed=0
     for i in $(seq 1 20); do
       out=$(xcrun devicectl device install app --device "$DEVICE" "$APP" 2>&1)
-      echo "$out" | grep -q "Complete\|installed" && { echo "install ok"; break; }
+      echo "$out" | grep -q "Complete\|installed" && { echo "install ok"; installed=1; break; }
       echo "$out" | grep -q "locked" || { echo "$out" | tail -3; exit 2; }
       echo "  device locked — retrying in 15s ($i/20)"; sleep 15
     done
+    # Exhausting the retries used to fall through to launch, which then
+    # "succeeded" against whatever build was already on the phone — the
+    # script reported OK while the new binary never landed (2026-08-13).
+    if [ "$installed" -ne 1 ]; then
+      echo "INSTALL FAILED — device stayed locked through all 20 retries."
+      echo "Unlock the phone and re-run: $0"
+      exit 2
+    fi
     PID=$(xcrun devicectl device info processes --device "$DEVICE" 2>/dev/null \
           | grep MCPZimChat | awk '{print $1}' | head -1)
     [ -n "${PID:-}" ] && xcrun devicectl device process terminate \
         --device "$DEVICE" --pid "$PID" >/dev/null 2>&1
     echo "== launch =="
+    launched=0
     for i in $(seq 1 12); do
       lout=$(xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE" 2>&1)
-      echo "$lout" | grep -q "Launched" && { echo "launch ok"; break; }
+      echo "$lout" | grep -q "Launched" && { echo "launch ok"; launched=1; break; }
       echo "$lout" | grep -q "Locked" || { echo "$lout" | tail -2; exit 2; }
       echo "  device locked — retrying in 10s ($i/12)"; sleep 10
-    done ;;
+    done
+    # Same trap as the install loop: a fall-through here would send the
+    # watch phase off to sample a process this run never started.
+    if [ "$launched" -ne 1 ]; then
+      echo "LAUNCH FAILED — device stayed locked through all 12 retries."
+      echo "Unlock the phone and re-run: $0"
+      exit 2
+    fi ;;
   *) echo "usage: $0 [deploy|watch|crashes|pull <name.ips>]"; exit 2 ;;
 esac
 
