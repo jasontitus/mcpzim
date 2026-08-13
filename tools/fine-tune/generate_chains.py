@@ -22,7 +22,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-sys.path.insert(0, "/Users/jasontitus/experiments/mcpzim/tools/llama-smoke")
+# Repo-relative, not one developer's home: the hardcoded absolute path made the
+# `eval`/`generate` imports below raise ModuleNotFoundError on every other
+# checkout, so this generator could not run off-machine at all (bugs review,
+# generate_chains.py:25). Same parents[1] idiom as tools/logpipe/report.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "llama-smoke"))
 
 from openai import AsyncOpenAI
 from eval import SYSTEM_PREAMBLE, _build_tool_block

@@ -82,11 +82,19 @@ fi
 echo "Running eval — model=${MODEL_ID:-default}  streetzim=$STREETZIM"
 echo "Full test log: $TEST_LOG"
 cd "$(dirname "$0")/.."
+# Keep xcodebuild's own status: `|| true` here made the script exit 0 on
+# a failing eval, which is how 20 dead scenarios went unnoticed for weeks
+# (2026-08-13 review). `set -e` must not fire before the ANE sampler is
+# torn down below, so capture the status and exit with it at the end.
+# PIPESTATUS[0] is xcodebuild's — `tee`'s success would otherwise mask it.
+set +e
 env "${ENV_ARGS[@]}" xcodebuild test \
   -scheme MCPZimChatMacTests \
   -destination 'platform=macOS' \
   -only-testing MCPZimChatMacTests/ConversationalEvalTests \
-  2>&1 | tee "$TEST_LOG" > /dev/null || true
+  2>&1 | tee "$TEST_LOG" > /dev/null
+EVAL_STATUS=${PIPESTATUS[0]}
+set -e
 
 if [[ -n "$PM_PID" ]]; then
   sudo -n kill "$PM_PID" 2>/dev/null || true
@@ -95,7 +103,9 @@ fi
 
 echo
 echo "=== Test results ==="
-grep -E "Test Case.*passed|Test Case.*failed|Executed [0-9]+ tests" "$TEST_LOG" | tail -40
+# Display-only: an empty grep under `pipefail` would abort before the
+# summary and the exit status below.
+grep -E "Test Case.*passed|Test Case.*failed|Executed [0-9]+ tests" "$TEST_LOG" | tail -40 || true
 
 if [[ $SAMPLE_ANE -eq 1 && -s "$ANE_LOG" ]]; then
   echo
@@ -113,3 +123,11 @@ if [[ $SAMPLE_ANE -eq 1 && -s "$ANE_LOG" ]]; then
   echo
   echo "(Full powermetrics output at $ANE_LOG — grep for ANE util %% etc.)"
 fi
+
+# Propagate the eval's real outcome so automation (and a human reading
+# $?) sees a failing run as a failure.
+if [[ $EVAL_STATUS -ne 0 ]]; then
+  echo
+  echo "EVAL FAILED (xcodebuild exit $EVAL_STATUS) — see $TEST_LOG"
+fi
+exit "$EVAL_STATUS"

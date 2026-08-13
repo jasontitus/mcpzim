@@ -55,22 +55,62 @@ struct ArticleSheetIntent: Identifiable, Equatable {
 
 struct PlacesWebView: View {
     let trace: ToolCallTrace
-    /// Parsed once at view construction: as computed properties these
+    /// Stored rather than computed: as computed properties these
     /// re-parsed `trace.rawResult` JSON on every access, and `body`
-    /// touches the payload ~5 times per evaluation while re-evaluating
-    /// on each GPS tick / streaming push. The trace is immutable, so a
-    /// stored parse per view init is always fresh.
+    /// touches the payload ~5 times per evaluation. Storing them was
+    /// only half the fix — SwiftUI rebuilds a child View, `init` and
+    /// all, on every parent `MessageRow.body` pass, which re-runs at
+    /// the ~10 Hz streaming-push rate plus every GPS tick, so the parse
+    /// was still being paid per frame. Both fields now come from
+    /// `ParseCache`.
     private let payload: PlacesPayload
     private let zimFromResultField: String?
 
     init(trace: ToolCallTrace) {
         self.trace = trace
-        self.payload = parsePlaces(from: trace)
-        if let data = trace.rawResult.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            self.zimFromResultField = json["zim"] as? String
-        } else {
-            self.zimFromResultField = nil
+        let parsed = ParseCache.parsed(for: trace)
+        self.payload = parsed.payload
+        self.zimFromResultField = parsed.zimFromResult
+    }
+
+    /// Memo over the JSON work `init` used to do inline, keyed on
+    /// `ToolCallTrace.id`. That id is a `let UUID` fixed when the trace
+    /// is created and the trace is immutable afterwards, so every value
+    /// copy SwiftUI feeds to a re-created `PlacesWebView` carries the
+    /// same id — the key is stable across exactly the re-inits we want
+    /// to skip. (Contrast `ChatView.displayTextMemo`, keyed on
+    /// (hash, count) of a *growing* string, which misses by
+    /// construction on every push.) Same shape as ChatView's
+    /// `TraceKindCache`.
+    @MainActor
+    private enum ParseCache {
+        struct Parsed {
+            let payload: PlacesPayload
+            /// The result's top-level `zim` name. `parsePlacesJSON`
+            /// decodes and discards it, so recovering it costs a second
+            /// pass over the same bytes — now paid once per trace
+            /// rather than once per render tick.
+            let zimFromResult: String?
+        }
+
+        private static var cache: [UUID: Parsed] = [:]
+
+        static func parsed(for trace: ToolCallTrace) -> Parsed {
+            if let hit = cache[trace.id] { return hit }
+            var zim: String? = nil
+            if let data = trace.rawResult.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                zim = json["zim"] as? String
+            }
+            let parsed = Parsed(
+                payload: parsePlaces(from: trace), zimFromResult: zim
+            )
+            // Trace ids never repeat, so cap the map and drop it
+            // wholesale on the (rare) crossing rather than tracking LRU
+            // order — mirrors `TraceKindCache.trimIfNeeded`.
+            if cache.count >= 1024 { cache.removeAll(keepingCapacity: true) }
+            cache[trace.id] = parsed
+            return parsed
         }
     }
 
@@ -410,12 +450,22 @@ struct ArticleSheetView: View {
     }
 }
 
+// The coordinator owns the navigation delegate; WKWebView holds it
+// weakly, so the representable's Coordinator is what keeps it alive for
+// the sheet's lifetime.
 #if os(macOS)
 import AppKit
 private struct ArticleWebContainer: NSViewRepresentable {
     let intent: ArticleSheetIntent
     let session: ChatSession
-    func makeNSView(context: Context) -> WKWebView { makeArticleWebView(intent, session) }
+    func makeCoordinator() -> ArticleWebCoordinator {
+        ArticleWebCoordinator(log: { [weak session] msg in
+            Task { @MainActor in session?.debug(msg, category: "zim://") }
+        })
+    }
+    func makeNSView(context: Context) -> WKWebView {
+        makeArticleWebView(intent, session, delegate: context.coordinator)
+    }
     func updateNSView(_ view: WKWebView, context: Context) {}
 }
 #else
@@ -423,15 +473,69 @@ import UIKit
 private struct ArticleWebContainer: UIViewRepresentable {
     let intent: ArticleSheetIntent
     let session: ChatSession
-    func makeUIView(context: Context) -> WKWebView { makeArticleWebView(intent, session) }
+    func makeCoordinator() -> ArticleWebCoordinator {
+        ArticleWebCoordinator(log: { [weak session] msg in
+            Task { @MainActor in session?.debug(msg, category: "zim://") }
+        })
+    }
+    func makeUIView(context: Context) -> WKWebView {
+        makeArticleWebView(intent, session, delegate: context.coordinator)
+    }
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 #endif
 
+/// Navigation gate for the article sheet. That webview renders article
+/// HTML out of the same nearby-shared ZIMs as the map viewer but shipped
+/// with NO `navigationDelegate` at all, so WebKit's default `.allow`
+/// applied and a crafted article could navigate itself to a live remote
+/// page (2026-08-13 review closed the map hole; this is the same hole one
+/// bubble type over). Policy deliberately mirrors `PlacesWebCoordinator`:
+/// only `zim:`/`about:` commit, a real user tap on an allowlisted scheme
+/// is handed to the system, everything else is cancelled. No `mcpzim`
+/// bridge is installed here, so there is nothing else to gate.
+@MainActor
+final class ArticleWebCoordinator: NSObject, WKNavigationDelegate {
+    let log: (@Sendable (String) -> Void)?
+
+    init(log: (@Sendable (String) -> Void)? = nil) {
+        self.log = log
+    }
+
+    nonisolated func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        let url = navigationAction.request.url
+        let scheme = url?.scheme?.lowercased() ?? ""
+        if scheme == ZimURLSchemeHandler.scheme || scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        guard navigationAction.navigationType == .linkActivated,
+              let url,
+              zimExternalOpenSchemes.contains(scheme)
+        else {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.cancel)
+        MainActor.assumeIsolated {
+            #if canImport(UIKit)
+            UIApplication.shared.open(url)
+            #elseif canImport(AppKit)
+            NSWorkspace.shared.open(url)
+            #endif
+        }
+    }
+}
+
 @MainActor
 private func makeArticleWebView(
     _ intent: ArticleSheetIntent,
-    _ session: ChatSession
+    _ session: ChatSession,
+    delegate: ArticleWebCoordinator
 ) -> WKWebView {
     let config = WKWebViewConfiguration()
     let handler = ZimURLSchemeHandler(
@@ -447,9 +551,15 @@ private func makeArticleWebView(
         config.preferences.isElementFullscreenEnabled = true
     }
     let webView = WKWebView(frame: .zero, configuration: config)
+    webView.navigationDelegate = delegate
+    // Debug-only: an inspectable webview lets anyone who can attach
+    // Safari's Web Inspector to a shipping build read the ZIM content
+    // and drive the `mcpzim` JS bridge by hand.
+    #if DEBUG
     if #available(macOS 13.3, iOS 16.4, *) {
         webView.isInspectable = true
     }
+    #endif
     // Construct the URL as a pre-encoded string rather than through
     // URLComponents. When the ZIM filename contains a character
     // illegal in a URL host (a space, in a real capture:
@@ -625,6 +735,14 @@ private func applyFocusIfChanged(
     webView.evaluateJavaScript(js) { _, _ in }
 }
 
+/// Schemes the map webviews may hand to the system opener on a user link
+/// tap. ZIM content is untrusted (P2P nearby-share), so this is the
+/// exhaustive list of what a map link can legitimately be — a site, an
+/// address, a phone number. Anything outside it (`shortcuts:`, `prefs:`,
+/// `itms-apps:`, `file:`…) would be a free app-launch primitive for a
+/// hostile ZIM. Shared with `RouteWebView`'s navigation gate.
+let zimExternalOpenSchemes: Set<String> = ["http", "https", "tel", "mailto"]
+
 @MainActor
 private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var pendingInjection: String?
@@ -653,20 +771,41 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
         }
     }
 
-    /// Hand a tapped external link off to the system instead of trying to
-    /// navigate the map webview to it (which silently does nothing). Only
-    /// fires for user link taps — tile/resource loads are `.other` and pass
-    /// through. Backstops the streetzim viewer's OWN popups on older ZIMs
-    /// whose links aren't routed through the `mcpzim` bridge above.
+    /// Navigation gate. ZIMs arrive over P2P nearby-share, so the HTML
+    /// this webview runs is untrusted input. The previous version
+    /// inspected only `.linkActivated` and fell through to `.allow` for
+    /// every other navigation type, so a crafted page could set
+    /// `location = "https://…"` — or use a meta-refresh or an iframe,
+    /// both of which arrive as `.other` — and pull a live remote page
+    /// into the very webview that owns the `mcpzim` bridge and receives
+    /// the user's GPS coordinates. Only the app's own `zim://` scheme
+    /// commits here, plus `about:` so the `about:blank` teardown in
+    /// `dismantleUIView` can never be blocked (it nils the delegate
+    /// first, but that ordering shouldn't be load-bearing). Subresource
+    /// loads (tiles, glyphs, CSS) are not navigations and never reach
+    /// this method, so the map itself is unaffected.
+    ///
+    /// A user tap on an external link is still handed to the system —
+    /// that backstops the streetzim viewer's OWN popups on older ZIMs
+    /// whose links aren't routed through the bridge — but only for the
+    /// schemes a map popup can legitimately carry. `facetime:` was in
+    /// the old list and is dropped: nothing in the viewer emits it, and
+    /// every extra scheme is one more app a hostile page can launch.
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard navigationAction.navigationType == .linkActivated,
-              let url = navigationAction.request.url,
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https", "tel", "mailto", "facetime"].contains(scheme)
-        else {
+        let url = navigationAction.request.url
+        let scheme = url?.scheme?.lowercased() ?? ""
+        if scheme == ZimURLSchemeHandler.scheme || scheme == "about" {
             decisionHandler(.allow)
+            return
+        }
+        guard navigationAction.navigationType == .linkActivated,
+              let url,
+              zimExternalOpenSchemes.contains(scheme)
+        else {
+            log?("blocked navigation: \(url?.absoluteString ?? "?")")
+            decisionHandler(.cancel)
             return
         }
         decisionHandler(.cancel)
@@ -677,8 +816,28 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
         #endif
     }
 
+    /// The page on the other end of this bridge is untrusted (see the
+    /// navigation gate above) and `handlePopupAction` reaches
+    /// `UIApplication.open` and the native share sheet, so establish
+    /// *which* page is posting before dispatching anything. Only frames
+    /// still sitting on the app's own `zim://` scheme qualify; the
+    /// capture script is injected with `forMainFrameOnly: false`, so
+    /// subframes can post too and have to clear the same bar.
+    /// `frameInfo.request.url` is the frame's committed URL and
+    /// `securityOrigin` is the cross-check for the case where the
+    /// request comes back without one.
+    private func isLocalZimFrame(_ frame: WKFrameInfo) -> Bool {
+        if let scheme = frame.request.url?.scheme?.lowercased(),
+           scheme == ZimURLSchemeHandler.scheme {
+            return true
+        }
+        return frame.securityOrigin.`protocol`.lowercased()
+            == ZimURLSchemeHandler.scheme
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "mcpzim",
+              isLocalZimFrame(message.frameInfo),
               let payload = message.body as? [String: Any] else { return }
         // Popup action dispatch — the pin popup's Directions/Share
         // icons post `{action: "directions" | "share", ...}` messages
@@ -760,8 +919,19 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
             // Bare "example.com" → assume https so the URL is openable.
             s = "https://" + s
         }
-        guard let url = URL(string: s) else {
+        guard let url = URL(string: s), let scheme = url.scheme?.lowercased() else {
             log?("popup link: bad URL \(raw)")
+            return
+        }
+        // `raw` is whatever the page passed to `mcpzimPopupLink`, i.e.
+        // attacker-chosen on a nearby-shared ZIM, and this is the one
+        // call that hands it to the system opener. Constrain it to the
+        // kind of link the button claims to be — Call dials, Website
+        // opens a page or a mail composer — so neither can be turned
+        // into a launch-any-app-by-URL-scheme primitive.
+        let allowed: Set<String> = isPhone ? ["tel"] : ["http", "https", "mailto"]
+        guard allowed.contains(scheme) else {
+            log?("popup link: blocked scheme \(scheme)")
             return
         }
         #if canImport(UIKit)
@@ -888,9 +1058,14 @@ private func makePlacesWebView(
         config.preferences.isElementFullscreenEnabled = true
     }
     let webView = WKWebView(frame: .zero, configuration: config)
+    // Debug-only — see `makeArticleWebView`. This webview additionally
+    // receives the user's live GPS coordinates via the injected
+    // user-dot JS, so a shipping inspector surface would expose those.
+    #if DEBUG
     if #available(macOS 13.3, iOS 16.4, *) {
         webView.isInspectable = true
     }
+    #endif
     webView.navigationDelegate = coordinator
     objc_setAssociatedObject(webView, &placesCoordinatorKey, coordinator, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     loadPlacesSpec(webView, spec: spec, payload: payload)

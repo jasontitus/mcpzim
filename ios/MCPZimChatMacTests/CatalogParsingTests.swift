@@ -52,6 +52,20 @@ final class CatalogParsingTests: XCTestCase {
         XCTAssertFalse(items.contains { $0.url.absoluteString.contains("_mini_") })
     }
 
+    /// The kiwix index lists every language; the picker offers English only.
+    /// Carried over from `OfflineContentCatalogTests`, which was deleted on
+    /// 2026-08-13 — it targeted a `WikipediaArchiveCatalog` type that no
+    /// longer exists and had never once run (the file was absent from the
+    /// Xcode project), so its other assertions encoded superseded
+    /// nopic-only behavior. This one is still true and worth keeping.
+    func testWikipediaParserIgnoresOtherLanguages() {
+        let html = """
+        <a href="wikipedia_es_all_nopic_2026-06.zim">wikipedia_es_all_nopic_2026-06.zim</a> 2026-06-26 09:02 12G
+        <a href="wikipedia_fr_top_maxi_2026-06.zim">wikipedia_fr_top_maxi_2026-06.zim</a> 2026-06-26 09:02 8G
+        """
+        XCTAssertTrue(WikipediaZimCatalog.parse(html: html).isEmpty)
+    }
+
     // MARK: StreetZIM landing page (maps)
 
     private let streetZimSample = """

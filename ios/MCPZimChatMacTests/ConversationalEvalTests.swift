@@ -427,12 +427,32 @@ final class ConversationalEvalTests: XCTestCase {
         // loads, streaming progress). Default cap of 500 was truncating
         // early tool dispatches before we scanned them.
         session.maxDebugEntries = 20_000
+        // `send()` early-returns unless `setupState == .ready`, and this
+        // harness drives the model itself (`loadSelectedModel()` above)
+        // instead of going through `runSetupIfNeeded()`. Without this the
+        // state stayed `.pending` and EVERY turn of all 20 scenarios was a
+        // no-op — the suite reported green while asserting on empty output
+        // (2026-08-13 review, confirmed). `ChatSession.forTesting` carries
+        // the same line for the same reason.
+        session.setupState = .ready
         Self.sharedSession = session
         return session
     }
 
     private func runTurn(_ session: ChatSession, text: String) async {
+        // Prove the turn actually STARTED. `send()` has several silent
+        // early-return guards (setup not ready, a turn already running);
+        // when one fires, `isGenerating` never flips, the wait below falls
+        // through instantly, and every content assertion then runs against
+        // a stale/empty transcript. That is exactly how this suite sat
+        // dead — and green — until the 2026-08-13 review. `send()` appends
+        // the user turn plus an empty assistant placeholder synchronously,
+        // so a count that did not grow by two means the turn never ran.
+        let messagesBefore = session.messages.count
         session.send(text)
+        XCTAssertEqual(
+            session.messages.count, messagesBefore + 2,
+            "send() was swallowed by a guard — no turn ran for: \(text)")
         let deadline = Date().addingTimeInterval(120)
         while session.isGenerating && Date() < deadline {
             try? await Task.sleep(for: .milliseconds(200))

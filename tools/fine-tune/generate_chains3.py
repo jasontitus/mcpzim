@@ -51,7 +51,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Reuse generator infra + shared topic/people pools + tool block.
-sys.path.insert(0, "/Users/jasontitus/experiments/mcpzim/tools/llama-smoke")
+# Repo-relative, not one developer's home: the hardcoded absolute path made the
+# `eval` import below raise ModuleNotFoundError on every other checkout (bugs
+# review, hardcoded-home-path duplicate group).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "llama-smoke"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from openai import AsyncOpenAI

@@ -20,9 +20,16 @@ enum MarkdownMessageBlock: Equatable, Sendable {
 
 enum MarkdownMessageParser {
     static func parse(_ source: String) -> [MarkdownMessageBlock] {
-        let normalized = source
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        // Two whole-string copies per parse just to fold line endings, on a
+        // path that runs at streaming cadence (PI review 2026-08-13, perf
+        // #2). On-device model output is \n-only in practice, so probe for
+        // a CR once — a single byte scan — and skip both copies when there
+        // is nothing to fold.
+        let normalized = source.utf8.contains(UInt8(ascii: "\r"))
+            ? source
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            : source
         let lines = normalized.components(separatedBy: "\n")
         var blocks: [MarkdownMessageBlock] = []
         var paragraph: [String] = []

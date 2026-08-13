@@ -68,6 +68,21 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(WikiLinks.parse(html: html, max: 5).count, 5)
     }
 
+    /// The anchor scan stops at the cap instead of materialising a match per
+    /// anchor in the whole document, so the accepted set must still be the
+    /// FIRST `max` qualifying links in document order — with the skipped
+    /// (boilerplate, numeric, duplicate) anchors not consuming slots.
+    func testWikiLinksStopsAtCapKeepingDocumentOrder() {
+        var parts = [#"<a href="Alpha">Alpha</a>"#,
+                     #"<a href="Ref">[12]</a>"#,
+                     #"<a href="Alpha">Alpha again</a>"#,
+                     #"<a href="MedlinePlus">MedlinePlus</a>"#]
+        parts += (1...500).map { #"<a href="Topic_\#($0)">Topic \#($0)</a>"# }
+        let titles = WikiLinks.parseAll(html: parts.joined(separator: " "), max: 4)
+            .map(\.title)
+        XCTAssertEqual(titles, ["Alpha", "Topic 1", "Topic 2", "Topic 3"])
+    }
+
     func testWikiLinksParseAllIncludesDisambiguationListChoices() {
         let html = """
         <p>Washington most commonly refers to:</p>

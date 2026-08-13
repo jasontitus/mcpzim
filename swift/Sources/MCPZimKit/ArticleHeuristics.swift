@@ -14,6 +14,59 @@ import Foundation
 
 public enum ArticleHeuristics {
 
+    // MARK: - Cached regex primitives
+    //
+    // `range(of:options:.regularExpression)` and
+    // `replacingOccurrences(options:.regularExpression)` compile a fresh
+    // NSRegularExpression on every call — the trap `stripCitations` already
+    // names below. These heuristics evaluate their patterns per sentence
+    // inside article loops (`keyFactSentence` runs one per sentence of every
+    // section of every source; `groundedExtractiveAnswer` runs four per
+    // grounded passage), so compilation dominated the match itself (DS4 perf
+    // duplicate group 2026-08-13). Route every pattern through the shared
+    // process-wide cache instead; the patterns are literals, so the cache
+    // stays bounded by the number of call sites here.
+
+    @inline(__always)
+    private static func regexRange(
+        _ text: String, _ pattern: String,
+        options: NSRegularExpression.Options = []
+    ) -> Range<String.Index>? {
+        guard let re = RegexCache.shared.compiled(pattern, options: options),
+              let m = re.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text))
+        else { return nil }
+        return Range(m.range, in: text)
+    }
+
+    /// Existence-only check. Deliberately does NOT go through `regexRange`:
+    /// `Range(nsRange, in:)` returns nil when a match lands mid-grapheme, and
+    /// a predicate must not silently answer "no match" for that.
+    @inline(__always)
+    private static func regexMatches(
+        _ text: String, _ pattern: String,
+        options: NSRegularExpression.Options = []
+    ) -> Bool {
+        guard let re = RegexCache.shared.compiled(pattern, options: options) else {
+            return false
+        }
+        return re.firstMatch(
+            in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    @inline(__always)
+    private static func regexReplacing(
+        _ text: String, _ pattern: String, with template: String,
+        options: NSRegularExpression.Options = []
+    ) -> String {
+        guard let re = RegexCache.shared.compiled(pattern, options: options) else {
+            return text
+        }
+        return re.stringByReplacingMatches(
+            in: text, range: NSRange(text.startIndex..., in: text),
+            withTemplate: template)
+    }
+
     // MARK: - Section selection
 
     /// Sections whose prose reliably carries narrative content about the
@@ -111,9 +164,9 @@ public enum ArticleHeuristics {
         // refers to:" as canonical disambiguation openers. Keep this
         // bounded to those grammatical forms so running prose such as
         // "residents also refer to ..." remains a normal article.
-        if lead.range(
-            of: #"\b(?:(?:may|can)\s+refer\s+to|(?:most\s+commonly|commonly)\s+refers\s+to)\b"#,
-                      options: .regularExpression) != nil {
+        if regexMatches(
+            lead,
+            #"\b(?:(?:may|can)\s+refer\s+to|(?:most\s+commonly|commonly)\s+refers\s+to)\b"#) {
             return true
         }
         return false
@@ -247,10 +300,10 @@ public enum ArticleHeuristics {
         // Wikipedia often splits one event across history and subject-
         // specific sections (Santa Rosa's 1906 earthquake appears in both
         // "20th century" and "Seismicity"), so retain several local passages.
-        if lower.range(
-            of: #"\bwhat\s+does\s+(?:this\s+|the\s+)?(?:wikipedia\s+)?article\s+say\s+(?:about|on|regarding)\b"#,
-            options: .regularExpression
-        ) != nil {
+        if regexMatches(
+            lower,
+            #"\bwhat\s+does\s+(?:this\s+|the\s+)?(?:wikipedia\s+)?article\s+say\s+(?:about|on|regarding)\b"#
+        ) {
             return 4
         }
         switch QueryComplexity.classify(question) {
@@ -327,7 +380,7 @@ public enum ArticleHeuristics {
             // numbered consensus estimate so the model sees the useful range
             // instead of confidently repeating the first claim in the prose.
             if asksForDeathCount,
-               lower.range(of: #"\d"#, options: .regularExpression) != nil,
+               regexMatches(lower, #"\d"#),
                ["died", "dead", "death", "killed", "fatalit", "casualt"]
                 .contains(where: { lower.contains($0) })
             {
@@ -421,17 +474,13 @@ public enum ArticleHeuristics {
             // of Vladimir Putin"). Remove complete hatnote lines before
             // collapsing whitespace, while their newline boundary still
             // exists.
-            text = text.replacingOccurrences(
-                of: #"(?im)^(?:main article|further information):[^\n]*(?:\n|$)"#,
-                with: "", options: .regularExpression)
-            text = text
-                .replacingOccurrences(
-                    of: #"\s+"#, with: " ", options: .regularExpression)
+            text = regexReplacing(
+                text, #"(?im)^(?:main article|further information):[^\n]*(?:\n|$)"#,
+                with: "")
+            text = regexReplacing(text, #"\s+"#, with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            text = text.replacingOccurrences(
-                of: #"\(\s+"#, with: "(", options: .regularExpression)
-            text = text.replacingOccurrences(
-                of: #"\s+\)"#, with: ")", options: .regularExpression)
+            text = regexReplacing(text, #"\(\s+"#, with: "(")
+            text = regexReplacing(text, #"\s+\)"#, with: ")")
             let label = index < passageLabels.count ? passageLabels[index] : ""
             return sentenceChunks(text).map { (sentence: $0, label: label) }
         }
@@ -473,18 +522,20 @@ public enum ArticleHeuristics {
                 || lower.contains("parents were")
         }
         func containsWord(_ word: String, in text: String) -> Bool {
-            text.range(
-                of: #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#,
-                options: [.regularExpression, .caseInsensitive]) != nil
+            regexMatches(
+                text,
+                #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#,
+                options: .caseInsensitive)
         }
         func containsParentRole(_ word: String, in text: String) -> Bool {
             var literalText = text
             if word == "father" {
                 // Biography leads use honorifics such as "Founding Father"
                 // and "Father of His Country". Those are not parent facts.
-                literalText = literalText.replacingOccurrences(
-                    of: #"(?i)\bfounding fathers?\b|\bfather of (?:his|the) (?:country|nation)\b"#,
-                    with: "", options: .regularExpression)
+                literalText = regexReplacing(
+                    literalText,
+                    #"(?i)\bfounding fathers?\b|\bfather of (?:his|the) (?:country|nation)\b"#,
+                    with: "")
             }
             return containsWord(word, in: literalText)
         }
@@ -543,19 +594,20 @@ public enum ArticleHeuristics {
         for (index, item) in evidence.enumerated() {
             let sentence = item.sentence
             let lower = sentence.lowercased()
-            guard lower.range(of: #"\d"#, options: .regularExpression) != nil,
+            guard regexMatches(lower, #"\d"#),
                   casualtyTerms.contains(where: { lower.contains($0) })
             else { continue }
 
             // Biography dates are not casualty counts. This exact shape
             // produced “He died on 2 November 2012 …” three times for “How
             // many people died at Pearl Harbor?” in TestFlight feedback.
-            if lower.range(
-                of: #"\b(?:he|she|they|[A-Z][a-z]+)\s+died\s+(?:on|in|at)\b"#,
-                options: [.regularExpression, .caseInsensitive]) != nil,
-               lower.range(
-                of: #"\b(?:\d[\d,]*\s+(?:people|persons|civilians|sailors|soldiers|troops|men|women|americans|japanese)|(?:killed|dead|fatalities)\s+(?:was|were|numbered|totaled)?\s*\d)\b"#,
-                options: [.regularExpression, .caseInsensitive]) == nil {
+            if regexMatches(
+                lower, #"\b(?:he|she|they|[A-Z][a-z]+)\s+died\s+(?:on|in|at)\b"#,
+                options: .caseInsensitive),
+               !regexMatches(
+                lower,
+                #"\b(?:\d[\d,]*\s+(?:people|persons|civilians|sailors|soldiers|troops|men|women|americans|japanese)|(?:killed|dead|fatalities)\s+(?:was|were|numbered|totaled)?\s*\d)\b"#,
+                options: .caseInsensitive) {
                 continue
             }
 
@@ -573,9 +625,9 @@ public enum ArticleHeuristics {
                 guard matches > 0 else { continue }
                 score += matches * 3
             }
-            if lower.range(
-                of: #"\d[\d,]*\s*(?:[–—-]|to|and)\s*\d"#,
-                options: [.regularExpression, .caseInsensitive]) != nil {
+            if regexMatches(
+                lower, #"\d[\d,]*\s*(?:[–—-]|to|and)\s*\d"#,
+                options: .caseInsensitive) {
                 score += 2
             }
             if lower.contains("most eyewitness") { score += 5 }
@@ -823,8 +875,7 @@ public enum ArticleHeuristics {
         let lowered = question.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = #"^(?:(?:and|so)\s+)?then\s+(?:what|how|why|where|when|who|which|did|does|was|were|is|are|can|could|would)\b|^(?:(?:and|so)\s+)?what\s+happened\s+(?:next|later|after\s+that)\b|^(?:(?:and|so)\s+)?what\s+about\s+(?:then|later|after\s+that)\b"#
-        let isNarrativeContinuation = lowered.range(
-            of: pattern, options: .regularExpression) != nil
+        let isNarrativeContinuation = regexMatches(lowered, pattern)
         // Elliptical follow-ups whose only keywords are units/attributes
         // inherit context: ranking "What year?" literally sent retrieval to
         // Demographics (median age 2022) when the thread was "When did it
@@ -849,9 +900,9 @@ public enum ArticleHeuristics {
     /// "…as a member of the OSCE", no date — real capture 2026-08-02).
     public static func isFactoidShaped(_ question: String) -> Bool {
         let q = question.lowercased()
-        return q.range(of:
-            #"^(?:and\s+|so\s+)?(?:when|what year|what date|how (?:many|much|old|long|tall|far|big)|who)\b"#,
-            options: .regularExpression) != nil
+        return regexMatches(
+            q,
+            #"^(?:and\s+|so\s+)?(?:when|what year|what date|how (?:many|much|old|long|tall|far|big)|who)\b"#)
     }
 
     /// Scan EVERY section of the in-hand sources for the single sentence
@@ -884,8 +935,7 @@ public enum ArticleHeuristics {
                     }
                     guard hits >= required else { continue }
                     // Prefer sentences carrying a year for date questions.
-                    if hay.range(of: #"\b(1[89]|20)\d{2}\b"#,
-                                 options: .regularExpression) != nil {
+                    if regexMatches(hay, #"\b(1[89]|20)\d{2}\b"#) {
                         score += 1.5
                     }
                     if best == nil || score > best!.score {
@@ -937,8 +987,8 @@ public enum ArticleHeuristics {
         }
 
         guard lowerQuestion.contains("civil war"),
-              let regex = try? NSRegularExpression(
-                pattern: #"\b(?:[A-Z][\p{L}\p{M}'’.-]*\s+){1,4}Civil War\b"#)
+              let regex = RegexCache.shared.compiled(
+                #"\b(?:[A-Z][\p{L}\p{M}'’.-]*\s+){1,4}Civil War\b"#)
         else { return candidates }
 
         for section in sections {
@@ -1306,12 +1356,13 @@ public enum ArticleHeuristics {
     /// "Lithuania" (the broad article the follow-ups actually live in).
     public static func topicCore(_ title: String) -> String {
         var t = title
-        if let r = t.range(of: #"\s*\([^)]*\)\s*$"#, options: .regularExpression) {
+        if let r = regexRange(t, #"\s*\([^)]*\)\s*$"#) {
             t.removeSubrange(r)
         }
-        t = t.replacingOccurrences(
-            of: #"^(?:the\s+)?(?:history|economy|geography|politics|culture|demographics|religion|military|list|timeline|outline|index|government)\s+of\s+(?:the\s+)?"#,
-            with: "", options: [.regularExpression, .caseInsensitive])
+        t = regexReplacing(
+            t,
+            #"^(?:the\s+)?(?:history|economy|geography|politics|culture|demographics|religion|military|list|timeline|outline|index|government)\s+of\s+(?:the\s+)?"#,
+            with: "", options: .caseInsensitive)
         let cleaned = t.trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? title : cleaned
     }
@@ -1368,8 +1419,8 @@ public enum ArticleHeuristics {
         html: String, max: Int = 3
     ) -> [(title: String, path: String)] {
         let divPattern = #"<div[^>]*class="[^"]*hatnote[^"]*"[^>]*>(.*?)</div>"#
-        guard let re = try? NSRegularExpression(
-            pattern: divPattern,
+        guard let re = RegexCache.shared.compiled(
+            divPattern,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return [] }
         let range = NSRange(html.startIndex..., in: html)
@@ -1379,9 +1430,7 @@ public enum ArticleHeuristics {
             guard m.numberOfRanges >= 2,
                   let r = Range(m.range(at: 1), in: html) else { continue }
             let body = String(html[r])
-            let text = body.replacingOccurrences(
-                of: "<[^>]+>", with: "", options: .regularExpression
-            ).lowercased()
+            let text = regexReplacing(body, "<[^>]+>", with: "").lowercased()
             let isDisambigStyle = text.hasPrefix("for ")
                 || text.contains("this article is about")
                 || text.contains("not to be confused")

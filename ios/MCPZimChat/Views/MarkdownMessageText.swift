@@ -10,7 +10,7 @@ struct MarkdownMessageText: View {
     let source: String
 
     private var blocks: [MarkdownMessageBlock] {
-        MarkdownMessageParser.parse(source)
+        MarkdownBlockCache.blocks(for: source)
     }
 
     var body: some View {
@@ -91,16 +91,79 @@ struct MarkdownMessageText: View {
 private struct InlineMarkdownText: View {
     let source: String
 
-    private var attributed: AttributedString {
+    var body: some View {
+        Text(InlineMarkdownCache.attributed(for: source))
+    }
+}
+
+/// PI review 2026-08-13 (perf #2): `blocks` is a computed property, so the
+/// whole message was re-tokenized on every `body` evaluation — and SwiftUI
+/// evaluates `body` at least once per 10 Hz streaming push, plus again for
+/// every settled message that scrolls back into view. Key on the O(1)
+/// UTF-8 length and confirm with `==`; hashing the source for a dictionary
+/// key would itself be the full pass we are trying to avoid.
+@MainActor
+private enum MarkdownBlockCache {
+    private static var entries:
+        [(utf8Count: Int, source: String, blocks: [MarkdownMessageBlock])] = []
+    private static let limit = 8
+
+    static func blocks(for source: String) -> [MarkdownMessageBlock] {
+        let utf8Count = source.utf8.count
+        if let hit = entries.first(where: {
+            $0.utf8Count == utf8Count && $0.source == source
+        }) {
+            return hit.blocks
+        }
+        let parsed = MarkdownMessageParser.parse(source)
+        entries.append((utf8Count, source, parsed))
+        if entries.count > limit {
+            entries.removeFirst(entries.count - limit)
+        }
+        return parsed
+    }
+}
+
+/// PI review 2026-08-13 (perf #2): `attributed` was a computed property, so
+/// every `body` evaluation re-ran Foundation's Markdown parser over *every*
+/// block of the message — at streaming cadence, on the main thread, and a
+/// `MarkdownMessageTable` multiplies it by rows×columns. A streaming push
+/// only ever changes the last block, so keying on the block's own text
+/// turns a push into one parse instead of N: this is where "proportional
+/// to what changed" actually lands for the render half of the finding.
+@MainActor
+private enum InlineMarkdownCache {
+    private static var cache: [String: AttributedString] = [:]
+    private static var order: [String] = []
+    private static var cachedBytes = 0
+    /// Generous enough that one body pass over a long reply (or a wide
+    /// table) never evicts entries it is about to ask for again.
+    private static let entryLimit = 512
+    /// Bounding bytes as well as entries matters because a streaming reply
+    /// inserts one dead partial-tail block per push, and that tail is the
+    /// whole message when the model answers in a single long paragraph.
+    private static let byteLimit = 512 * 1024
+
+    static func attributed(for source: String) -> AttributedString {
+        if let hit = cache[source] { return hit }
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible)
-        return (try? AttributedString(markdown: source, options: options))
+        let value = (try? AttributedString(markdown: source, options: options))
             ?? AttributedString(source)
-    }
-
-    var body: some View {
-        Text(attributed)
+        cache[source] = value
+        order.append(source)
+        cachedBytes += source.utf8.count
+        var drop = 0
+        while order.count - drop > 1,
+              order.count - drop > entryLimit || cachedBytes > byteLimit
+        {
+            cachedBytes -= order[drop].utf8.count
+            cache.removeValue(forKey: order[drop])
+            drop += 1
+        }
+        if drop > 0 { order.removeFirst(drop) }
+        return value
     }
 }
 

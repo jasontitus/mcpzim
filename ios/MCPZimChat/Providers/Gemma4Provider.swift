@@ -162,16 +162,116 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     // plus the tokens this provider emitted during the last generate).
     // We compare it to the newly-tokenised prompt on every call; the
     // longest common PREFIX determines how much we can keep.
+    //
+    // Concurrency (2026-08-13 review, "Fix first" #4): this state is
+    // touched from three different executors — `generate()` /
+    // `primeCache()` on a Task executor, `resetPromptCache()` from
+    // ChatSession's main-actor memory-warning AND didEnterBackground
+    // observers (the backgrounded one has NO `isGenerating` guard), and
+    // `hasPromptKVCache` from the prewarm debounce. On an `@unchecked
+    // Sendable` class those unsynchronised Array/Optional reassignments
+    // are a real data race. Everything now goes through `cacheLock`
+    // (NSLock, same idiom as MCPZimKit's RegexCache and
+    // LlamaCppProvider's `generationStatsLock`); no accessor awaits
+    // while holding it — the lock only ever wraps plain assignments —
+    // so the seconds-long prefill happens outside it and a main-thread
+    // `hasPromptKVCache` read can never block on the GPU.
+    private let cacheLock = NSLock()
     private var promptKVCache: [KVCache]?
     private var cachedTokens: [Int32] = []
     private var generatedTokensThisTurn: [Int32] = []
+    /// Bumped by every invalidation (reset / unload / disk restore).
+    /// `generate()` and `primeCache()` sample it before prefilling and
+    /// refuse to publish their result if it moved: without that, a
+    /// backgrounded-app drop that lands mid-turn is silently resurrected
+    /// by the in-flight turn's write-back, and the next turn would then
+    /// LCP-match against a cache we already told the caller was gone.
+    private var cacheEpoch: UInt64 = 0
+
+    /// Atomically-taken view of the cache state, so the LCP decision
+    /// can't pair `cachedTokens` from one turn with `promptKVCache`
+    /// from another.
+    private struct PromptCacheSnapshot {
+        let epoch: UInt64
+        let cache: [KVCache]?
+        let tokens: [Int32]
+    }
+
+    private func snapshotPromptCache() -> PromptCacheSnapshot {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return PromptCacheSnapshot(
+            epoch: cacheEpoch, cache: promptKVCache, tokens: cachedTokens
+        )
+    }
+
+    private var cachedTokenCount: Int {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cachedTokens.count
+    }
+
+    /// Publish freshly-prefilled state. Returns false when an
+    /// invalidation landed since `epoch` was sampled — the caller keeps
+    /// streaming against its own local `[KVCache]`, but the provider
+    /// stays "no cache" so the next turn does a clean full prefill.
+    @discardableResult
+    private func publishPromptCache(
+        _ cache: [KVCache], tokens: [Int32], ifEpoch epoch: UInt64
+    ) -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard cacheEpoch == epoch else { return false }
+        promptKVCache = cache
+        cachedTokens = tokens
+        generatedTokensThisTurn = []
+        return true
+    }
+
+    /// Append the tokens a turn committed to the mirror. Same epoch
+    /// guard as `publishPromptCache` — a reset that raced the stream
+    /// wins, and the mirror is left empty rather than half-true.
+    @discardableResult
+    private func commitGeneratedTokens(_ tokens: [Int32], ifEpoch epoch: UInt64) -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard cacheEpoch == epoch else { return false }
+        generatedTokensThisTurn = tokens
+        cachedTokens.append(contentsOf: tokens)
+        return true
+    }
+
+    /// Install a cache restored from disk. Counts as an invalidation
+    /// (epoch bump) so a `generate()` already in flight can't overwrite
+    /// the restored state with its own.
+    private func installRestoredPromptCache(_ cache: [KVCache], tokens: [Int32]) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cacheEpoch &+= 1
+        promptKVCache = cache
+        cachedTokens = tokens
+        generatedTokensThisTurn = []
+    }
+
+    /// The single invalidation point — every drop path routes here so
+    /// the epoch bump can't be forgotten.
+    private func invalidatePromptCache() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        promptKVCache = nil
+        cachedTokens = []
+        generatedTokensThisTurn = []
+        cacheEpoch &+= 1
+    }
 
     /// True if the next `generate()` has a shot at an LCP cache hit
     /// (i.e. we've either streamed at least one turn or run primeCache).
     /// ChatSession uses this to debounce background prewarm requests:
     /// if the cache is already warm, don't re-prime.
     public var hasPromptKVCache: Bool {
-        promptKVCache != nil && !cachedTokens.isEmpty
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return promptKVCache != nil && !cachedTokens.isEmpty
     }
 
     /// Drop the prompt cache — called from `ChatSession.resetConversation`
@@ -183,9 +283,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     /// threw an NSException and crashed the app. The pool is drained
     /// naturally at the tail of every `generate()` anyway.
     public func resetPromptCache() {
-        promptKVCache = nil
-        cachedTokens = []
-        generatedTokensThisTurn = []
+        invalidatePromptCache()
         debug("prompt cache reset")
     }
 
@@ -198,6 +296,10 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     /// at the sampled-placeholder token.
     public func primeCache(prompt: String) async throws {
         guard let container else { throw ModelError.notLoaded }
+        // Sample the epoch BEFORE the prefill: a memory warning or a
+        // conversation reset arriving while we prefill must win over
+        // the state we're about to publish.
+        let epochAtStart = snapshotPromptCache().epoch
         Stream.defaultStream(.gpu).synchronize()
         MLX.GPU.clearCache()
         // Encode OUTSIDE container.perform — reentering the container
@@ -257,13 +359,13 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     kvBits: 4, kvGroupSize: 64, quantizedKVStart: 0
                 )
             }
-            self.promptKVCache = kvCache
-            self.cachedTokens = tokens32
-            self.generatedTokensThisTurn = []
+            if !self.publishPromptCache(kvCache, tokens: tokens32, ifEpoch: epochAtStart) {
+                self.debug("primeCache: result dropped — cache invalidated mid-prefill")
+            }
         }
         Stream.defaultStream(.gpu).synchronize()
         MLX.GPU.clearCache()
-        debug("primeCache: done (\(self.cachedTokens.count) tokens live)")
+        debug("primeCache: done (\(self.cachedTokenCount) tokens live)")
     }
 
     // MARK: - Disk serialisation of the prompt cache.
@@ -278,25 +380,31 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
     /// responsible for choosing a stable key — typically a hash of the
     /// static preamble + enabled ZIMs + modelId.
     public func savePromptCache(to url: URL, keyHint: String) async throws {
-        guard let cache = promptKVCache, !cache.isEmpty else {
+        // One snapshot for both halves: taking `promptKVCache` and
+        // `cachedTokens` in separate unlocked reads could persist a
+        // cache and a token mirror from different turns, and the
+        // mismatch only shows up as a corrupt LCP hit after restore.
+        let snapshot = snapshotPromptCache()
+        guard let cache = snapshot.cache, !cache.isEmpty else {
             throw NSError(
                 domain: "Gemma4Provider", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "No cache to save"]
             )
         }
-        let tokenData = cachedTokens.withUnsafeBufferPointer { buf in
+        let savedTokens = snapshot.tokens
+        let tokenData = savedTokens.withUnsafeBufferPointer { buf in
             Data(buffer: buf)
         }
         let metadata: [String: String] = [
             "keyHint": keyHint,
-            "tokenCount": String(cachedTokens.count),
+            "tokenCount": String(savedTokens.count),
             "tokensBase64": tokenData.base64EncodedString(),
         ]
         // Ensure no Metal work is pending before we read the KV
         // arrays' storage — otherwise the writer races with the GPU.
         Stream.defaultStream(.gpu).synchronize()
         try MLXLMCommon.savePromptCache(url: url, cache: cache, metadata: metadata)
-        debug("saved prompt cache (\(cachedTokens.count) tokens) → \(url.lastPathComponent)")
+        debug("saved prompt cache (\(savedTokens.count) tokens) → \(url.lastPathComponent)")
     }
 
     /// Restore a previously-saved cache. Populates `promptKVCache` and
@@ -323,9 +431,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
             let buf = raw.bindMemory(to: Int32.self)
             return Array(buf)
         }
-        self.promptKVCache = cache
-        self.cachedTokens = tokens
-        self.generatedTokensThisTurn = []
+        installRestoredPromptCache(cache, tokens: tokens)
         debug("loaded prompt cache (\(tokens.count) tokens) ← \(url.lastPathComponent)")
     }
 
@@ -507,10 +613,12 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
         // buffer pool hoards intermediates up to `mlxCacheLimitMB` —
         // all of which compound on the NEW model's load-time peak
         // and can tip an iPhone into jetsam.
+        // Stop any in-flight turn first: unload() runs on a model switch
+        // and the departing model's generate task would otherwise keep
+        // decoding against weights we're dropping.
+        cancelGeneration()
         container = nil
-        promptKVCache = nil
-        cachedTokens = []
-        generatedTokensThisTurn = []
+        invalidatePromptCache()
         // Drain GPU work then release pool buffers. Safe here
         // because by the time `unload()` is called we've already
         // bailed out of the tool-loop and nobody else is issuing
@@ -527,7 +635,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                 continuation.finish(throwing: ModelError.notLoaded)
                 return
             }
-            Task {
+            let generationID = UUID()
+            let task = Task {
+                defer { self.clearGeneration(generationID) }
                 do {
                     self.debug("generate() prompt=\(prompt.count) chars, maxTokens=\(parameters.maxTokens)")
                     log.notice("generate() prompt=\(prompt.count) chars, maxTokens=\(parameters.maxTokens)")
@@ -600,6 +710,15 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         genParams.presencePenalty = Float(presencePenalty)
                     }
 
+                    // Cheapest place to honour a Stop: nothing has been
+                    // prefilled or published yet, so throwing here leaves
+                    // the previous turn's cache exactly as it was.
+                    try Task.checkCancellation()
+                    // Epoch sampled OUTSIDE the container hop (a plain
+                    // UInt64 crosses the closure boundary without dragging
+                    // the non-Sendable `[KVCache]` with it). Any reset that
+                    // lands between here and the write-back wins.
+                    let epochAtStart = self.snapshotPromptCache().epoch
                     // Decide cache reuse. The cache stores the CUMULATIVE
                     // state of (prompt + generated tokens) from the
                     // previous turn. Gemma 4's architecture mixes
@@ -612,8 +731,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // conversation reset).
                     let prefillStarted = Date()
                     let (tokenStream, tokenizerBox, prefillInputCount, reusedCount, lcpCandidate) = try await container.perform { (context) -> (AsyncStream<TokenGeneration>, SendableTokenizer, Int, Int, Int) in
-                        let existing = self.promptKVCache
-                        let cached = self.cachedTokens
+                        let snapshot = self.snapshotPromptCache()
+                        let existing = snapshot.cache
+                        let cached = snapshot.tokens
                         let common = Self.longestCommonPrefix(cached, tokens32)
                         let inputTokens: [Int32]
                         let kvCache: [KVCache]
@@ -676,13 +796,16 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                             inputTokens = tokens32
                             hit = false
                         }
-                        self.promptKVCache = kvCache
                         // Seed cachedTokens with the prompt — we'll
                         // append the generated tokens as they stream
                         // in, so the next call can match against the
-                        // FULL cache contents.
-                        self.cachedTokens = tokens32
-                        self.generatedTokensThisTurn = []
+                        // FULL cache contents. Skipped when a reset
+                        // raced this prefill (see `cacheEpoch`): we
+                        // keep streaming from the local `kvCache`, the
+                        // provider just reports no cache afterwards.
+                        if !self.publishPromptCache(kvCache, tokens: tokens32, ifEpoch: epochAtStart) {
+                            self.debug("prompt cache invalidated mid-prefill — this turn streams uncached")
+                        }
                         let cacheShape = Self.describeCache(kvCache)
                         if hit {
                             self.debug("cache HIT: reusing \(common)/\(tokens32.count) prompt tokens, prefilling \(inputTokens.count) new · cache=\(cacheShape)")
@@ -792,6 +915,34 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     var tokensAtCutoff: Int? = nil
                     let toolCallClose = "<tool_call|>"
                     chunkLoop: for await event in tokenStream {
+                        // Cancellation check (2026-08-13 review, "Fix
+                        // first" #4): the consumer terminating the stream
+                        // — user Stop, conversation reset, model switch,
+                        // or ChatSession breaking out on a tool call the
+                        // marker scan below didn't catch (e.g. a Qwen
+                        // template whose closer isn't `<tool_call|>`) —
+                        // now cancels this task via `onTermination`.
+                        // Before, MLX kept decoding to maxTokens against
+                        // a dead stream, burning GPU and racing the next
+                        // turn's prefill.
+                        //
+                        // Deliberately `break`, not `try
+                        // Task.checkCancellation()`: throwing would skip
+                        // the commit below, leaving `cachedTokens` at
+                        // prompt-only while the GPU cache actually holds
+                        // the tokens we already generated. The next turn
+                        // would then see a clean LCP prefix, declare a
+                        // HIT, and feed new tokens into a cache whose
+                        // offset is N positions further along. Falling
+                        // through with `tokensAtCutoff == nil` commits
+                        // exactly what was generated, so the mirror stays
+                        // truthful and the next turn's LCP verdict is
+                        // sound either way.
+                        if Task.isCancelled {
+                            self.debug("generate() cancelled — halting at \(tokenIDs.count) tokens")
+                            stopReason = "cancelled"
+                            break chunkLoop
+                        }
                         guard case .token(let id) = event else { continue }
                         tokenIDs.append(Int32(id))
                         detokenizer.append(token: Int(id))
@@ -876,8 +1027,9 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // next turn's prompt, which breaks LCP.
                     let kept = tokensAtCutoff ?? tokenIDs.count
                     let committed = Array(tokenIDs.prefix(kept))
-                    self.generatedTokensThisTurn = committed
-                    self.cachedTokens.append(contentsOf: committed)
+                    if !self.commitGeneratedTokens(committed, ifEpoch: epochAtStart) {
+                        self.debug("generated tokens not committed — cache was reset during this turn")
+                    }
                     // Across multi-turn sessions the Metal buffer pool
                     // creeps well past the DeviceProfile cache cap even
                     // with prefillStepSize=128, and a long-form turn
@@ -890,7 +1042,21 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     // no command buffers are still in-flight when we
                     // signal the pool to release.
                     Stream.defaultStream(.gpu).synchronize()
-                    MLX.GPU.clearCache()
+                    if stopReason == "cancelled" {
+                        // Deliberately NOT dropping the pool on a user
+                        // Stop. `resetPromptCache()` documents why the
+                        // drain was removed from that path: clearing the
+                        // Metal pool while Kokoro TTS is mid-utterance
+                        // left AVAudioEngine in a state where the next
+                        // `installTapOnBus` threw an NSException and
+                        // crashed the app — and Stop is precisely the
+                        // moment TTS is speaking. The head of the next
+                        // `generate()` drains before it prefills, so the
+                        // pool is still bounded.
+                        self.debug("cancelled — skipping MLX pool drain (Kokoro TTS race)")
+                    } else {
+                        MLX.GPU.clearCache()
+                    }
                     // Uniform completion line + stats — mirror of
                     // LlamaCppProvider's `perf complete` so cross-runtime
                     // comparisons read straight out of the logs.
@@ -931,13 +1097,62 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     self.debug(String(format: "generate() finished — %d chunks, %.2fs total", chunkIdx, totalSeconds))
                     log.notice("generate() finished")
                     continuation.finish()
+                } catch is CancellationError {
+                    // Only reachable from the pre-prefill check — the
+                    // chunk loop breaks instead of throwing so it can
+                    // still commit its token mirror. Nothing was
+                    // published, so the previous cache stands.
+                    self.debug("generate() cancelled before prefill")
+                    continuation.finish()
                 } catch {
                     self.debug("generate() threw: \(error)")
                     log.error("generate() failed: \(String(describing: error), privacy: .public)")
                     continuation.finish(throwing: error)
                 }
             }
+            self.registerGeneration(generationID, task: task)
+            // Without this the consumer walking away (Stop, reset, model
+            // switch) left MLX decoding to maxTokens on a dead stream —
+            // GPU + memory churn racing the next turn's prefill.
+            // Mirrors FoundationModelsProvider.generate().
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
         }
+    }
+
+    // MARK: - Cancellation
+    //
+    // 2026-08-13 review, "Fix first" #4: this provider inherited the
+    // protocol's no-op `cancelGeneration()` while LlamaCppProvider
+    // overrode it, so ChatSession's Stop button (`stopGeneration()` →
+    // `selectedModel.cancelGeneration()`) did nothing here. Same
+    // generation-ID idiom as LlamaCppProvider so a late cancel can't
+    // reach into the turn that started after it.
+    private let generationLock = NSLock()
+    private var activeGeneration: (id: UUID, task: Task<Void, Never>)?
+
+    private func registerGeneration(_ id: UUID, task: Task<Void, Never>) {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        activeGeneration = (id, task)
+    }
+
+    private func clearGeneration(_ id: UUID) {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        if activeGeneration?.id == id { activeGeneration = nil }
+    }
+
+    /// Ask the in-flight turn to stop at its next token boundary. The
+    /// stream still finishes normally (with whatever was decoded), and
+    /// the KV mirror is committed for what actually made it into the
+    /// cache — see the `Task.isCancelled` break in the chunk loop.
+    public func cancelGeneration() {
+        generationLock.lock()
+        let inFlight = activeGeneration?.task
+        generationLock.unlock()
+        inFlight?.cancel()
     }
 
     public func formatTranscript(systemPreamble: String, turns: [ChatTurn]) -> String {

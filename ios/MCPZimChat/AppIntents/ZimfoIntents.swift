@@ -20,12 +20,19 @@ import MCPZimKit
 
 private func formatDuration(seconds: Double) -> String {
     let total = max(0, Int(seconds.rounded()))
-    let h = total / 3600
-    let m = (total % 3600 + 30) / 60
-    if h > 0 && m > 0 { return "\(h) hours \(m) minutes" }
-    if h > 0 { return h == 1 ? "1 hour" : "\(h) hours" }
+    // Round to whole minutes before splitting, so the carry can't strand
+    // 60 minutes beside an hour ("1 hours 60 minutes"), and pluralize each
+    // unit independently — Siri SPEAKS this string, and it was saying
+    // "1 hours 1 minutes" for 90 minutes (2026-08-13 review).
+    let totalMinutes = (total + 30) / 60
+    let h = totalMinutes / 60
+    let m = totalMinutes % 60
+    let hours = h == 1 ? "1 hour" : "\(h) hours"
+    let minutes = m == 1 ? "1 minute" : "\(m) minutes"
+    if h > 0 && m > 0 { return "\(hours) \(minutes)" }
+    if h > 0 { return hours }
     if m < 1 { return "less than a minute" }
-    return "\(m) minutes"
+    return minutes
 }
 
 private func formatDistance(meters: Double) -> String {

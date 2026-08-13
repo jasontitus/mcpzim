@@ -79,6 +79,50 @@ internal func requireBytes(
 }
 
 
+/// Cross-check the SZCI **v2** sharded-node header. v1's node table lives in
+/// the SZCI blob, so `requireBytes(numNodes, perEntry: 8, …)` bounds it by
+/// bytes that are demonstrably there; v2 moved the table out to
+/// `nodes-scaled-NNN.bin`, which left `numNodes` completely unchecked at parse
+/// time and feeding a `[Int32](count: numNodes * 2)` pre-read allocation —
+/// ~34 GB at 0xFFFFFFFF, i.e. an OOM jetsam on the routing path of a ZIM that
+/// arrived over P2P nearby-share (DS4 medium 2026-08-13).
+///
+/// The shard geometry is the only cross-check available without a reader: the
+/// writer emits exactly `ceil(numNodes / nodesPerShard)` shards and places
+/// shard *i* at element offset `i * nodesPerShard * 2`, so any other triple is
+/// forged. Products are overflow-checked because `numNodeShards ×
+/// nodesPerShard` at 0xFFFFFFFF each is ~1.8e19 — past `Int.max`, which traps.
+/// `ZimService.loadNodeShards` then re-grounds the count in the shards' real
+/// byte counts before it allocates.
+@inline(__always)
+internal func requireShardGeometry(
+    numNodes: Int, numNodeShards: Int, nodesPerShard: Int
+) throws {
+    if numNodes == 0 {
+        guard numNodeShards == 0 else {
+            throw SZCIError.truncated(
+                "SZCI v2 node shards: \(numNodeShards) shards declared for 0 nodes")
+        }
+        return
+    }
+    guard numNodes > 0, numNodeShards >= 1, nodesPerShard >= 1 else {
+        throw SZCIError.truncated(
+            "SZCI v2 node shards: \(numNodes) nodes in \(numNodeShards)×\(nodesPerShard)")
+    }
+    let (capacity, capOverflow) =
+        numNodeShards.multipliedReportingOverflow(by: nodesPerShard)
+    let (priorCapacity, priorOverflow) =
+        (numNodeShards - 1).multipliedReportingOverflow(by: nodesPerShard)
+    guard !capOverflow, !priorOverflow,
+          numNodes <= capacity, numNodes > priorCapacity
+    else {
+        throw SZCIError.truncated(
+            "SZCI v2 node shards: \(numNodes) nodes is not ceil-consistent "
+            + "with \(numNodeShards)×\(nodesPerShard)")
+    }
+}
+
+
 /// Eager-loaded spatial index. Mirrors
 /// streetzim/tests/szrg_spatial.SZCIIndex.
 public struct SZCIIndex: Sendable {
@@ -418,6 +462,13 @@ public extension SZCIIndex {
                 numNodeShards = Int(SZRGInt.readUInt32LE(raw, at: 32))
                 nodesPerShard = Int(SZRGInt.readUInt32LE(raw, at: 36))
                 off = 40
+                // v1 gets its bound from `requireBytes` above; v2's node table
+                // isn't in this blob, so the shard triple is what stands
+                // between an untrusted `numNodes` and the allocation in
+                // `loadNodeShards`.
+                try requireShardGeometry(numNodes: numNodes,
+                                         numNodeShards: numNodeShards,
+                                         nodesPerShard: nodesPerShard)
             }
 
             try requireBytes(numCells, perEntry: 20, remaining: raw.count - off,

@@ -100,8 +100,15 @@ final class ZimDownloadManager: NSObject, ObservableObject {
 
     // MARK: - Public controls
 
+    /// True only for rows that are *both* marked `.downloading` and still own
+    /// a task. The task-ownership half matters: a row whose task went away
+    /// while the state said "downloading" used to pin `isIdleTimerDisabled`
+    /// for the rest of the process (battery drain with nothing transferring —
+    /// review 2026-08-13, "Fix first" #5). Every mutator recomputes the
+    /// keep-awake flag from this, so no path can leave it stuck on.
     var hasActiveDownloads: Bool {
-        items.contains { $0.state == .downloading }
+        let owningTask = Set(taskIDToItemID.values)
+        return items.contains { $0.state == .downloading && owningTask.contains($0.id) }
     }
 
     /// True while the item is downloading or paused (i.e. occupying the list).
@@ -135,6 +142,9 @@ final class ZimDownloadManager: NSObject, ObservableObject {
     }
 
     func download(_ catalogItem: ZimCatalogItem) {
+        // `defer` rather than a trailing call so the early returns below (and
+        // in every sibling mutator) still recompute the keep-awake flag.
+        defer { updateSleepBlocker() }
         // Re-tapping an in-flight item is a no-op; a failed/finished row is
         // replaced by the fresh attempt.
         if isInFlight(id: catalogItem.id) { return }
@@ -154,10 +164,10 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         task.taskDescription = label.encoded
         taskIDToItemID[task.taskIdentifier] = catalogItem.id
         task.resume()
-        updateSleepBlocker()
     }
 
     func pause(id: String) {
+        defer { updateSleepBlocker() }
         guard let index = items.firstIndex(where: { $0.id == id }),
               items[index].state == .downloading else { return }
         items[index].state = .paused
@@ -167,6 +177,11 @@ final class ZimDownloadManager: NSObject, ObservableObject {
                               urlString: item.url.absoluteString,
                               expectedBytes: item.expectedBytes)
         let taskIDs = taskIDToItemID.filter { $0.value == id }.map(\.key)
+        // Hand ownership back in the same main-actor step that sets `.paused`,
+        // so state and task ownership can never disagree while the async
+        // `getAllTasks` cancel is in flight.
+        taskIDToItemID = taskIDToItemID.filter { $0.value != id }
+        rateClock[id] = nil
         session.getAllTasks { tasks in
             for task in tasks where taskIDs.contains(task.taskIdentifier) {
                 (task as? URLSessionDownloadTask)?.cancel { resumeData in
@@ -175,10 +190,10 @@ final class ZimDownloadManager: NSObject, ObservableObject {
                 }
             }
         }
-        updateSleepBlocker()
     }
 
     func resume(id: String) {
+        defer { updateSleepBlocker() }
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         switch items[index].state {
         case .downloading, .finished: return
@@ -199,12 +214,12 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         task.taskDescription = label.encoded
         taskIDToItemID[task.taskIdentifier] = id
         task.resume()
-        updateSleepBlocker()
     }
 
     /// Cancels a transfer and forgets its partial data. Finished rows are
     /// simply dismissed (the file in the library is kept).
     func cancel(id: String) {
+        defer { updateSleepBlocker() }
         let taskIDs = taskIDToItemID.filter { $0.value == id }.map(\.key)
         session.getAllTasks { tasks in
             for task in tasks where taskIDs.contains(task.taskIdentifier) {
@@ -215,7 +230,6 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         items.removeAll { $0.id == id }
         taskIDToItemID = taskIDToItemID.filter { $0.value != id }
         rateClock[id] = nil
-        updateSleepBlocker()
     }
 
     // MARK: - Delegate plumbing (called from the session's queue via the shim)
@@ -223,6 +237,7 @@ final class ZimDownloadManager: NSObject, ObservableObject {
     fileprivate func adoptRestoredTasks(_ snapshots: [(label: TaskLabel, taskID: Int,
                                                       received: Int64, expected: Int64,
                                                       live: Bool)]) {
+        defer { updateSleepBlocker() }
         for snapshot in snapshots where snapshot.live {
             guard !items.contains(where: { $0.id == snapshot.label.id }),
                   let url = URL(string: snapshot.label.urlString) else { continue }
@@ -244,13 +259,26 @@ final class ZimDownloadManager: NSObject, ObservableObject {
             item.state = .paused
             items.append(item)
         }
-        updateSleepBlocker()
     }
 
     fileprivate func progress(taskID: Int, label: TaskLabel?,
                               received: Int64, expected: Int64) {
+        defer { updateSleepBlocker() }
         guard let id = itemID(taskID: taskID, label: label),
               let index = items.firstIndex(where: { $0.id == id }) else { return }
+        // A `didWriteData` callback already in flight when the user paused
+        // lands here afterwards. Promoting it back to `.downloading` wedged
+        // the row: the cancel then completes as `NSURLErrorCancelled` (which
+        // the shim drops), leaving "downloading" with no task — `resume()`
+        // early-returns and the keep-awake flag never clears (review
+        // 2026-08-13, "Fix first" #5). A paused row owns no task, so trailing
+        // writes from the one we cancelled are ignored entirely.
+        guard items[index].state != .paused else {
+            // `itemID` re-adopts an unmapped task from its label; undo that
+            // for the task we just cancelled so ownership stays accurate.
+            taskIDToItemID[taskID] = nil
+            return
+        }
         items[index].receivedBytes = received
         if expected > 0 { items[index].expectedBytes = expected }
         if items[index].state != .downloading { items[index].state = .downloading }
@@ -267,10 +295,10 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         } else {
             rateClock[id] = (now, received)
         }
-        updateSleepBlocker()
     }
 
     fileprivate func finished(taskID: Int, label: TaskLabel?, destination: URL) {
+        defer { updateSleepBlocker() }
         guard let id = itemID(taskID: taskID, label: label) else { return }
         Self.deleteResumeData(id: id)
         if let index = items.firstIndex(where: { $0.id == id }) {
@@ -280,13 +308,13 @@ final class ZimDownloadManager: NSObject, ObservableObject {
             items[index].receivedBytes = max(items[index].receivedBytes, items[index].expectedBytes)
         }
         rateClock[id] = nil
-        updateSleepBlocker()
         NotificationCenter.default.post(name: Self.fileReadyNotification,
                                         object: nil,
                                         userInfo: ["url": destination])
     }
 
     fileprivate func failed(taskID: Int, label: TaskLabel?, message: String, hasResumeData: Bool) {
+        defer { updateSleepBlocker() }
         guard let id = itemID(taskID: taskID, label: label) else { return }
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         // A user-initiated pause also lands here (cancel error) — keep the
@@ -295,7 +323,9 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         items[index].state = hasResumeData ? .paused : .failed(message)
         items[index].bytesPerSecond = 0
         rateClock[id] = nil
-        updateSleepBlocker()
+        // The row no longer owns a task; drop the mapping so a paused/failed
+        // item can't be counted as active by `hasActiveDownloads`.
+        taskIDToItemID[taskID] = nil
     }
 
     fileprivate func backgroundEventsDrained() {

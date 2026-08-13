@@ -96,6 +96,72 @@ public enum ZimServiceError: Error, CustomStringConvertible {
     }
 }
 
+/// Cheap lat/lon rejection window for a radius scan, derived once so the
+/// per-record test is two subtractions instead of haversine's six
+/// transcendentals.
+///
+/// It must never reject a record `haversineMeters` would have accepted, so
+/// every bound is derived from that exact function (sphere R = 6 371 000 m,
+/// `d = 2R·asin(√a)`, `a = sin²(Δφ/2) + cos φ₁ cos φ₂ sin²(Δλ/2)`):
+///
+/// * Latitude — `sin²(Δφ/2) ≤ a ≤ sin²(d/2R)`, and both half-angles live in
+///   [0, π/2] where sin is increasing, so `|Δφ| ≤ d/R` exactly. That is
+///   `d / 111 194.9` degrees; dividing by 111 000 instead can only widen the
+///   window.
+/// * Longitude — `cos φ₁ cos φ₂ sin²(Δλ/2) ≤ a`, and once the latitude gate
+///   has passed, both latitudes are within `Δφmax` of the centre, so
+///   `√(cos φ₁ cos φ₂) ≥ cos(|centreLat| + Δφmax)`. Hence
+///   `|sin(Δλ/2)| ≤ sin(d/2R) / cos(|centreLat| + Δφmax)`. When that ratio
+///   reaches 1 — a window touching a pole, or a radius near half the globe —
+///   longitude is unconstrained and the gate turns itself off.
+///
+/// Both gates fail open: a NaN/absurd radius or coordinate compares false and
+/// falls through to the haversine, which decides as it always did.
+struct RadiusBoundingBox {
+    private let centerLat: Double
+    private let centerLon: Double
+    private let maxLatDelta: Double
+    private let maxLonDelta: Double
+
+    init(centerLat: Double, centerLon: Double, radiusMeters: Double) {
+        var latDelta = Double.infinity
+        var lonDelta = Double.infinity
+        // 111 000 < the sphere's 111 194.9 m per degree of latitude, so this
+        // over-estimates Δφmax rather than under-estimating it.
+        let degrees = radiusMeters / 111_000.0
+        if degrees.isFinite, degrees >= 0, degrees < 180 {
+            latDelta = degrees
+            let worstLat = min(90.0, abs(centerLat) + degrees)
+            let cosWorst = cos(worstLat * .pi / 180)
+            let halfChord = sin(radiusMeters / (2 * 6_371_000.0))
+            // `degrees < 180` keeps radiusMeters/(2R) inside sin's increasing
+            // branch, so halfChord is a genuine bound and not a fold-back.
+            if cosWorst > 1e-9, halfChord.isFinite, halfChord >= 0 {
+                let ratio = halfChord / cosWorst
+                if ratio < 1 {
+                    // A hair of slack absorbs libm rounding in sin/asin — the
+                    // window may only ever be too wide.
+                    lonDelta = 2 * asin(ratio) * 180 / .pi * 1.000_001
+                }
+            }
+        }
+        self.centerLat = centerLat
+        self.centerLon = centerLon
+        self.maxLatDelta = latDelta
+        self.maxLonDelta = lonDelta
+    }
+
+    @inline(__always)
+    func mayBeWithin(lat: Double, lon: Double) -> Bool {
+        if abs(lat - centerLat) > maxLatDelta { return false }
+        // Antimeridian: two points a degree apart across ±180 differ by ~359
+        // in raw longitude, and rejecting them would drop real in-radius hits.
+        var deltaLon = abs(lon - centerLon)
+        if deltaLon > 180 { deltaLon = 360 - deltaLon }
+        return !(deltaLon > maxLonDelta)
+    }
+}
+
 /// Host-facing service. Concrete implementations live in-app; MCPZimServerKit
 /// adapts this interface to JSON-RPC.
 public protocol ZimService: Sendable {
@@ -1251,10 +1317,20 @@ public actor DefaultZimService: ZimService {
             }
         }
         let needKeywordFallback = !nameKeywords.isEmpty
+        // Computed once per scan, not per record — see RadiusBoundingBox.
+        let bbox = RadiusBoundingBox(centerLat: centerLat, centerLon: centerLon,
+                                     radiusMeters: radiusMeters)
         for rec in records {
             guard let rlat = (rec["a"] as? Double) ?? (rec["lat"] as? Double),
                   let rlon = (rec["o"] as? Double) ?? (rec["lon"] as? Double)
             else { continue }
+            // A chip/category load or full search-data scan walks up to
+            // `maxFullScanRecords` (500k) records for a radius of a few km,
+            // where >99% of a country-scale ZIM is nowhere near the centre;
+            // paying haversine's 6 transcendentals on all of them was the
+            // scan's dominant cost (DS4 perf medium 2026-08-13). Two
+            // subtractions reject those first.
+            guard bbox.mayBeWithin(lat: rlat, lon: rlon) else { continue }
             let d = haversineMeters(centerLat, centerLon, rlat, rlon)
             guard d <= radiusMeters else { continue }
             if requireWiki {
@@ -1865,22 +1941,91 @@ public actor DefaultZimService: ZimService {
     /// shard holds up to `nodesPerShard` nodes × 8 bytes (lat_e7, lon_e7 as
     /// little-endian Int32); shard `i` lands at element offset
     /// `i * nodesPerShard * 2`. Mirrors the JS viewer's `loadNodeShards`.
+    ///
+    /// Every count here comes from an untrusted header — ZIMs arrive over P2P
+    /// nearby-share, and this runs on the routing path. `numNodes` alone used
+    /// to size the buffer, so 0xFFFFFFFF asked for ~34 GB (OOM jetsam) and
+    /// `shard * nodesPerShard * 2 * 4` trapped on Int overflow before any
+    /// bound was consulted (DS4 medium 2026-08-13). `SZCIIndex.parse` has
+    /// already rejected shard triples that aren't ceil-consistent; what's left
+    /// is to ground the count in bytes the archive actually carries, which is
+    /// the v2 equivalent of v1's "needs N×8 bytes, have M". Probing the first
+    /// and last shard pins it exactly: non-final shards are full, so
+    /// `(shards-1) × nodesPerShard + lastShardNodes` IS `numNodes`, and a
+    /// forged count can't survive without shipping the bytes to back it.
     private static func loadNodeShards(_ idx: SZCIIndex, reader: ZimReader) throws -> [Int32] {
-        var combined = [Int32](repeating: 0, count: idx.numNodes * 2)
+        let nodeCount = idx.numNodes
+        let shardCount = idx.numNodeShards
+        let perShard = idx.nodesPerShard
+        if nodeCount == 0 { return [] }
+        // `%03d` below can only name 1000 shards, so a larger claim is forged
+        // by construction — reject it before it multiplies into an offset.
+        guard shardCount >= 1, shardCount <= 1000, perShard >= 1 else {
+            throw SZCIError.truncated(
+                "SZCI v2: \(shardCount) node shards × \(perShard) unusable "
+                + "(nodes-scaled-%03d.bin names at most 1000)")
+        }
+
+        func readShard(_ i: Int) throws -> Data {
+            let name = String(format: "routing-data/nodes-scaled-%03d.bin", i)
+            guard let entry = try reader.read(path: name) else {
+                throw SZCIError.truncated("SZCI v2: missing node shard \(name)")
+            }
+            guard entry.content.count % 8 == 0 else {
+                throw SZCIError.truncated(
+                    "SZCI v2: node shard \(i) is \(entry.content.count) B, not a multiple of 8")
+            }
+            return entry.content
+        }
+
+        let firstShard = try readShard(0)
+        let lastShard = shardCount == 1 ? firstShard : try readShard(shardCount - 1)
+        let lastNodes = lastShard.count / 8
+        let impliedNodes = shardCount == 1
+            ? lastNodes
+            : (shardCount - 1) * perShard + lastNodes
+        guard shardCount == 1 || firstShard.count / 8 == perShard,
+              lastNodes >= 1, lastNodes <= perShard,
+              impliedNodes == nodeCount
+        else {
+            throw SZCIError.truncated(
+                "SZCI v2: header claims \(nodeCount) nodes but the shards carry "
+                + "\(impliedNodes)")
+        }
+
+        var combined = [Int32](repeating: 0, count: nodeCount * 2)
         try combined.withUnsafeMutableBytes { rawDst in
-            for shard in 0..<idx.numNodeShards {
-                let name = String(format: "routing-data/nodes-scaled-%03d.bin", shard)
-                guard let entry = try reader.read(path: name) else {
-                    throw SZCIError.truncated("SZCI v2: missing node shard \(name)")
+            for shard in 0..<shardCount {
+                let content: Data
+                switch shard {
+                case 0: content = firstShard
+                case shardCount - 1: content = lastShard
+                default: content = try readShard(shard)
                 }
-                let byteOffset = shard * idx.nodesPerShard * 2 * 4
-                guard byteOffset >= 0, byteOffset + entry.content.count <= rawDst.count else {
+                // Overflow-checked even though the geometry checks above make
+                // the product safe: this arithmetic is the one place a header
+                // value reaches an unchecked `*`, and a trap here is a crash,
+                // not a skipped ZIM.
+                let (elements, elemOverflow) =
+                    shard.multipliedReportingOverflow(by: perShard)
+                let (byteOffset, byteOverflow) =
+                    elements.multipliedReportingOverflow(by: 8)
+                // A short middle shard would zero-fill a hole in the table
+                // instead of failing, i.e. silently place nodes at (0, 0) —
+                // so the full-shard invariant is enforced here too, not only
+                // on the probed pair.
+                let expectedNodes = shard == shardCount - 1 ? lastNodes : perShard
+                guard !elemOverflow, !byteOverflow,
+                      byteOffset >= 0, byteOffset <= rawDst.count,
+                      content.count / 8 == expectedNodes,
+                      content.count <= rawDst.count - byteOffset
+                else {
                     throw SZCIError.truncated("SZCI v2: node shard \(shard) overruns node table")
                 }
                 // File bytes are little-endian Int32; on (LE) ARM a raw copy
                 // into the Int32-backed buffer is the correct value.
-                entry.content.copyBytes(to: UnsafeMutableRawBufferPointer(
-                    rebasing: rawDst[byteOffset ..< byteOffset + entry.content.count]))
+                content.copyBytes(to: UnsafeMutableRawBufferPointer(
+                    rebasing: rawDst[byteOffset ..< byteOffset + content.count]))
             }
         }
         return combined

@@ -30,6 +30,7 @@
 
 import Foundation
 import OSLog
+import Security
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
@@ -47,19 +48,52 @@ private let reportLog = Logger(
 public enum DebugReportConfig {
     private static let tokenKey = "debug.report.githubToken"
 
-    /// Short-lived GitHub PAT with `gist` scope. Stored in
-    /// UserDefaults — personal-dev only; don't ship the app
-    /// publicly with this in place.
+    /// Short-lived GitHub PAT with `gist` scope. Keychain-backed:
+    /// UserDefaults is plaintext and rides along in unencrypted device /
+    /// iCloud backups, so a pasted PAT exfiltrated with any backup of a
+    /// DEBUG build (2026-08-13 review). `ThisDeviceOnly` keeps it out of
+    /// backups entirely. A token stored by an older build is migrated on
+    /// first read and erased from UserDefaults.
     public static var githubToken: String? {
-        get { UserDefaults.standard.string(forKey: tokenKey) }
+        get {
+            if let legacy = UserDefaults.standard.string(forKey: tokenKey),
+               !legacy.isEmpty {
+                githubToken = legacy
+                UserDefaults.standard.removeObject(forKey: tokenKey)
+                return legacy
+            }
+            var query = baseQuery
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+                  let data = item as? Data,
+                  let token = String(data: data, encoding: .utf8),
+                  !token.isEmpty
+            else { return nil }
+            return token
+        }
         set {
-            let defaults = UserDefaults.standard
-            if let v = newValue, !v.isEmpty {
-                defaults.set(v, forKey: tokenKey)
-            } else {
-                defaults.removeObject(forKey: tokenKey)
+            SecItemDelete(baseQuery as CFDictionary)
+            guard let v = newValue, !v.isEmpty,
+                  let data = v.data(using: .utf8) else { return }
+            var add = baseQuery
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] =
+                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let status = SecItemAdd(add as CFDictionary, nil)
+            if status != errSecSuccess {
+                print("[DebugReport] keychain store failed: \(status)")
             }
         }
+    }
+
+    private static var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "org.mcpzim.debug-report",
+            kSecAttrAccount as String: tokenKey,
+        ]
     }
 
     /// Marker included in the gist description so the Mac picker can

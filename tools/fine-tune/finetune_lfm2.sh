@@ -169,7 +169,16 @@ PY
 fi
 
 # --- Step 3.6: restore upstream tokenizer (mlx fuse re-serialises) ---
-BASE_SNAPSHOT=$(ls -d ~/.cache/huggingface/hub/models--${BASE_MODEL//\//--}/snapshots/*/ 2>/dev/null | head -1)
+# Step 3.6 is unconditional, so the old `ls -d … | head -1` aborted *every* run
+# on a box without that HF snapshot: ls exits 2, pipefail propagates it, errexit
+# kills the script before the convert step and the [[ -n ]] guard never gets to
+# skip (bugs review, finetune_lfm2.sh:172). A glob array cannot fail; an
+# unmatched pattern stays literal, so -d rejects it.
+_base_snapshots=(~/.cache/huggingface/hub/models--${BASE_MODEL//\//--}/snapshots/*/)
+BASE_SNAPSHOT=""
+if [[ -d "${_base_snapshots[0]}" ]]; then
+    BASE_SNAPSHOT="${_base_snapshots[0]%/}"
+fi
 if [[ -n "$BASE_SNAPSHOT" ]]; then
     echo ">> restoring upstream tokenizer into $FUSED_DIR"
     cp -L "$BASE_SNAPSHOT/tokenizer.json" \

@@ -495,6 +495,187 @@ final class SZRGSpatialTests: XCTestCase {
             XCTAssertTrue(msg.contains("edges"), "got: \(msg)")
         }
     }
+
+    // MARK: - Adversarial SZCI v2 (sharded nodes)
+    //
+    // v1's node table is bounded by `requireBytes` against the blob it was
+    // read from. v2 moved that table into nodes-scaled-NNN.bin, so numNodes /
+    // numNodeShards / nodesPerShard reached the `[Int32](count: numNodes * 2)`
+    // allocation and the `shard * nodesPerShard * 2 * 4` offset unchecked —
+    // ~34 GB and an Int-overflow trap respectively, on the routing path of a
+    // P2P-shared ZIM (DS4 medium 2026-08-13). Each test below asserts a clean
+    // throw AND counts node-shard reads: the allocation happens after the
+    // first/last-shard probe, so a low read count is the evidence that no
+    // giant buffer was ever requested.
+
+    /// Reader that records every path it served, so a test can prove where
+    /// the load bailed out.
+    private final class CountingSpatialReader: ZimReader, @unchecked Sendable {
+        let store: [String: Data]
+        private let lock = NSLock()
+        private var served: [String] = []
+        init(_ s: [String: Data]) { store = s }
+        var metadata: ZimMetadata { ZimMetadata(name: "osm-v2") }
+        var kind: ZimKind { .streetzim }
+        var hasFullTextIndex: Bool { false }
+        var hasTitleIndex: Bool { false }
+        var hasRoutingData: Bool { true }
+        var shardReads: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return served.filter { $0.contains("nodes-scaled") }.count
+        }
+        func read(path: String) throws -> ZimEntry? {
+            lock.lock()
+            served.append(path)
+            lock.unlock()
+            return store[path].map {
+                ZimEntry(path: path, title: path,
+                         mimetype: "application/octet-stream", content: $0)
+            }
+        }
+        func readMainPage() throws -> ZimEntry? { nil }
+    }
+
+    private func i32le(_ vals: [Int32]) -> Data {
+        var d = Data()
+        for v in vals { appendI32(&d, v) }
+        return d
+    }
+
+    /// Drive the real `loadSpatialGraph` → `loadNodeShards` path with a
+    /// hand-forged v2 header and return (thrown message, node-shard reads).
+    private func loadV2(
+        numNodes: Int, numNodeShards: UInt32, nodesPerShard: UInt32,
+        shards: [Int: Data] = [0: Data(count: 16), 1: Data(count: 8)]
+    ) async -> (message: String?, shardReads: Int) {
+        var store: [String: Data] = [
+            "routing-data/graph-cells-index.bin": packIndexV2(
+                numNodes: numNodes, numNodeShards: numNodeShards,
+                nodesPerShard: nodesPerShard,
+                cellEntries: [(lat: 0, lon: 0, nodes: 1, edges: 0, geoms: 0)],
+                names: [""]),
+        ]
+        for (i, d) in shards {
+            store[String(format: "routing-data/nodes-scaled-%03d.bin", i)] = d
+        }
+        let reader = CountingSpatialReader(store)
+        let svc = DefaultZimService(readers: [(name: "osm-v2", reader: reader)])
+        do {
+            _ = try await svc.loadSpatialGraph(zimName: "osm-v2")
+            return (nil, reader.shardReads)
+        } catch let e as SZCIError {
+            guard case .truncated(let msg) = e else {
+                return ("unexpected SZCIError \(e)", reader.shardReads)
+            }
+            return (msg, reader.shardReads)
+        } catch {
+            return ("unexpected \(error)", reader.shardReads)
+        }
+    }
+
+    /// numNodes = 0xFFFFFFFF with a 1×1 shard table can't be backed by any
+    /// archive; the header cross-check must reject it before a byte of shard
+    /// data (or 34 GB of Int32s) is touched.
+    func testV2HostileNumNodesRejectedBeforeAnyShardRead() async {
+        let (message, reads) = await loadV2(
+            numNodes: 0xFFFF_FFFF, numNodeShards: 1, nodesPerShard: 1)
+        let msg = try? XCTUnwrap(message, "hostile numNodes must throw")
+        XCTAssertTrue((msg ?? "").contains("ceil-consistent"), "got: \(message ?? "no throw")")
+        XCTAssertEqual(reads, 0, "rejected at parse — no shard should be read")
+    }
+
+    /// numNodeShards × nodesPerShard at 0xFFFFFFFF each is ~1.8e19, past
+    /// Int.max: the old `shard * nodesPerShard * 2 * 4` trapped here. The
+    /// overflow-reporting multiply must turn it into a throw.
+    func testV2OverflowingShardGeometryThrowsInsteadOfTrapping() async {
+        let (message, reads) = await loadV2(
+            numNodes: 0xFFFF_FFFF, numNodeShards: 0xFFFF_FFFF,
+            nodesPerShard: 0xFFFF_FFFF)
+        XCTAssertTrue((message ?? "").contains("ceil-consistent"),
+                      "got: \(message ?? "no throw")")
+        XCTAssertEqual(reads, 0)
+    }
+
+    /// A ceil-consistent but still absurd header (1000 × 4 294 968 ≈ 2³²
+    /// nodes) survives the parse-time cross-check, so the byte-grounded probe
+    /// in `loadNodeShards` is what has to stop it — after two small reads and
+    /// before the allocation.
+    func testV2ForgedNodeCountRejectedAgainstActualShardBytes() async {
+        let (message, reads) = await loadV2(
+            numNodes: 0xFFFF_FFFF, numNodeShards: 1000, nodesPerShard: 4_294_968,
+            shards: [0: Data(count: 16), 999: Data(count: 8)])
+        XCTAssertTrue((message ?? "").contains("shards carry"),
+                      "got: \(message ?? "no throw")")
+        XCTAssertLessThanOrEqual(reads, 2, "only the first/last probe may run")
+    }
+
+    /// `nodes-scaled-%03d.bin` can only name 1000 shards, so a bigger claim is
+    /// forged by construction and must not reach the offset arithmetic.
+    func testV2ShardCountBeyondNameSpaceRejected() async {
+        // 1999×2 < 3999 ≤ 2000×2, so the parse-time ceil check passes.
+        let (message, reads) = await loadV2(
+            numNodes: 3999, numNodeShards: 2000, nodesPerShard: 2)
+        XCTAssertTrue((message ?? "").contains("at most 1000"),
+                      "got: \(message ?? "no throw")")
+        XCTAssertEqual(reads, 0)
+    }
+
+    /// A shard whose byte count isn't a whole number of (lat, lon) pairs is
+    /// truncated — a partial copy would silently mis-place every later node.
+    func testV2TruncatedShardRejected() async {
+        let (message, _) = await loadV2(
+            numNodes: 3, numNodeShards: 2, nodesPerShard: 2,
+            shards: [0: i32le([0, 0, 0, 10_000]), 1: Data(count: 5)])
+        XCTAssertTrue((message ?? "").contains("multiple of 8"),
+                      "got: \(message ?? "no throw")")
+    }
+
+    /// Non-final shards must be exactly `nodesPerShard` long — the
+    /// `shard * nodesPerShard` placement assumes it, and it is what ties
+    /// numNodes to bytes that exist.
+    func testV2ShortLeadingShardRejected() async {
+        let (message, _) = await loadV2(
+            numNodes: 3, numNodeShards: 2, nodesPerShard: 2,
+            shards: [0: i32le([0, 0]), 1: i32le([0, 20_000])])
+        XCTAssertTrue((message ?? "").contains("shards carry"),
+                      "got: \(message ?? "no throw")")
+    }
+
+    /// The first/last probe can't see a short shard in the middle, and a
+    /// partial copy there would zero-fill a hole — silently placing real nodes
+    /// at (0, 0) — so the copy loop re-checks every shard's length.
+    func testV2ShortMiddleShardRejected() async {
+        let (message, _) = await loadV2(
+            numNodes: 5, numNodeShards: 3, nodesPerShard: 2,
+            shards: [0: i32le([0, 0, 0, 10_000]),
+                     1: i32le([0, 20_000]),
+                     2: i32le([0, 40_000])])
+        XCTAssertTrue((message ?? "").contains("overruns node table"),
+                      "got: \(message ?? "no throw")")
+    }
+
+    /// The honest header still loads: 2 full-then-partial shards, 3 nodes.
+    func testV2WellFormedShardGeometryStillLoads() async {
+        let (message, reads) = await loadV2(
+            numNodes: 3, numNodeShards: 2, nodesPerShard: 2,
+            shards: [0: i32le([0, 0, 0, 10_000]), 1: i32le([0, 20_000])])
+        XCTAssertNil(message, "well-formed v2 must load")
+        XCTAssertEqual(reads, 2)
+    }
+
+    /// A single-shard table has no "full non-final shard" to check, so its
+    /// only bound is the one shard's own byte count.
+    func testV2SingleShardCountMustMatchItsBytes() async {
+        let (bad, _) = await loadV2(
+            numNodes: 2, numNodeShards: 1, nodesPerShard: 2,
+            shards: [0: i32le([0, 0])])
+        XCTAssertTrue((bad ?? "").contains("shards carry"), "got: \(bad ?? "no throw")")
+        let (good, _) = await loadV2(
+            numNodes: 2, numNodeShards: 1, nodesPerShard: 2,
+            shards: [0: i32le([0, 0, 0, 10_000])])
+        XCTAssertNil(good, "honest single-shard table must load")
+    }
 }
 
 

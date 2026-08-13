@@ -339,10 +339,44 @@ public final class FoundationModelsProvider: ModelProvider, @unchecked Sendable 
                     // still benefit from the `prewarm()` fired at
                     // install time (model weights stay resident in
                     // the system daemon) — just not from KV-cache
-                    // reuse. Properly solving that needs a prompt
-                    // refactor that passes only the new user turn
-                    // per call and uses `instructions` for the
-                    // preamble; filed for later.
+                    // reuse.
+                    //
+                    // 2026-08-13 perf review flagged this re-prefill
+                    // ("Perf: fix first" #3) and it is real — but the
+                    // fix does NOT belong here, and reusing a session
+                    // at this call site would be a regression:
+                    //
+                    //   1. `prompt` is the WHOLE transcript, re-rendered
+                    //      per tool iteration by
+                    //      `template.renderTranscript(systemPreamble:
+                    //      tools:turns:)` (ChatSession.swift:3248) —
+                    //      system preamble + tool schemas + every turn.
+                    //      Feeding that to a session that already holds
+                    //      the same history is exactly the double-count
+                    //      that produced `exceededContextWindowSize`
+                    //      above. This provider cannot tell which part
+                    //      of `prompt` is new.
+                    //   2. The text loop breaks out mid-stream the
+                    //      moment a tool call parses (ChatSession.swift
+                    //      :3395-3400), which terminates our
+                    //      continuation and cancels the response below.
+                    //      A reused session would get its next
+                    //      `streamResponse` while the cancelled one is
+                    //      still unwinding → `concurrentRequests`, and
+                    //      its transcript would carry a truncated
+                    //      assistant turn that ChatSession re-renders
+                    //      into the next prompt anyway.
+                    //
+                    // The review's own prescription — "pass only the new
+                    // message, `instructions:` for the preamble" —
+                    // requires the CALLER to stop re-rendering, so it is
+                    // a ChatSession-side design, and that design already
+                    // ships: `ensureWarmSession()` + `generateNativeTurn`
+                    // here, driven by `runNativeToolsTurn` (ChatSession
+                    // .swift:3061). Selecting the "Apple Foundation
+                    // Models (native tools)" provider is what buys the
+                    // warm session; this text-loop instance keeps a
+                    // clean per-call transcript on purpose.
                     if self.useNativeTools {
                         perCall = LanguageModelSession(tools: self.nativeTools)
                         self.debug(String(format: "native-tools session init: %.2fs (tools=%d)",

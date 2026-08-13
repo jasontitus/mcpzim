@@ -36,7 +36,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-sys.path.insert(0, "/Users/jasontitus/experiments/mcpzim/tools/llama-smoke")
+# Repo-relative, not one developer's home: off that machine the hardcoded path
+# made the `eval` import in _eval_preamble() fail silently, so every example fell
+# back to a truncated preamble with no tool block and the generated training data
+# diverged from the eval distribution (bugs review, generate_places_diverse.py:39).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "llama-smoke"))
 
 from openai import AsyncOpenAI
 

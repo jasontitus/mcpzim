@@ -21,7 +21,13 @@
 
 set -uo pipefail
 
-BIN="${MCPZIM_EVALCLI:-$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/MCPZimChat-*/Build/Products/Debug/MCPZimEvalCLI 2>/dev/null | head -1)}"
+# Glob array rather than `ls -d … | head -1`: head closing the pipe SIGPIPEs ls,
+# and this script already runs under `pipefail` — one `set -e` added later would
+# turn that into an abort (the failure mode the bugs review found in
+# finetune.sh/finetune_lfm2.sh). An unmatched glob stays literal, so the -x test
+# below still produces the build-it-first message.
+_evalcli=("$HOME"/Library/Developer/Xcode/DerivedData/MCPZimChat-*/Build/Products/Debug/MCPZimEvalCLI)
+BIN="${MCPZIM_EVALCLI:-${_evalcli[0]}}"
 [ -x "$BIN" ] || { echo "MCPZimEvalCLI not found — build the MCPZimEvalCLI scheme first (or set MCPZIM_EVALCLI)"; exit 2; }
 
 # The CLI links llama.framework via @rpath; a fresh DerivedData build

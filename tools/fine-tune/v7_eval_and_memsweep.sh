@@ -4,8 +4,12 @@
 # Runs unattended; produces real numbers (no GPU contention — v7 training
 # already stopped).
 set -u
-FT=/Users/jasontitus/experiments/mcpzim/tools/fine-tune
-LS=/Users/jasontitus/experiments/mcpzim/tools/llama-smoke
+# Derived from the script's own location, not one developer's home — the
+# hardcoded absolute paths made this unrunnable on any other checkout (bugs
+# review, hardcoded-home-path duplicate group). Same `dirname "$0"` idiom as
+# finetune.sh / train_all.sh / eval_ft_pcgaming.sh.
+FT="$(cd "$(dirname "$0")" && pwd)"
+LS="$(cd "$FT/../llama-smoke" && pwd)"
 QUANT="$FT/.llama.cpp-src/build/bin/llama-quantize"
 GGUF="$FT/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.Q4_K_M.gguf"
 F16="$FT/ft-out-lfm2.5-8b/lfm2.5-8b-a1b-ft.f16.gguf"

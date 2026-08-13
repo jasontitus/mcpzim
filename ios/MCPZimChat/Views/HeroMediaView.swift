@@ -221,9 +221,20 @@ struct HeroMediaView: View {
 
     /// Reject 1-pixel transparent spacers Wikipedia uses for layout
     /// (they have `width="1"` or `height="1"` or a `spacer` class).
+    ///
+    /// The digit must not be followed by another digit. The previous pattern
+    /// (`["']?1["']?`, both quotes optional) matched any value merely
+    /// *starting* with 1 — `width="100"`, `height="165"`, `width=150` — which
+    /// is the ordinary size of a Wikipedia lead thumbnail, so `extractSrc`
+    /// skipped the real hero image and the feature rendered nothing for most
+    /// articles (review 2026-08-13, confirmed empirically). Single digits
+    /// (1–9, optionally `px`-suffixed) are still treated as spacers: nothing
+    /// under 10 px is displayable hero media.
     private nonisolated static func isLikelySpacer(_ tag: String) -> Bool {
-        if tag.range(of: #"\bwidth\s*=\s*["']?1["']?"#, options: .regularExpression) != nil { return true }
-        if tag.range(of: #"\bheight\s*=\s*["']?1["']?"#, options: .regularExpression) != nil { return true }
+        if tag.range(of: #"\bwidth\s*=\s*["']?[1-9](?:px)?(?![0-9])["']?"#,
+                     options: .regularExpression) != nil { return true }
+        if tag.range(of: #"\bheight\s*=\s*["']?[1-9](?:px)?(?![0-9])["']?"#,
+                     options: .regularExpression) != nil { return true }
         if tag.contains("spacer") { return true }
         return false
     }

@@ -56,3 +56,8 @@ eval/corpus/*.jsonl
 # console or the shared vault.
 ios/MCPZimChat/GoogleService-Info.plist
 ios/MCPZimChat/GoogleService-Info-Mac.plist
+
+# Xcode derived-data trees. Untracked but not ignored, so a stray
+# `git add -A ios/` sweeps in gigabytes of SPM checkouts (and trips the
+# embedded-repo warning). Caught 2026-08-13.
+ios/build-*/

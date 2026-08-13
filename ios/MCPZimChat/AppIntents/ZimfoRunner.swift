@@ -36,18 +36,31 @@ final class ZimfoRunner {
         return runner
     }
 
-    /// Cheap change-detection key: ZIM filenames in Documents plus the
-    /// bookmark blob signatures. No archive opens — just one directory
-    /// listing and a defaults read. (`Data.hashValue` is per-process
-    /// seeded, which is fine for an in-memory, per-process cache.)
+    /// Cheap change-detection key: ZIM filename + size + mtime for everything
+    /// in Documents, plus the bookmark blob signatures. No archive opens —
+    /// just one directory listing (with the two stat values the enumerator
+    /// already prefetches) and a defaults read. (`Data.hashValue` is
+    /// per-process seeded, which is fine for an in-memory, per-process cache.)
+    ///
+    /// Size + mtime are part of the key because the name alone isn't: a `.zim`
+    /// replaced by a newer edition under the SAME filename (re-download of a
+    /// monthly Wikipedia dump, a friend's nearby-share overwrite) looked
+    /// identical here, so `load()` kept handing Siri readers onto the old file
+    /// for the rest of the process (review 2026-08-13, bugs ZimfoRunner:43).
     private static func libraryFingerprint() -> String {
         var parts: [String] = []
         let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
         if let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask,
                                   appropriateFor: nil, create: false),
-           let urls = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+           let urls = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: keys) {
             parts = urls.filter { $0.pathExtension.lowercased() == "zim" }
-                .map { $0.lastPathComponent }
+                .map { url in
+                    let values = try? url.resourceValues(forKeys: Set(keys))
+                    let size = values?.fileSize ?? -1
+                    let mtime = values?.contentModificationDate?.timeIntervalSince1970 ?? -1
+                    return "\(url.lastPathComponent):\(size):\(Int(mtime))"
+                }
                 .sorted()
         }
         if let blobs = UserDefaults.standard.array(forKey: "library.externalBookmarks") as? [Data] {
@@ -57,6 +70,35 @@ final class ZimfoRunner {
     }
 
     private static func buildFresh() async throws -> ZimfoRunner {
+        // Archive opening is detached because it is blocking disk I/O —
+        // libzim metadata plus title/fulltext index reads, "seconds" for a
+        // multi-GB library. `ZimfoRunner` is `@MainActor`, so this used to run
+        // on the main actor and the first Siri/Shortcuts intent of a fresh
+        // process (empty `cached`) paid all of it there, risking Siri's
+        // execution budget / an in-app freeze (review 2026-08-13, "Perf: fix
+        // first" #1). Everything after the detach is actor hops or cheap
+        // bookkeeping, so the main actor only ever suspends.
+        let readers = await Task.detached(priority: .userInitiated) {
+            openReaders()
+        }.value
+        let service = DefaultZimService(readers: readers)
+        let adapter = await MCPToolAdapter.from(service: service)
+        // Same bridge ChatSession uses — lets Siri intents that end up
+        // calling `route_status` / `what_is_here` read from the same
+        // persistent route + GPS state as the in-app chat.
+        await adapter.installHostStateProvider {
+            await ZimfoContext.shared.mcpSnapshot()
+        }
+        let byName = Dictionary(
+            readers.map { ($0.name, $0.reader) },
+            uniquingKeysWith: { first, _ in first })
+        return ZimfoRunner(service: service, adapter: adapter, readersByName: byName)
+    }
+
+    /// Opens every ZIM the library knows about. `nonisolated` so `buildFresh`
+    /// can run it off the main actor; `LibzimReader` is `@unchecked Sendable`,
+    /// so the opened readers cross back to the main actor safely.
+    private nonisolated static func openReaders() -> [(name: String, reader: any ZimReader)] {
         var readers: [(name: String, reader: any ZimReader)] = []
         // 1) Anything in the app's sandbox Documents folder (auto-scan).
         let fm = FileManager.default
@@ -87,24 +129,21 @@ final class ZimfoRunner {
                                    relativeTo: nil,
                                    bookmarkDataIsStale: &stale)
                 #endif
-                if let url, url.startAccessingSecurityScopedResource(),
-                   let r = try? LibzimReader(url: url) {
+                guard let url, url.startAccessingSecurityScopedResource() else { continue }
+                if let r = try? LibzimReader(url: url) {
+                    // Scope stays open on purpose: the reader mmaps the file
+                    // for as long as the runner lives.
                     readers.append((url.lastPathComponent, r))
+                } else {
+                    // …but a failed open leaves nothing to read through it, so
+                    // balance the start here instead of leaking the scope for
+                    // the process lifetime (review 2026-08-13, bugs
+                    // ZimfoRunner:90).
+                    url.stopAccessingSecurityScopedResource()
                 }
             }
         }
-        let service = DefaultZimService(readers: readers)
-        let adapter = await MCPToolAdapter.from(service: service)
-        // Same bridge ChatSession uses — lets Siri intents that end up
-        // calling `route_status` / `what_is_here` read from the same
-        // persistent route + GPS state as the in-app chat.
-        await adapter.installHostStateProvider {
-            await ZimfoContext.shared.mcpSnapshot()
-        }
-        let byName = Dictionary(
-            readers.map { ($0.name, $0.reader) },
-            uniquingKeysWith: { first, _ in first })
-        return ZimfoRunner(service: service, adapter: adapter, readersByName: byName)
+        return readers
     }
 
     init(service: DefaultZimService, adapter: MCPToolAdapter,

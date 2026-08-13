@@ -69,19 +69,28 @@ for m in "${ALL_MODELS[@]}"; do
         [[ -n "$SCENARIOS_FILTER" && "$s" != *"$SCENARIOS_FILTER"* ]] && continue
         total=$((total+1))
         echo "==> $mkey / $s" | tee -a "$LOG"
+        # eval.py emits TWO RESULT lines, not one:
+        #   RESULT scenario=… passed=… wall_s=…
+        #   RESULT peak_mb=… ge5gb=… ge6gb=… ge7gb=… samples=…
+        # The old `tail -1` therefore kept only the peak line, which carries no
+        # `passed=`/`wall_s=` at all — so no row could ever score ✓ (and under
+        # `set -euo pipefail` the empty grep below actually aborted the grid on
+        # its first cell). Keep every RESULT line and pull fields across all of
+        # them, the way llama-smoke/grid.py:parse_result already does.
         out=$("$VENV_PY" "$EVAL_PY" \
             --local-path "$mpath" --scenario "$s" \
             --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn \
-            2>&1 | tee -a "$LOG" | grep "^RESULT " | tail -1 || true)
+            2>&1 | tee -a "$LOG" | grep "^RESULT " || true)
         if [[ -z "$out" ]]; then
             row="| $mkey | $s | ✗ | - | - | no RESULT line |"
         else
-            # parse 'RESULT scenario=X passed=Y wall_s=Z peak_mb=W ...'
-            pass=$(echo "$out" | grep -oE "passed=[A-Za-z]+" | cut -d= -f2)
-            wall=$(echo "$out" | grep -oE "wall_s=[0-9.]+" | cut -d= -f2)
-            peak=$(echo "$out" | grep -oE "peak_mb=[0-9]+" | cut -d= -f2)
+            # `|| true` per field: a run that omits one (e.g. no peak_mb on CPU)
+            # should cost that cell, not abort the remaining model×scenario grid.
+            pass=$(echo "$out" | grep -oE "passed=[A-Za-z]+" | cut -d= -f2 || true)
+            wall=$(echo "$out" | grep -oE "wall_s=[0-9.]+" | cut -d= -f2 || true)
+            peak=$(echo "$out" | grep -oE "peak_mb=[0-9]+" | cut -d= -f2 || true)
             sym="✗"; [[ "$pass" == "True" ]] && { sym="✓"; passed=$((passed+1)); }
-            row="| $mkey | $s | $sym | $wall | $peak |  |"
+            row="| $mkey | $s | $sym | ${wall:--} | ${peak:--} |  |"
         fi
         echo "$row" >> "$TBL"
     done

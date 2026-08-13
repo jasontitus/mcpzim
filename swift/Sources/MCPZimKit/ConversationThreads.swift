@@ -616,33 +616,37 @@ public enum WikiLinks {
         var out: [Link] = []
         var seen = Set<String>()
 
-        for m in re.matches(in: source, range: range) {
-            guard m.numberOfRanges >= 3,
+        // `matches(in:)` builds one NSTextCheckingResult for EVERY anchor in
+        // the article before the first one is inspected — a Kiwix Wikipedia
+        // page has thousands, and this loop keeps 8 (DS4 perf medium
+        // 2026-08-13). Enumerating stops the scan at the cap instead.
+        re.enumerateMatches(in: source, range: range) { m, _, stop in
+            guard let m, m.numberOfRanges >= 3,
                   let hrefR = Range(m.range(at: 1), in: source),
                   let textR = Range(m.range(at: 2), in: source)
-            else { continue }
+            else { return }
 
             let href = String(source[hrefR])
             let rawText = String(source[textR])
             let title = decodeAndStrip(rawText)
 
             guard isArticleLink(href), !title.isEmpty, title.count >= 2 else {
-                continue
+                return
             }
             // Skip pure-number / citation anchor text ("[1]", "12").
             if title.allSatisfy({ $0.isNumber || $0 == "[" || $0 == "]" }) {
-                continue
+                return
             }
-            if boilerplateTitles.contains(title.lowercased()) { continue }
+            if boilerplateTitles.contains(title.lowercased()) { return }
             // Dedupe by DESTINATION (two anchors with different text — e.g. a
             // second "again" link — pointing at the same article are one
             // thread), falling back to the title when there's no path.
             let path = normalizePath(href)
             let key = (path.isEmpty ? title : path).lowercased()
-            if seen.contains(key) { continue }
+            if seen.contains(key) { return }
             seen.insert(key)
             out.append(Link(title: title, path: path))
-            if out.count >= max { break }
+            if out.count >= max { stop.pointee = true }
         }
         return out
     }
@@ -659,8 +663,11 @@ public enum WikiLinks {
         ) else { return "" }
         let range = NSRange(html.startIndex..., in: html)
         var parts: [Substring] = []
-        for m in re.matches(in: html, range: range) {
-            if let r = Range(m.range(at: 1), in: html) {
+        // Enumerated for the same reason as `parseLinks`: only the capture
+        // ranges are wanted, so the intermediate array of one result per
+        // paragraph is pure allocation.
+        re.enumerateMatches(in: html, range: range) { m, _, _ in
+            if let m, let r = Range(m.range(at: 1), in: html) {
                 parts.append(html[r])
             }
         }

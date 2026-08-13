@@ -567,6 +567,16 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
     private func openModel(at path: URL) throws {
         modelLock.lock()
         defer { modelLock.unlock() }
+        // `load()` is not idempotent and the Models menu re-runs it on
+        // the retry path, so a second open would overwrite `model` /
+        // `vocab` and strand the previous context (which points into the
+        // now-unreachable old model). Tear down first — normally a
+        // three-way no-op — so no pointer here ever outlives the model
+        // it was derived from (2026-08-13 review, "Fix first" #7).
+        if let c = ctx { llama_free(c); ctx = nil }
+        if let m = model { llama_model_free(m); model = nil }
+        vocab = nil
+        cachedTokens = []
         // Model
         var mp = llama_model_default_params()
         mp.n_gpu_layers = -1          // all on Metal
@@ -595,8 +605,19 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
         cp.swa_full = false
         cp.offload_kqv = true
         guard let c = llama_init_from_model(m, cp) else {
+            // `vocab` is owned by the model we're about to free, so it
+            // has to die with it: `promptTokenCount()` guards on
+            // `vocab != nil` (not on `model`/`ctx`) and would hand the
+            // freed pointer to `llama_tokenize` — a use-after-free.
+            // Reachable on iOS, where context init is the step that
+            // OOMs on a ~3 GB model and ChatSession keeps probing token
+            // counts to compact the transcript (2026-08-13 review,
+            // "Fix first" #7). `cachedTokens` mirrors the context KV
+            // that never got created, so it goes too.
             llama_model_free(m)
             self.model = nil
+            self.vocab = nil
+            self.cachedTokens = []
             throw LlamaCppError.custom("llama_init_from_model failed")
         }
         self.ctx = c

@@ -25,6 +25,25 @@ private struct NearbyShareContent: View {
     @State private var selectionRoute: SwarmSelectionRoute?
     @State private var pinPromptSwarm: DiscoveredSwarm?
     @State private var enteredPin = ""
+    @State private var shareFacts = ShareFacts()
+
+    /// Everything about the share that has to be read off disk. Resolved once
+    /// per change instead of per body pass: `hasShareableFiles` and the two
+    /// size labels stat the model file and walk the voice-model folders
+    /// (Supertonic's is a recursive `FileManager.enumerator`, and reading
+    /// `KokoroAssets.modelDirectory` runs a `createDirectory` as a side
+    /// effect), while this view republishes on every discovery change and
+    /// transfer-progress tick — so an active transfer re-ran all of it on the
+    /// main thread several times a second (review 2026-08-13, "Perf: fix
+    /// first" #7).
+    private struct ShareFacts: Equatable {
+        /// Optimistic default: the first refresh lands a frame later, and
+        /// flashing "Nothing to share yet" at a user who has a library is
+        /// worse than briefly enabling a toggle the controller no-ops anyway.
+        var hasShareableFiles = true
+        var modelSizeLabel: String?
+        var voiceSizeLabel: String?
+    }
 
     private var downloadsAndReceives: [TransferStatus] {
         manager.transfers.filter { $0.role != .seeding }
@@ -48,6 +67,7 @@ private struct NearbyShareContent: View {
         #endif
         .onAppear { controller.beginBrowsing() }
         .onDisappear { controller.endBrowsing() }
+        .task(id: shareFactsKey) { await refreshShareFacts() }
         .sheet(item: $selectionRoute) { route in
             SwarmFileSelectionSheet(manager: manager,
                                     manifest: route.manifest,
@@ -93,9 +113,9 @@ private struct NearbyShareContent: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .disabled(!controller.isSharingLibrary && !controller.hasShareableFiles)
+            .disabled(!controller.isSharingLibrary && !shareFacts.hasShareableFiles)
 
-            if let modelSize = shareableModelSizeLabel {
+            if let modelSize = shareFacts.modelSizeLabel {
                 Toggle(isOn: Binding(
                     get: { controller.includeModelInShare },
                     set: { controller.setIncludeModel($0) })) {
@@ -108,7 +128,7 @@ private struct NearbyShareContent: View {
                 }
             }
 
-            if let voiceSize = shareableVoiceSizeLabel {
+            if let voiceSize = shareFacts.voiceSizeLabel {
                 Toggle(isOn: Binding(
                     get: { controller.includeVoiceInShare },
                     set: { controller.setIncludeVoice($0) })) {
@@ -155,27 +175,36 @@ private struct NearbyShareContent: View {
         if controller.isSharingLibrary {
             return "Visible to nearby devices as “\(ZimSwarmController.defaultShareName)”"
         }
-        if !controller.hasShareableFiles {
+        if !shareFacts.hasShareableFiles {
             return "Nothing to share yet — add Wikipedia or a map first"
         }
         return "Let a friend copy your Wikipedia, maps, and AI models"
     }
 
-    /// Size label for the selected model's shareable file, nil when the
-    /// model isn't shareable (not downloaded, or not a single-file GGUF).
-    private var shareableModelSizeLabel: String? {
-        guard let url = controller.shareableModelFiles().first,
-              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64)
-                  .flatMap({ $0 })
-        else { return nil }
-        return SwarmFormat.bytes(size)
+    /// What can change the answers in `ShareFacts`: the share toggles, and a
+    /// completed import (which adds library files). `.task(id:)` re-resolves
+    /// on first appearance and whenever one of these flips — never on a
+    /// transfer-progress tick.
+    private var shareFactsKey: String {
+        let summary = controller.lastImportSummary ?? ""
+        return "\(controller.isSharingLibrary)|\(controller.includeModelInShare)|\(controller.includeVoiceInShare)|\(summary)"
     }
 
-    /// Size label for the voice-model folders, nil when none are on disk.
-    private var shareableVoiceSizeLabel: String? {
-        let bytes = ZimSwarmController.shareableVoiceBytes
-        guard bytes > 0 else { return nil }
-        return SwarmFormat.bytes(bytes)
+    private func refreshShareFacts() async {
+        // Only the two main-actor reads stay here; the stat + directory walks
+        // (`shareableVoiceBytes` is `nonisolated`) run off the main actor.
+        let hasFiles = controller.hasShareableFiles
+        let modelURL = controller.shareableModelFiles().first
+        let sizes = await Task.detached(priority: .utility) { () -> (model: Int64?, voice: Int64) in
+            let model = modelURL.flatMap {
+                (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.size] as? Int64
+            }
+            return (model, ZimSwarmController.shareableVoiceBytes)
+        }.value
+        shareFacts = ShareFacts(
+            hasShareableFiles: hasFiles,
+            modelSizeLabel: sizes.model.map { SwarmFormat.bytes($0) },
+            voiceSizeLabel: sizes.voice > 0 ? SwarmFormat.bytes(sizes.voice) : nil)
     }
 
     // MARK: Nearby libraries

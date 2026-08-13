@@ -480,6 +480,14 @@ public final class ChatSession {
     /// don't accumulate dead subscriber closures in the singleton.
     @ObservationIgnored private var locationSubscription: UUID?
 
+    /// Observer tokens for the memory-warning / didEnterBackground
+    /// registrations, released in `deinit`. Discarding them left every
+    /// session's observers registered for the life of the process — on
+    /// device that is harmless (one session), but the eval harness builds
+    /// one session per variant, so each notification fanned out to every
+    /// dead session's closure (2026-08-13 review).
+    @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+
     /// Conversational discourse state — what the conversation is *about*,
     /// the last enumerated list shown (for "the second one"), the vetted
     /// topic-drift threads, and a GPS movement trail. Lets follow-ups
@@ -620,7 +628,18 @@ public final class ChatSession {
         // than the old 60-second deadline; timing it out made a healthy first
         // download look broken. Stay here for as long as bytes are flowing,
         // expose honest progress, and stop only on a provider failure.
+        // A hung download (bytes stop flowing, provider never reports a
+        // failure) used to park this loop forever: `send()` refuses to run
+        // while setup isn't ready and `dismissSetupFailure()` only handles
+        // `.failed`, so the composer was dead with no user escape
+        // (2026-08-13 review). Deadline the STALL, not the total — the
+        // 60-second total deadline this loop replaced made healthy
+        // multi-gigabyte first downloads look broken.
+        let stallTimeout: TimeInterval = 300
+        var lastAdvance = Date()
+        var lastSignature = ""
         modelWait: while true {
+            let signature: String
             switch modelState {
             case .ready:
                 break modelWait
@@ -629,18 +648,31 @@ public final class ChatSession {
                     stage: "Downloading \(selectedModel.displayName) — \(Int(fraction * 100))%\nOne-time download; keep Zimfo open.",
                     progress: fraction
                 )
+                signature = "downloading:\(Int(fraction * 1000))"
             case .loading:
                 setupState = .running(
                     stage: "Opening \(selectedModel.displayName)…",
                     progress: nil
                 )
+                signature = "loading"
             case .notLoaded:
                 setupState = .running(
                     stage: "Preparing \(selectedModel.displayName)…",
                     progress: nil
                 )
+                signature = "notLoaded"
             case .failed(let message):
                 setupState = .failed(message)
+                return
+            }
+            if signature != lastSignature {
+                lastSignature = signature
+                lastAdvance = Date()
+            } else if Date().timeIntervalSince(lastAdvance) > stallTimeout {
+                let stalled = "\(selectedModel.displayName) stopped responding while \(signature == "loading" ? "opening" : "downloading"). Check your connection, then retry — or pick a different model in Settings."
+                debug("setup stalled: no progress for \(Int(stallTimeout))s at \(signature)",
+                      category: "Chat")
+                setupState = .failed(stalled)
                 return
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -1859,7 +1891,7 @@ public final class ChatSession {
         // drift into the zone where iOS jetsam kicks in. Dropping
         // the cache costs one full prefill on the next turn (~3 s)
         // which is cheap compared to getting killed.
-        NotificationCenter.default.addObserver(
+        lifecycleObservers.append(NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
@@ -1890,7 +1922,7 @@ public final class ChatSession {
                     gemma.resetPromptCache()
                 }
             }
-        }
+        })
         // Drop the KV cache + MLX buffer pool when the app moves to
         // background. iOS suspends us at our current RSS, and if the
         // suspended footprint is the biggest on the device, the
@@ -1899,7 +1931,7 @@ public final class ChatSession {
         // as "largestProcess" in JetsamEvent reports and gets
         // terminated. Shrinking the suspension footprint to just the
         // model weights + small working set avoids the kill.
-        NotificationCenter.default.addObserver(
+        lifecycleObservers.append(NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
@@ -1911,7 +1943,7 @@ public final class ChatSession {
                     gemma.resetPromptCache()
                 }
             }
-        }
+        })
         #endif
     }
 
@@ -1923,6 +1955,9 @@ public final class ChatSession {
         #if canImport(UIKit)
         if let token = locationSubscription {
             LocationFetcher.unsubscribe(token)
+        }
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
         #endif
     }
@@ -4097,6 +4132,17 @@ public final class ChatSession {
                   category: "Chat")
             return
         }
+        // Same guard `send()` carries. Tapping a popup button on an older
+        // message mid-stream otherwise appends a second placeholder while
+        // the in-flight generation is still writing to
+        // `messages[count - 1]` — the reply lands in the new turn's bubble
+        // and two Tasks race `isGenerating`/`finishedAt` (2026-08-13
+        // review).
+        guard !isGenerating else {
+            debug("triggerArticleRead ignored — a turn is still generating",
+                  category: "Chat")
+            return
+        }
         guard !path.isEmpty else {
             debug("triggerArticleRead: empty path, ignoring", category: "Chat")
             return
@@ -4138,6 +4184,13 @@ public final class ChatSession {
     ) {
         guard setupState == .ready else {
             debug("triggerDirections ignored — setup still running",
+                  category: "Chat")
+            return
+        }
+        // See `triggerArticleRead` — a second turn started mid-stream
+        // corrupts the transcript both entry points write to.
+        guard !isGenerating else {
+            debug("triggerDirections ignored — a turn is still generating",
                   category: "Chat")
             return
         }
@@ -6364,10 +6417,15 @@ public final class ChatSession {
     /// `"2h 32m"`, `"45m"`, `"1h"` — whichever is most natural for the
     /// supplied duration. Passed to the model so it doesn't echo raw
     /// `duration_min: 152.48…`.
-    private static func formatDuration(seconds: Double) -> String {
+    static func formatDuration(seconds: Double) -> String {
         let total = max(0, Int(seconds.rounded()))
-        let h = total / 3600
-        let m = (total % 3600 + 30) / 60 // round minutes to nearest
+        // Round to whole minutes FIRST, then split. Rounding inside the
+        // hour remainder let the carry escape: 7199 s gave h=1, m=60 →
+        // "1h 60m", and 3599 s gave "60m" (2026-08-13 review). The model
+        // echoes this string verbatim to the user.
+        let totalMinutes = (total + 30) / 60
+        let h = totalMinutes / 60
+        let m = totalMinutes % 60
         if h > 0 && m > 0 { return "\(h)h \(m)m" }
         if h > 0 { return "\(h)h" }
         return "\(m)m"

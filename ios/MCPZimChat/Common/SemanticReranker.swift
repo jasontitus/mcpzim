@@ -46,8 +46,13 @@ actor SemanticReranker {
     /// calls on it — the next call after assets land will use it.
     func loadIfNeeded() async {
         if loadAttempted { return }
-        loadAttempted = true
+        // Only a terminal outcome latches. Setting this up front meant one
+        // flaky asset download silently downgraded every later search to
+        // BM25 for the rest of the process, with no retry (2026-08-13
+        // review). A nil embedder IS terminal — that's a capability answer,
+        // not a transient one — so it latches below.
         guard let candidate = NLContextualEmbedding(language: .english) else {
+            loadAttempted = true
             Self.log?("NLContextualEmbedding(.english) returned nil — reranker disabled")
             return
         }
@@ -56,16 +61,17 @@ actor SemanticReranker {
             do {
                 _ = try await candidate.requestAssets()
             } catch {
-                Self.log?("NLContextualEmbedding asset download failed: \(error)")
+                Self.log?("NLContextualEmbedding asset download failed (will retry): \(error)")
                 return
             }
         }
         do {
             try candidate.load()
             self.embedding = candidate
+            loadAttempted = true
             Self.log?("NLContextualEmbedding ready")
         } catch {
-            Self.log?("NLContextualEmbedding.load() failed: \(error)")
+            Self.log?("NLContextualEmbedding.load() failed (will retry): \(error)")
         }
     }
 

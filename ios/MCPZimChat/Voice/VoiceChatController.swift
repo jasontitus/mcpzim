@@ -136,6 +136,13 @@ public final class VoiceChatController {
     private var loggedFirstTranscript = false
 
     private var lastNonSilentAt: Date = .distantPast
+    /// Dedupe key for `submitFinal`, scoped to ONE listening cycle: it exists
+    /// only to absorb the force-submit-grace + recognizer-`isFinal` double
+    /// submission of a single utterance. `beginListening()` clears it, because
+    /// keeping it for the controller's lifetime silently swallowed a repeated
+    /// utterance in a later turn — saying "yes" / "next" / "continue" twice in
+    /// a conversation just re-armed the mic and nothing was sent (review
+    /// 2026-08-13, "Fix first" #6).
     private var lastSubmittedTranscript: String = ""
     /// Set when our VAD calls `stt.finish()`. The recognizer emits its own
     /// `isFinal` on brief in-utterance pauses (Apple's on-device STT does
@@ -285,6 +292,9 @@ public final class VoiceChatController {
         state = .starting
         liveTranscript = ""
         carriedTranscript = ""
+        // New listening cycle == new utterance: the previous turn's text must
+        // not block an identical answer this turn (see `lastSubmittedTranscript`).
+        lastSubmittedTranscript = ""
         lastNonSilentAt = Date()
         weRequestedFinish = false
         let stream = try stt.start(locale: .current)

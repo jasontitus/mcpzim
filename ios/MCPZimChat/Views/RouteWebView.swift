@@ -33,14 +33,18 @@ struct RouteWebView: View {
     /// polyline and the streetzim filename when available).
     let trace: ToolCallTrace
 
-    /// Parsed once at view construction. As computed properties,
+    /// Stored rather than computed. As computed properties,
     /// `routeEndpoints` / `turnByTurn` / `resolveSpec` each re-parsed
     /// `trace.rawResult` (which can carry a ~1500-point polyline) via
     /// JSONSerialization on every access — up to 4 parses plus a fresh
-    /// downsample + geoJSON string build per body evaluation, re-run on
-    /// every GPS tick. The trace is immutable, so one parse per view
-    /// init is always fresh. (Library-membership checks stay in
-    /// `resolveSpec` — `@Environment` isn't available during init.)
+    /// downsample + geoJSON string build per body evaluation. Storing
+    /// them was only half the fix: SwiftUI rebuilds a child View,
+    /// `init` and all, on every parent `MessageRow.body` pass, which
+    /// re-runs at the ~10 Hz streaming-push rate plus every GPS tick,
+    /// so the parse + ~400 `String(format:)` calls were still paid per
+    /// frame. They now come from `ParseCache`. (Library-membership
+    /// checks stay in `resolveSpec` — `@Environment` isn't available
+    /// during init.)
     private let routeEndpoints: (origin: (lat: Double, lon: Double),
                                  dest: (lat: Double, lon: Double))?
     private let turnByTurn: [String]
@@ -50,56 +54,101 @@ struct RouteWebView: View {
 
     init(trace: ToolCallTrace) {
         self.trace = trace
-        var endpoints: (origin: (lat: Double, lon: Double),
-                        dest: (lat: Double, lon: Double))? = nil
-        var turns: [String] = []
-        var zimRes: String? = nil
-        var geo: String? = nil
-        if let data = trace.rawResult.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        {
-            if let o = json["origin"] as? [String: Any],
-               let d = json["destination"] as? [String: Any],
-               let oLat = (o["lat"] as? NSNumber)?.doubleValue,
-               let oLon = (o["lon"] as? NSNumber)?.doubleValue,
-               let dLat = (d["lat"] as? NSNumber)?.doubleValue,
-               let dLon = (d["lon"] as? NSNumber)?.doubleValue
-            {
-                endpoints = ((oLat, oLon), (dLat, dLon))
-            } else if let poly = json["polyline"] as? [[Double]],
-                      poly.count >= 2,
-                      let first = poly.first, first.count >= 2,
-                      let last = poly.last, last.count >= 2
-            {
-                endpoints = ((first[0], first[1]), (last[0], last[1]))
-            }
-            turns = json["turn_by_turn"] as? [String] ?? []
-            zimRes = json["zim"] as? String
-            if let raw = json["polyline"] as? [[Double]], !raw.isEmpty {
-                // Cross-Bay Area routes can hit ~1500 polyline points.
-                // MapLibre pre-renders them at each zoom level, and the
-                // in-process GL buffers stacked on top of Gemma +
-                // Kokoro's Metal pools push us past the 6144 MB jetsam
-                // cap. Subsample to ≤ 400 points — plenty of detail for
-                // the zoomed-out overview route line.
-                let downsampled = Self.downsample(raw, target: 400)
-                geo = "[" + downsampled.compactMap { pair -> String? in
-                    guard pair.count >= 2 else { return nil }
-                    return String(format: "[%.6f,%.6f]", pair[1], pair[0])
-                }.joined(separator: ",") + "]"
-            }
+        let parsed = ParseCache.parsed(for: trace)
+        self.routeEndpoints = parsed.endpoints
+        self.turnByTurn = parsed.turnByTurn
+        self.zimFromArgsField = parsed.zimFromArgs
+        self.zimFromResultField = parsed.zimFromResult
+        self.geoJSONCoords = parsed.geoJSONCoords
+    }
+
+    /// Memo over the work `init` used to do inline, keyed on
+    /// `ToolCallTrace.id`. That id is a `let UUID` fixed when the trace
+    /// is created and the trace is immutable afterwards, so every value
+    /// copy SwiftUI feeds to a re-created `RouteWebView` carries the
+    /// same id — the key is stable across exactly the re-inits we want
+    /// to skip. (Contrast `ChatView.displayTextMemo`, keyed on
+    /// (hash, count) of a *growing* string, which misses by
+    /// construction on every push.) Same shape as ChatView's
+    /// `TraceKindCache`.
+    @MainActor
+    private enum ParseCache {
+        struct Parsed {
+            let endpoints: (origin: (lat: Double, lon: Double),
+                            dest: (lat: Double, lon: Double))?
+            let turnByTurn: [String]
+            let zimFromArgs: String?
+            let zimFromResult: String?
+            let geoJSONCoords: String?
         }
-        var zimArgs: String? = nil
-        if let argData = trace.arguments.data(using: .utf8),
-           let argJSON = try? JSONSerialization.jsonObject(with: argData) as? [String: Any]
-        {
-            zimArgs = argJSON["zim"] as? String
+
+        private static var cache: [UUID: Parsed] = [:]
+
+        static func parsed(for trace: ToolCallTrace) -> Parsed {
+            if let hit = cache[trace.id] { return hit }
+            let parsed = compute(trace)
+            // Trace ids never repeat, so cap the map and drop it
+            // wholesale on the (rare) crossing rather than tracking LRU
+            // order — mirrors `TraceKindCache.trimIfNeeded`.
+            if cache.count >= 1024 { cache.removeAll(keepingCapacity: true) }
+            cache[trace.id] = parsed
+            return parsed
         }
-        self.routeEndpoints = endpoints
-        self.turnByTurn = turns
-        self.zimFromArgsField = zimArgs
-        self.zimFromResultField = zimRes
-        self.geoJSONCoords = geo
+
+        private static func compute(_ trace: ToolCallTrace) -> Parsed {
+            var endpoints: (origin: (lat: Double, lon: Double),
+                            dest: (lat: Double, lon: Double))? = nil
+            var turns: [String] = []
+            var zimRes: String? = nil
+            var geo: String? = nil
+            if let data = trace.rawResult.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                if let o = json["origin"] as? [String: Any],
+                   let d = json["destination"] as? [String: Any],
+                   let oLat = (o["lat"] as? NSNumber)?.doubleValue,
+                   let oLon = (o["lon"] as? NSNumber)?.doubleValue,
+                   let dLat = (d["lat"] as? NSNumber)?.doubleValue,
+                   let dLon = (d["lon"] as? NSNumber)?.doubleValue
+                {
+                    endpoints = ((oLat, oLon), (dLat, dLon))
+                } else if let poly = json["polyline"] as? [[Double]],
+                          poly.count >= 2,
+                          let first = poly.first, first.count >= 2,
+                          let last = poly.last, last.count >= 2
+                {
+                    endpoints = ((first[0], first[1]), (last[0], last[1]))
+                }
+                turns = json["turn_by_turn"] as? [String] ?? []
+                zimRes = json["zim"] as? String
+                if let raw = json["polyline"] as? [[Double]], !raw.isEmpty {
+                    // Cross-Bay Area routes can hit ~1500 polyline points.
+                    // MapLibre pre-renders them at each zoom level, and the
+                    // in-process GL buffers stacked on top of Gemma +
+                    // Kokoro's Metal pools push us past the 6144 MB jetsam
+                    // cap. Subsample to ≤ 400 points — plenty of detail for
+                    // the zoomed-out overview route line.
+                    let downsampled = RouteWebView.downsample(raw, target: 400)
+                    geo = "[" + downsampled.compactMap { pair -> String? in
+                        guard pair.count >= 2 else { return nil }
+                        return String(format: "[%.6f,%.6f]", pair[1], pair[0])
+                    }.joined(separator: ",") + "]"
+                }
+            }
+            var zimArgs: String? = nil
+            if let argData = trace.arguments.data(using: .utf8),
+               let argJSON = try? JSONSerialization.jsonObject(with: argData) as? [String: Any]
+            {
+                zimArgs = argJSON["zim"] as? String
+            }
+            return Parsed(
+                endpoints: endpoints,
+                turnByTurn: turns,
+                zimFromArgs: zimArgs,
+                zimFromResult: zimRes,
+                geoJSONCoords: geo
+            )
+        }
     }
 
     @Environment(ChatSession.self) private var session
@@ -516,8 +565,47 @@ private final class RouteWebCoordinator: NSObject, WKNavigationDelegate, WKScrip
         log?("page provisional failed: \(error.localizedDescription)")
     }
 
+    /// Same navigation gate as `PlacesWebCoordinator` — see the comment
+    /// there for the full reasoning. This webview had no policy at all,
+    /// i.e. WebKit's default `.allow`, so a nearby-shared ZIM whose
+    /// viewer HTML sets `location` (or carries a meta-refresh / iframe)
+    /// could navigate the map to a live remote page — one that then runs
+    /// with the injected `mcpzim` bridge and the user's GPS coordinates
+    /// in scope. Only `zim://` and `about:` (kept allowed so the
+    /// `about:blank` teardown in `dismantleUIView` can never be blocked)
+    /// commit; a user link tap still hands off to the system for the
+    /// allowlisted schemes.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let url = navigationAction.request.url
+        let scheme = url?.scheme?.lowercased() ?? ""
+        if scheme == ZimURLSchemeHandler.scheme || scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        guard navigationAction.navigationType == .linkActivated,
+              let url,
+              zimExternalOpenSchemes.contains(scheme)
+        else {
+            log?("blocked navigation: \(url?.absoluteString ?? "?")")
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.cancel)
+        #if canImport(UIKit)
+        UIApplication.shared.open(url)
+        #elseif canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+
     // MARK: - JS bridge
 
+    /// No frame-origin check here (unlike `PlacesWebCoordinator`, which
+    /// dispatches native actions): this handler only forwards console
+    /// text into the debug pane, and the navigation gate above already
+    /// keeps every frame on `zim://`.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "mcpzim",
               let payload = message.body as? [String: Any] else { return }
@@ -659,14 +747,20 @@ private func makeWebView(
     let script = WKUserScript(source: captureJS, injectionTime: .atDocumentStart, forMainFrameOnly: false)
     userContent.addUserScript(script)
     config.userContentController = userContent
-    // Safari Web Inspector is still enabled as a secondary option.
     if #available(macOS 13.3, iOS 16.4, *) {
         config.preferences.isElementFullscreenEnabled = true
     }
     let webView = WKWebView(frame: .zero, configuration: config)
+    // Safari Web Inspector as a secondary debugging option — DEBUG only.
+    // A shipping inspectable webview exposes the offline ZIM content and
+    // the `mcpzim` bridge, which is fed the user's live GPS coordinates
+    // by the injected user-dot JS, to anyone who can attach an inspector
+    // to the device.
+    #if DEBUG
     if #available(macOS 13.3, iOS 16.4, *) {
         webView.isInspectable = true
     }
+    #endif
     webView.navigationDelegate = coordinator
     objc_setAssociatedObject(webView, &coordinatorKey, coordinator, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     loadSpec(

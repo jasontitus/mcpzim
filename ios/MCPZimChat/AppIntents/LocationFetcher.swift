@@ -234,8 +234,12 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
         return try await withThrowingTaskGroup(of: CLLocationCoordinate2D.self) { group in
             group.addTask { [weak self] in
                 try await withCheckedThrowingContinuation { c in
-                    Task { @MainActor [weak self] in
-                        self?.waiters.append((waiterID, c))
+                    guard let self else {
+                        c.resume(throwing: LocationError.noResult)
+                        return
+                    }
+                    Task { @MainActor in
+                        self.registerWaiterOrResume(id: waiterID, maxAge: maxAge, cont: c)
                     }
                 }
             }
@@ -255,6 +259,26 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate, @unchecked Sen
             }
             throw LocationError.noResult
         }
+    }
+
+    /// Re-check the cached fix and enqueue the waiter in the SAME main-actor
+    /// step, so nothing can land between the two. The check used to run in one
+    /// hop (`MainActor.run` above) and the append in a later `Task` hop: a fix
+    /// arriving in that window drained an empty `waiters` list, and the waiter
+    /// registered a moment later then sat until the 15 s timeout and threw —
+    /// a spurious `LocationError.timeout` for a stationary user whose single
+    /// first fix fell in the gap (review 2026-08-13, bugs LocationFetcher:218).
+    @MainActor
+    private func registerWaiterOrResume(
+        id: UUID, maxAge: TimeInterval,
+        cont: CheckedContinuation<CLLocationCoordinate2D, Error>
+    ) {
+        if let loc = latest, Date().timeIntervalSince(loc.timestamp) < maxAge {
+            locLog.notice("once: fix landed while registering waiter")
+            cont.resume(returning: loc.coordinate)
+            return
+        }
+        waiters.append((id, cont))
     }
 
     @MainActor

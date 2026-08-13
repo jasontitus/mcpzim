@@ -669,8 +669,12 @@ def _eval_preamble() -> str:
     currentLocation. Loaded on demand to avoid import cycle if eval.py
     unavailable."""
     try:
-        sys.path.insert(0, "/Users/jasontitus/experiments/mcpzim/"
-                            "tools/llama-smoke")
+        # Repo-relative, not one developer's home: off that machine the
+        # hardcoded path sent every call down the fallback below, generating
+        # training data against a prompt distribution that does not match the
+        # eval harness — exactly the silent regression this file's own
+        # trajectory_to_jsonl docstring warns about (bugs review, generate.py:672).
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "llama-smoke"))
         from eval import SYSTEM_PREAMBLE, _build_tool_block
     except Exception:
         # Fallback: minimal preamble when llama-smoke isn't importable.

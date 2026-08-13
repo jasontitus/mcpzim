@@ -100,8 +100,25 @@ public actor ZimfoContext {
 
     public func updateLastLocation(_ coord: ActiveRoute.Coordinate) {
         _lastLocation = coord
+        // The sidecar exists so an intent fired from a cold process knows
+        // roughly where the user is; a fix-by-fix rewrite buys nothing.
+        // ChatSession subscribes to every CoreLocation fix (25 m filter),
+        // so a drive was doing a JSONEncoder + atomic write per 25 m
+        // travelled (2026-08-13 review). Coalesce to one write per
+        // interval; the in-memory value stays exact for same-process
+        // readers either way.
+        let now = Date()
+        guard now.timeIntervalSince(lastLocationPersistAt) >= Self.locationPersistInterval
+        else { return }
+        lastLocationPersistAt = now
         persistLocation()
     }
+
+    /// Minimum spacing between sidecar writes for location-only updates.
+    /// Route changes still persist immediately — those are the state an
+    /// intent actually can't reconstruct.
+    private static let locationPersistInterval: TimeInterval = 30
+    private var lastLocationPersistAt = Date.distantPast
 
     // MARK: - Disk
 

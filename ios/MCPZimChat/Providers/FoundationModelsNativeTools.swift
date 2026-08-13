@@ -58,10 +58,24 @@ public struct NearNamedPlaceNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        // Clamp to the SAME bounds the text path applies in
+        // `MCPToolAdapter.dispatch` (radius 0.05…100 km, limit 1…50 —
+        // MCPToolAdapter.swift:699-700). The 2026-08-13 review found the
+        // native wrappers had only a `> 0` floor, so a hallucinated or
+        // prompt-injected argument reached `ZimService` unbounded:
+        // `nearPlaces` turns radius into `radiusKm * 1000` and scans the
+        // whole ZIM (jetsam/hang), and a huge `limit` feeds the
+        // `limit * 2` overfetch the adapter's own comment calls an
+        // overflow trap. `@Generable` gives us no schema-level bound, so
+        // the clamp has to live here.
+        let radiusKm = arguments.radiusKm > 0
+            ? min(100, max(0.05, arguments.radiusKm)) : 1.0
+        let limit = arguments.limit > 0
+            ? min(50, max(1, arguments.limit)) : 10
         let combined = try await service.nearNamedPlace(
             place: arguments.place,
-            radiusKm: arguments.radiusKm > 0 ? arguments.radiusKm : 1.0,
-            limit: arguments.limit > 0 ? arguments.limit : 10,
+            radiusKm: radiusKm,
+            limit: limit,
             kinds: (arguments.kinds?.isEmpty == false) ? arguments.kinds : nil,
             zim: nil
         )
@@ -172,7 +186,12 @@ public struct SearchNativeTool: Tool {
 
     public func call(arguments: Arguments) async throws -> String {
         let kind = arguments.kind.flatMap { ZimKind(rawValue: $0) }
-        let limit = arguments.limit > 0 ? arguments.limit : 10
+        // Same 1…50 clamp the text path applies before any arithmetic
+        // (MCPToolAdapter.swift:511) — `ZimService.search` computes a
+        // `limit * 2` overfetch and `LibzimReader.searchFullText` casts
+        // to `Int32`, both of which trap on a model-supplied limit near
+        // `Int.max` (2026-08-13 review).
+        let limit = arguments.limit > 0 ? min(50, max(1, arguments.limit)) : 10
         let hits = try await service.search(query: arguments.query, limit: limit, kind: kind)
         if hits.isEmpty { return "no hits for \"\(arguments.query)\"" }
         var lines: [String] = ["\(hits.count) hit(s) for \"\(arguments.query)\":"]

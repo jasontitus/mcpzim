@@ -132,7 +132,17 @@ if [[ ! -f "$FUSED_DIR/config.json" ]]; then
         --save-path "$FUSED_DIR" \
         --dequantize
     # Restore upstream tokenizer so convert_hf_to_gguf.py accepts it.
-    BASE_SNAPSHOT=$(ls -d ~/.cache/huggingface/hub/models--${BASE_MODEL//\//--}/snapshots/*/ 2>/dev/null | head -1)
+    # `ls -d … | head -1` under `set -euo pipefail` killed the run outright
+    # whenever the snapshot glob missed (fresh box, HF_HOME elsewhere, cleaned
+    # cache) — ls exits 2, pipefail propagates, errexit aborts before the
+    # [[ -n ]] guard below ever runs, making it dead code (bugs review,
+    # finetune.sh:135). A glob array cannot fail; an unmatched pattern stays
+    # literal, so -d rejects it and the restore degrades as intended.
+    _base_snapshots=(~/.cache/huggingface/hub/models--${BASE_MODEL//\//--}/snapshots/*/)
+    BASE_SNAPSHOT=""
+    if [[ -d "${_base_snapshots[0]}" ]]; then
+        BASE_SNAPSHOT="${_base_snapshots[0]%/}"
+    fi
     if [[ -n "$BASE_SNAPSHOT" ]]; then
         echo ">> restoring upstream tokenizer into fused-hf"
         cp -L "$BASE_SNAPSHOT/tokenizer.json" "$BASE_SNAPSHOT/tokenizer_config.json" "$BASE_SNAPSHOT/tokenizer.model" "$FUSED_DIR/" 2>/dev/null || true

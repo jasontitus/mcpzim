@@ -25,6 +25,15 @@ EARTH_R_M = 6_371_000.0
 _SPEED_CEILING_KMH = 100.0  # heuristic fallback for graphs with no usable speeds.
 _NO_GEOM = 0xFFFFFF
 
+# Typecodes for the graph's index arrays. 'I'/'i' are C unsigned int/int, which
+# CPython gives as 4 bytes on every platform we ship on — exactly the width of
+# the on-disk SZRG uint32 fields, so they represent every index the format can
+# express (a million-node graph tops out near 2**20, four decimal orders of
+# headroom). 'L'/'l' are the widened fallbacks in case a build ever hands back a
+# narrow int; 'q'/'Q' would double the footprint the perf review asked us to cut.
+_IDX_U32 = "I" if array("I").itemsize >= 4 else "L"
+_IDX_I32 = "i" if array("i").itemsize >= 4 else "l"
+
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres."""
@@ -63,16 +72,26 @@ class Graph:
     num_nodes: int
     num_edges: int
     # Parallel arrays so we can use tight Python loops / array lookups.
-    lat: list[float]            # degrees
-    lon: list[float]            # degrees
-    adj_offsets: list[int]      # len == num_nodes + 1
-    edge_targets: list[int]
-    edge_dist_m: list[float]
-    edge_speed_kmh: list[int]
-    edge_geom_idx: list[int]    # -1 for "no polyline"
-    edge_name_idx: list[int]    # 0 for unnamed
+    # Typed `array`s rather than lists: a boxed Python scalar costs 24-32 B
+    # against the 1-8 B stored here, and the A* relaxation loop walks
+    # edge_targets/edge_dist_m/edge_speed_kmh once per edge per request — the
+    # perf review measured ~4x RSS and poor cache locality on the million-node
+    # city graphs this parser is aimed at (perf review, routing.py:103).
+    # Coordinates and distances stay float64 ('d'): the wire format is e7-encoded
+    # (1e-7 deg ~= 1 cm) and float32's ~7 significant digits cannot hold
+    # 180.0000001 — its ULP near +/-180 deg is ~1.5e-5 deg (~1.7 m), which would
+    # both coarsen the source data and change the 7-decimal polyline that
+    # Route.to_dict emits.
+    lat: array                  # degrees, 'd'
+    lon: array                  # degrees, 'd'
+    adj_offsets: array          # 'I', len == num_nodes + 1
+    edge_targets: array         # 'I'
+    edge_dist_m: array          # metres, 'd'
+    edge_speed_kmh: array       # 'B' — the field is one whole byte on the wire
+    edge_geom_idx: array        # 'i' (signed: -1 means "no polyline")
+    edge_name_idx: array        # 'I', 0 for unnamed
     names: list[str]            # names[0] == "" (sentinel)
-    geoms: list[list[tuple[float, float]]]  # polyline as (lat, lon) pairs
+    geoms: list[array]          # polyline flattened to lat, lon, lat, lon ...
     # Fastest edge in the graph; the A* heuristic divides by this, so it must be
     # >= every edge speed to stay admissible (speeds decode from a full byte).
     max_speed_kmh: float = _SPEED_CEILING_KMH
@@ -99,25 +118,30 @@ class Graph:
 
         nodes = struct.unpack_from(f"<{2 * num_nodes}i", blob, pos)
         pos += 8 * num_nodes
-        # Node array is [lat_e7, lon_e7] pairs.
-        lat = [nodes[2 * i] / 1e7 for i in range(num_nodes)]
-        lon = [nodes[2 * i + 1] / 1e7 for i in range(num_nodes)]
+        # Node array is [lat_e7, lon_e7] pairs. Fed from generators, not list
+        # comprehensions, so a million-node graph never materialises the boxed
+        # intermediate the typed arrays exist to avoid.
+        lat = array("d", (nodes[2 * i] / 1e7 for i in range(num_nodes)))
+        lon = array("d", (nodes[2 * i + 1] / 1e7 for i in range(num_nodes)))
 
-        adj_offsets = list(struct.unpack_from(f"<{num_nodes + 1}I", blob, pos))
+        adj_offsets = array(_IDX_U32, struct.unpack_from(f"<{num_nodes + 1}I", blob, pos))
         pos += 4 * (num_nodes + 1)
 
         edges = struct.unpack_from(f"<{4 * num_edges}I", blob, pos)
         pos += 16 * num_edges
-        edge_targets = [edges[4 * i] for i in range(num_edges)]
-        edge_dist_m = [edges[4 * i + 1] / 10.0 for i in range(num_edges)]
-        edge_speed_kmh = [(edges[4 * i + 2] >> 24) & 0xFF for i in range(num_edges)]
-        edge_geom_idx = [
-            (edges[4 * i + 2] & 0x00FFFFFF)
-            if (edges[4 * i + 2] & 0x00FFFFFF) != _NO_GEOM
-            else -1
-            for i in range(num_edges)
-        ]
-        edge_name_idx = [edges[4 * i + 3] for i in range(num_edges)]
+        edge_targets = array(_IDX_U32, (edges[4 * i] for i in range(num_edges)))
+        edge_dist_m = array("d", (edges[4 * i + 1] / 10.0 for i in range(num_edges)))
+        edge_speed_kmh = array("B", ((edges[4 * i + 2] >> 24) & 0xFF for i in range(num_edges)))
+        edge_geom_idx = array(
+            _IDX_I32,
+            (
+                (edges[4 * i + 2] & 0x00FFFFFF)
+                if (edges[4 * i + 2] & 0x00FFFFFF) != _NO_GEOM
+                else -1
+                for i in range(num_edges)
+            ),
+        )
+        edge_name_idx = array(_IDX_U32, (edges[4 * i + 3] for i in range(num_edges)))
 
         geom_offsets = list(struct.unpack_from(f"<{num_geoms + 1}I", blob, pos))
         pos += 4 * (num_geoms + 1)
@@ -129,7 +153,13 @@ class Graph:
         names_blob = blob[pos : pos + names_bytes]
         pos += names_bytes
 
-        geoms = [cls._decode_geom(geom_blob, geom_offsets[i], geom_offsets[i + 1]) for i in range(num_geoms)]
+        # Flattened to a typed array per polyline for the same reason as the node
+        # arrays: a list of (lat, lon) tuples boxes three objects per vertex.
+        # ``_decode_geom`` keeps returning pairs — it is the tested entry point.
+        geoms = [
+            array("d", (v for pt in cls._decode_geom(geom_blob, geom_offsets[i], geom_offsets[i + 1]) for v in pt))
+            for i in range(num_geoms)
+        ]
 
         names: list[str] = []
         for i in range(num_names):
@@ -211,7 +241,7 @@ class Graph:
                 key = (int(math.floor(lats[i] / cell)), int(math.floor(lons[i] / cell)))
                 bucket = grid.get(key)
                 if bucket is None:
-                    bucket = array("I")
+                    bucket = array(_IDX_U32)
                     grid[key] = bucket
                 bucket.append(i)
             self._grid_cell_deg = cell
@@ -408,14 +438,19 @@ def _reconstruct_route(
 
         gi = graph.edge_geom_idx[edge]
         if gi >= 0 and gi < len(graph.geoms) and graph.geoms[gi]:
-            pts = graph.geoms[gi]
+            pts = graph.geoms[gi]  # flat lat, lon, lat, lon ...
+            n_pts = len(pts) // 2
+            prev_pt = (graph.lat[prev], graph.lon[prev])
             # Polylines are stored in forward-edge direction; reverse if this edge
             # goes the other way (endpoint test on the first/last point).
-            if _dist2(pts[0], (graph.lat[prev], graph.lon[prev])) > _dist2(
-                pts[-1], (graph.lat[prev], graph.lon[prev])
-            ):
-                pts = list(reversed(pts))
-            polyline.extend(pts[1:])
+            if _dist2((pts[0], pts[1]), prev_pt) > _dist2((pts[-2], pts[-1]), prev_pt):
+                order = range(n_pts - 2, -1, -1)
+            else:
+                order = range(1, n_pts)
+            # Both ranges drop the vertex that duplicates the run so far, matching
+            # the old ``pts[1:]`` / ``list(reversed(pts))[1:]``; a 1-point polyline
+            # yields an empty range either way.
+            polyline.extend((pts[2 * k], pts[2 * k + 1]) for k in order)
         else:
             polyline.append((graph.lat[this], graph.lon[this]))
 
@@ -468,7 +503,20 @@ class RouterCache:
 
 def _read_graph_bin(zim: OpenZim) -> bytes:
     with zim.lock:
-        entry = zim.archive.get_entry_by_path("routing-data/graph.bin")
+        try:
+            entry = zim.archive.get_entry_by_path("routing-data/graph.bin")
+        except KeyError as exc:
+            # library.open_zim flags has_routing when *either* graph.bin or the
+            # legacy graph.json is present, so a graph.json-only streetzim gets
+            # the routing tools registered and then landed here as a bare
+            # KeyError with no actionable text (bugs review, routing.py:471).
+            # ValueError is what the rest of this module raises for unusable
+            # graph data (see graph_for's "corrupt routing graph").
+            raise ValueError(
+                f"no route data in {zim.path.name}: routing-data/graph.bin is missing"
+                " (a graph.json-only streetzim is not routable — rebuild the ZIM"
+                " with SZRG v2 routing data)"
+            ) from exc
         if getattr(entry, "is_redirect", False):
             entry = entry.get_redirect_entry()
         item = entry.get_item()

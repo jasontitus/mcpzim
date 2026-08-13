@@ -68,6 +68,17 @@ enum AppTelemetry {
         }
         FirebaseApp.configure(options: options)
         #else
+        // Mirror the macOS guard: bare `configure()` throws an uncaught
+        // ObjC exception when the plist is absent, so any build made
+        // without it (the plists are gitignored after the 2026-08-03
+        // secret incident — a fresh clone has none) crashed at launch
+        // instead of simply running without telemetry (2026-08-13 review).
+        guard Bundle.main.path(
+            forResource: "GoogleService-Info", ofType: "plist") != nil
+        else {
+            assertionFailure("Missing GoogleService-Info.plist")
+            return
+        }
         FirebaseApp.configure()
         #endif
 

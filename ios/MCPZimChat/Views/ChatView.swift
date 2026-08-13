@@ -681,10 +681,82 @@ private struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
+    /// Tiny FIFO memo over the strip pipeline: during streaming the
+    /// thinking-indicator check and the row body both render the SAME
+    /// growing text at ~10 Hz, so without this the full multi-regex
+    /// pipeline ran two to three times per UI push on the main thread.
+    ///
+    /// PI review 2026-08-13 (perf #2): the key used to be
+    /// `(raw.hashValue, raw.count)`. Both halves are *full traversals* of
+    /// the message — `hashValue` SipHashes every byte, `count` walks every
+    /// grapheme cluster — spent looking up a value that during streaming
+    /// can never be present: the key fingerprints the exact text, and a
+    /// push is by definition a text that just changed. So the first call
+    /// of every push paid 2×O(n) to miss by construction, and only the
+    /// duplicate calls *within* one push could ever hit. Key on the O(1)
+    /// UTF-8 length and confirm with `==` (which short-circuits on shared
+    /// storage — the repeat calls in a push pass literally the same
+    /// String instance), so the key costs nothing and settled messages
+    /// re-rendered on scroll hit too.
+    @MainActor
+    private static var displayTextMemo: [(utf8Count: Int, raw: String, value: String)] = []
+
+    @MainActor
+    fileprivate static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
+        guard role == .assistant else { return raw }
+        let utf8Count = raw.utf8.count
+        if let hit = displayTextMemo.first(where: {
+            $0.utf8Count == utf8Count && $0.raw == raw
+        }) {
+            return hit.value
+        }
+        let value = AssistantMarkupStripper.displayText(raw)
+        displayTextMemo.append((utf8Count, raw, value))
+        if displayTextMemo.count > 16 {
+            displayTextMemo.removeFirst(displayTextMemo.count - 16)
+        }
+        return value
+    }
+
+    /// One-click copy of the assistant reply. Turns into a check-mark for
+    /// a second so the user sees it actually landed in the clipboard.
+    private var copyButton: some View {
+        Button {
+            copyMessage(message.text)
+            justCopied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                justCopied = false
+            }
+        } label: {
+            Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(4)
+                .background(.regularMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help(justCopied ? "Copied" : "Copy reply")
+    }
+}
+
+/// Strips leftover tool-call markup from the assistant's visible prose.
+/// The parser catches well-formed blocks, but during streaming we briefly
+/// see the half-emitted opener (e.g.
+/// `<|tool_call>call:search{query:<|"|>pizza`) before the closing sentinel
+/// arrives. Nuke anything from the first opener to the end of the string
+/// so the chat never flashes raw template text.
+///
+/// Lifted out of `MessageRow` (which is file-private, and so untestable)
+/// when perf #2 of the 2026-08-13 review split this into a bounded
+/// streaming path plus the unbounded pipeline it must agree with — see
+/// `AssistantMarkupStripperTests`, which pins the two together.
+enum AssistantMarkupStripper {
     // Compiled once — `replacingOccurrences(options: .regularExpression)`
     // and `range(of:options:.regularExpression)` recompile their ICU
     // pattern on every call, and `displayText` runs 2–3× per row per
-    // streaming push.
+    // streaming push. (These are already `static let`, not the per-call
+    // `try? NSRegularExpression(...)` idiom, so MCPZimKit's `RegexCache`
+    // has nothing to add here.)
 
     /// Closed blocks (all the canonical spellings) — stripped wholesale.
     private static let closedBlockRegexes: [NSRegularExpression] = [
@@ -705,38 +777,74 @@ private struct MessageRow: View {
         #"<tool[_a-z]*"#,
     ].map { try! NSRegularExpression(pattern: $0) }
 
-    /// Strip leftover tool-call markup from the assistant's visible
-    /// prose. The parser catches well-formed blocks, but during
-    /// streaming we briefly see the half-emitted opener (e.g.
-    /// `<|tool_call>call:search{query:<|"|>pizza`) before the closing
-    /// sentinel arrives. Nuke anything from the first opener to the
-    /// end of the string so the chat never flashes raw template text.
-    /// Tiny FIFO memo over the strip pipeline: during streaming the
-    /// thinking-indicator check and the row body both render the SAME
-    /// growing text at ~10 Hz, so without this the full multi-regex
-    /// pipeline ran twice per UI push on the main thread. Keyed by
-    /// (hash, count) — a collision would only produce a cosmetic glitch.
-    @MainActor
-    private static var displayTextMemo: [(hash: Int, count: Int, value: String)] = []
+    /// How far past the buffer's final `<` a pass in `stripMarkup` can
+    /// possibly reach. The longest fixed sentinel is `<tool_response|>`
+    /// at 16 bytes; the `[\s\S]*?` spans are unbounded but always
+    /// terminate on a closer that itself starts with `<`, so they cannot
+    /// end later than 16 bytes past the last `<` either. 32 doubles that.
+    private static let sentinelWindow = 32
 
-    @MainActor
-    fileprivate static func displayText(_ raw: String, role: ChatMessage.Role) -> String {
-        guard role == .assistant else { return raw }
-        let hash = raw.hashValue
-        let count = raw.count
-        if let hit = displayTextMemo.first(where: { $0.hash == hash && $0.count == count }) {
-            return hit.value
+    /// Streaming entry point.
+    ///
+    /// PI review 2026-08-13 (perf #2): `stripMarkup` rescans the *entire*
+    /// accumulated reply, and `MessageRow` runs it on every 10 Hz push, so
+    /// a `narrate_article` answer of tens of KB burned O(n²) bytes of ICU
+    /// matching on the main thread while it streamed. Every pattern above
+    /// begins with `<`, so nothing after the buffer's final `<` can take
+    /// part in any of them: run the passes over that bounded head only,
+    /// then carry the (usually enormous) marker-free tail through verbatim
+    /// — or drop it wholesale when a pass masked to end-of-string. For the
+    /// shape that actually streams — a closed `<|tool_call>…<tool_call|>`
+    /// block followed by a long narration — the regex work stops scaling
+    /// with the narration and only the byte scan below stays linear.
+    static func displayText(_ raw: String) -> String {
+        let utf8 = raw.utf8
+        guard let split = headEnd(utf8) else {
+            // No `<` in the buffer at all, so every pass is provably a
+            // no-op and only the trim survives.
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let value = computeDisplayText(raw)
-        displayTextMemo.append((hash, count, value))
-        if displayTextMemo.count > 16 {
-            displayTextMemo.removeFirst(displayTextMemo.count - 16)
+        let head = stripMarkup(String(decoding: utf8[..<split], as: UTF8.self))
+        guard !head.droppedTail else {
+            return head.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return value
+        return (head.text + String(decoding: utf8[split...], as: UTF8.self))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func computeDisplayText(_ raw: String) -> String {
+    /// End of the region that can still hold a sentinel: the last `<` plus
+    /// `sentinelWindow` bytes, walked forward off any UTF-8 continuation
+    /// byte so both halves decode (and so the split can never land inside
+    /// a combining sequence close enough to a sentinel to change how
+    /// `range(of:)` clusters it). `nil` when the buffer holds no `<`.
+    private static func headEnd(_ utf8: String.UTF8View) -> String.Index? {
+        var cursor = utf8.endIndex
+        var lastAngle: String.Index?
+        while cursor > utf8.startIndex {
+            utf8.formIndex(before: &cursor)
+            if utf8[cursor] == UInt8(ascii: "<") {
+                lastAngle = cursor
+                break
+            }
+        }
+        guard var end = lastAngle else { return nil }
+        var slack = sentinelWindow
+        while slack > 0, end < utf8.endIndex {
+            utf8.formIndex(after: &end)
+            slack -= 1
+        }
+        while end < utf8.endIndex, utf8[end] & 0xC0 == 0x80 {
+            utf8.formIndex(after: &end)
+        }
+        return end
+    }
+
+    /// The pipeline itself, unbounded and untrimmed. `droppedTail` reports
+    /// that a pass masked from some offset to end-of-string, which is how
+    /// `displayText` knows the tail it held back is gone too.
+    static func stripMarkup(_ raw: String) -> (text: String, droppedTail: Bool) {
         var t = raw
+        var droppedTail = false
         // Closed blocks (all the canonical spellings).
         for re in closedBlockRegexes {
             let range = NSRange(t.startIndex..., in: t)
@@ -760,38 +868,20 @@ private struct MessageRow: View {
                let r = Range(m.range, in: t)
             {
                 t = String(t[..<r.lowerBound])
+                droppedTail = true
             }
         }
         // Unclosed <think> mid-stream: hide from the opener to end until the
         // closing tag arrives (then the closed pattern above strips the pair).
         if let r = t.range(of: "<think") {
             t = String(t[..<r.lowerBound])
+            droppedTail = true
         }
         // Drop any lingering sentinel scraps.
         for lit in ["<tool_call|>", "<tool_response|>", "<|\"|>", "<|\""] {
             t = t.replacingOccurrences(of: lit, with: "")
         }
-        return t.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// One-click copy of the assistant reply. Turns into a check-mark for
-    /// a second so the user sees it actually landed in the clipboard.
-    private var copyButton: some View {
-        Button {
-            copyMessage(message.text)
-            justCopied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                justCopied = false
-            }
-        } label: {
-            Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(4)
-                .background(.regularMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(justCopied ? "Copied" : "Copy reply")
+        return (t, droppedTail)
     }
 }
 
