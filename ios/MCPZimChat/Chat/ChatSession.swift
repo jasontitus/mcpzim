@@ -2796,10 +2796,13 @@ public final class ChatSession {
                 activeQueryTelemetry?.setRoute("mode_switch")
                 let reply: String
                 switch requested {
+                // Always name BOTH ways out. The first version only said
+                // "back to normal", and the way back to Wikipedia
+                // specifically wasn't obvious (asked 2026-08-13).
                 case .local:
-                    reply = "Local mode — I'll answer \"what's around here\" questions from your maps. Say \"back to normal\" to switch back."
+                    reply = "Local mode — I'll answer from your maps. Say \"Wikipedia mode\" for articles, or \"back to normal\" to let me pick."
                 case .encyclopedia:
-                    reply = "Wikipedia mode — I'll answer from articles. Say \"back to normal\" to switch back."
+                    reply = "Wikipedia mode — I'll answer from articles. Say \"local mode\" for your maps, or \"back to normal\" to let me pick."
                 case .auto:
                     reply = "Back to normal — I'll pick maps or Wikipedia based on what you ask."
                 }

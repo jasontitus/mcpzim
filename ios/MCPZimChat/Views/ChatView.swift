@@ -70,6 +70,11 @@ struct ChatView: View {
                 modelBanner
                 Divider()
             }
+            // The mode persists across launches, so it has to be visible:
+            // otherwise a user who once said "let's talk local" sees later
+            // answers change with no clue why.
+            ConversationModeBar()
+            Divider()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
