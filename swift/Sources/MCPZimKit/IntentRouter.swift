@@ -18,9 +18,24 @@ public struct DirectIntent: Equatable, Sendable {
     public let toolName: String
     public let args: [String: AnyJSONValue]
 
-    public init(toolName: String, args: [String: AnyJSONValue]) {
+    /// Set when this intent is a GUESS that the turn is about a place, and
+    /// the encyclopedia is the honest second choice. "What's in Dupont
+    /// Circle?" is a map question; "What's in a black hole?" is the same
+    /// sentence shape and is not. Text alone can't separate them — only
+    /// the streetzim knows which names it holds — so the router dispatches
+    /// the map first and the host retries `article_overview` with this
+    /// title when the geocode misses, instead of dead-ending on "not in
+    /// the loaded maps" (2026-08-13).
+    public var articleFallbackTitle: String?
+
+    public init(
+        toolName: String,
+        args: [String: AnyJSONValue],
+        articleFallbackTitle: String? = nil
+    ) {
         self.toolName = toolName
         self.args = args
+        self.articleFallbackTitle = articleFallbackTitle
     }
 
     /// Convenience for hosts that speak the native `[String: Any]`
@@ -28,6 +43,22 @@ public struct DirectIntent: Equatable, Sendable {
     public var anyArgs: [String: Any] {
         args.mapValues { $0.anyValue }
     }
+}
+
+/// Which corpus ambiguous turns should prefer. Only turns that are
+/// genuinely ambiguous consult this: "bars in Adams Morgan" is always a
+/// map query and "who was Napoleon" is always an article, whatever the
+/// mode. It exists for the middle — "what's in Georgetown?" — where the
+/// sentence alone doesn't say whether the user wants the neighbourhood's
+/// cafés or its history.
+public enum ConversationMode: String, Sendable, CaseIterable {
+    /// Guess from the phrasing, and fall back to the other corpus when
+    /// the guess misses. The default.
+    case auto
+    /// "Let's talk local" — ambiguous turns mean the map.
+    case local
+    /// "Let's talk Wikipedia" — ambiguous turns mean the encyclopedia.
+    case encyclopedia
 }
 
 /// An explicit instruction to ground the next answer in one particular
@@ -84,7 +115,8 @@ public enum IntentRouter {
     public static func classify(
         _ raw: String,
         currentLocation: (lat: Double, lon: Double)? = nil,
-        focus: ConversationFocus? = nil
+        focus: ConversationFocus? = nil,
+        mode: ConversationMode = .auto
     ) -> DirectIntent? {
         var text = raw
             .replacingOccurrences(of: "\u{2019}", with: "'") // iOS smart quote → ASCII, so "Putin’s" title-matches
@@ -551,14 +583,42 @@ public enum IntentRouter {
             // near_named_place here; surfaced 2026-08-13 when that suite
             // ran for the first time.)
             var reducedSubject = subject
+            var strippedLocationalPreposition = false
             for preposition in ["in ", "around ", "near ", "at ", "inside "]
             where reducedSubject.hasPrefix(preposition) {
                 reducedSubject = String(
                     reducedSubject.dropFirst(preposition.count)
                 ).trimmingCharacters(in: CharacterSet.whitespaces)
+                strippedLocationalPreposition = true
                 break
             }
             if reducedSubject.isEmpty { return nil }
+            // A locational preposition with no category ("what's around
+            // Adams Morgan?") reads as "what is there", which is a map
+            // question about a named place. Try the map first and let the
+            // host fall back to the article when the streetzim doesn't
+            // know the name — `mode` lets the user settle it outright.
+            // `isConversationalKnowledgeRequest` is deliberately NOT a gate
+            // here: it fires on any turn opening with what/which/who/…,
+            // which is every turn that reaches this branch, so including
+            // it made the branch unreachable. The real protection is the
+            // shape — a locational preposition plus a short, determiner-
+            // free, non-abstract subject.
+            if strippedLocationalPreposition,
+               mode != .encyclopedia,
+               looksLikePlaceName(reducedSubject)
+            {
+                return DirectIntent(
+                    toolName: "near_named_place",
+                    args: [
+                        "place":     .string(reducedSubject),
+                        "radius_km": .double(defaultRadiusKm),
+                    ],
+                    // In local mode the user has said to stay on the map;
+                    // a miss should say so rather than silently answering
+                    // from Wikipedia.
+                    articleFallbackTitle: mode == .local ? nil : reducedSubject)
+            }
             if let m = match(reducedSubject, pattern: #"^((?:the|its)\s+.+?)\s+of\s+(.+)$"#),
                m.count >= 2,
                ReferenceResolver.isAttributePhrase(m[0])
@@ -942,6 +1002,59 @@ public enum IntentRouter {
             #"^(?:tell\s+me\s+(?:about|more\s+about)|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+was|\s+were|\s+are)|give\s+me\s+(?:an?\s+)?overview\s+of|overview\s+of|about)\s+"#
         return s.replacingOccurrences(
             of: p, with: "", options: .regularExpression)
+    }
+
+    /// Cheap gate before guessing "map question". This can't know which
+    /// names the streetzim holds — that's the fallback's job — it only
+    /// throws out phrasings that are obviously NOT a place, so we don't
+    /// burn a geocode on "what's in a black hole" or "what's in the
+    /// water". Rejects leading determiners (real place names don't start
+    /// with "a"/"an"/"the" in these turns), long phrases, and a small set
+    /// of abstract heads that show up in this sentence shape.
+    static func looksLikePlaceName(_ subject: String) -> Bool {
+        let tokens = subject.split(separator: " ").map(String.init)
+        guard (1...4).contains(tokens.count) else { return false }
+        if let first = tokens.first,
+           ["a", "an", "the", "this", "that", "my", "your", "our"].contains(first) {
+            return false
+        }
+        let nonPlaceHeads: Set<String> = [
+            "it", "here", "there", "everything", "anything", "something",
+            "space", "water", "air", "food", "news", "future", "past",
+            "world", "universe", "body", "brain", "sky", "ocean",
+        ]
+        return !tokens.contains { nonPlaceHeads.contains($0) }
+    }
+
+    /// Recognize the spoken mode switches ("let's talk local", "switch to
+    /// Wikipedia mode", "back to auto"). Voice users can't reach the
+    /// Settings toggle mid-drive, and this is the escape hatch for the
+    /// cases where the automatic guess keeps picking the wrong corpus.
+    public static func conversationModeCommand(_ raw: String) -> ConversationMode? {
+        let t = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!,"))
+            .lowercased()
+        guard t.count <= 48 else { return nil }
+        let local = [
+            "let's talk local", "lets talk local", "talk local",
+            "local mode", "switch to local", "go local", "stay local",
+            "let's go local", "lets go local", "local only",
+        ]
+        let encyclopedia = [
+            "let's talk wikipedia", "lets talk wikipedia", "talk wikipedia",
+            "wikipedia mode", "switch to wikipedia", "encyclopedia mode",
+            "let's talk encyclopedia", "lets talk encyclopedia",
+            "wikipedia only",
+        ]
+        let auto = [
+            "back to auto", "auto mode", "automatic mode", "normal mode",
+            "back to normal", "either mode", "both modes",
+        ]
+        if local.contains(t) { return .local }
+        if encyclopedia.contains(t) { return .encyclopedia }
+        if auto.contains(t) { return .auto }
+        return nil
     }
 
     /// Collapse immediately-repeated word runs — dictation stutter.

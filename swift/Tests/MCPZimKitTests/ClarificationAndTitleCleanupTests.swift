@@ -86,13 +86,16 @@ final class ClarificationAndTitleCleanupTests: XCTestCase {
         // "what's in dupont circle?" dispatched
         // article_overview("in dupont circle") — a title no ZIM holds,
         // surviving only on search rescue. Surfaced 2026-08-13 by the
-        // conversational eval's first real run.
+        // conversational eval's first real run. Asserted in encyclopedia
+        // mode, which is the path that still produces an article title;
+        // `ConversationModeTests` covers the map-first default.
         for (query, expected) in [
             ("what's in dupont circle?", "dupont circle"),
             ("what's around adams morgan?", "adams morgan"),
             ("what's near georgetown?", "georgetown"),
         ] {
-            let intent = IntentRouter.classify(query, currentLocation: nil)
+            let intent = IntentRouter.classify(
+                query, currentLocation: nil, mode: .encyclopedia)
             XCTAssertEqual(intent?.anyArgs["title"] as? String, expected, query)
         }
     }

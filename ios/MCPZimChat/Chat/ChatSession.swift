@@ -381,6 +381,23 @@ public final class ChatSession {
         }
     }
 
+    /// Which corpus ambiguous turns prefer. Unambiguous turns ignore it:
+    /// "bars in Adams Morgan" is always the map, "who was Napoleon" is
+    /// always the encyclopedia. `.auto` guesses and falls back on a miss;
+    /// the other two settle it for people who know which they want.
+    /// Persisted, and reachable by voice ("let's talk local") because the
+    /// Settings toggle is out of reach mid-drive.
+    public var conversationMode: ConversationMode =
+        ConversationMode(
+            rawValue: UserDefaults.standard.string(forKey: "conversationMode") ?? ""
+        ) ?? .auto
+    {
+        didSet {
+            UserDefaults.standard.set(
+                conversationMode.rawValue, forKey: "conversationMode")
+        }
+    }
+
     /// Device default × 2 when the user has opted in. All reply-generating
     /// sites (iter 0, iter 1, section reduce) read this instead of
     /// `DeviceProfile.current.maxReplyTokens` directly.
@@ -2771,6 +2788,32 @@ public final class ChatSession {
                 }
                 return
             }
+            // Spoken mode switch ("let's talk local"). Handled before any
+            // routing so the words are never taken as a query, and it
+            // answers instantly — no model, no tools.
+            if let requested = IntentRouter.conversationModeCommand(text) {
+                conversationMode = requested
+                activeQueryTelemetry?.setRoute("mode_switch")
+                let reply: String
+                switch requested {
+                case .local:
+                    reply = "Local mode — I'll answer \"what's around here\" questions from your maps. Say \"back to normal\" to switch back."
+                case .encyclopedia:
+                    reply = "Wikipedia mode — I'll answer from articles. Say \"back to normal\" to switch back."
+                case .auto:
+                    reply = "Back to normal — I'll pick maps or Wikipedia based on what you ask."
+                }
+                updateAssistant(reply)
+                debug("conversation mode → \(requested.rawValue)", category: "Router")
+                debug(reply, category: "Assistant")
+                isGenerating = false
+                if let idx = messages.indices.last,
+                   messages[idx].role == .assistant
+                {
+                    messages[idx].finishedAt = Date()
+                }
+                return
+            }
             // "Continue" / "keep reading" / "tell me more" — page the
             // next chunk of the article we're currently reading aloud.
             // Checked before `classify` so a bare "continue" never tries
@@ -2851,7 +2894,8 @@ public final class ChatSession {
                     return
                 }
                 let switchIntent = IntentRouter.classify(
-                    text, currentLocation: currentLocation, focus: focus)
+                    text, currentLocation: currentLocation, focus: focus,
+                    mode: conversationMode)
                 // A founding-date factoid is grounded and deterministic even
                 // inside a pinned discussion. Execute it here instead of
                 // handing the same article lead to Bonsai for another long
@@ -2957,7 +3001,8 @@ public final class ChatSession {
             // Logic lives in `MCPZimKit.IntentRouter` so it's covered
             // by `swift test` (see `IntentRouterTests`).
             if let intent = IntentRouter.classify(
-                text, currentLocation: currentLocation, focus: focus
+                text, currentLocation: currentLocation, focus: focus,
+                mode: conversationMode
             ) {
                 if intent == failedDiscussionIntent {
                     debug("fast-path intent already missed during discussion switch — falling back to LLM",
@@ -5773,6 +5818,26 @@ public final class ChatSession {
             let isGeocodeMiss = errText.contains("could not resolve")
                 || errText.contains("noMatch")
                 || errText.contains("no matching")
+            // A speculative place guess ("what's in X?") retries as an
+            // article on ANY failure, not just a geocode miss. The guess
+            // was never confident — "what's in a black hole?" has the same
+            // shape as "what's in Dupont Circle?" — so every way the map
+            // can fail to answer means the encyclopedia is the better
+            // second try. Keying this on the geocode-miss strings alone
+            // missed the commonest case of all: with no streetzim loaded
+            // the dispatch fails with "no streetzim ZIM with routing data
+            // is loaded", and the turn fell through to a 25-second LLM
+            // tool loop that reached the same article the hard way
+            // (measured 2026-08-13). Only `.auto` carries a fallback
+            // title; local mode deliberately carries none.
+            if let fallbackTitle = intent.articleFallbackTitle {
+                debug("place guess didn't resolve (\(errText.prefix(60))) — retrying \"\(fallbackTitle)\" as an article",
+                      category: "Router")
+                let retry = DirectIntent(
+                    toolName: "article_overview",
+                    args: ["title": .string(fallbackTitle)])
+                if await executeDirectIntent(retry) { return true }
+            }
             if placesAndRouting.contains(intent.toolName), isGeocodeMiss {
                 let subject = placeSubject(from: dictArgs) ?? "that place"
                 let miss = "I can't find \"\(subject)\" in the loaded maps. "

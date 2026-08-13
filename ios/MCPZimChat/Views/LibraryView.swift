@@ -2,6 +2,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import MCPZimKit
 
 struct LibraryView: View {
     @Environment(ChatSession.self) private var session
@@ -123,6 +124,7 @@ struct LibraryView: View {
             // doesn't have to jump between three panes.
             Section("Behavior") {
                 @Bindable var bindable = session
+                ConversationModePicker(session: session)
                 Toggle(isOn: $bindable.longerReplies) {
                     Text("Longer replies")
                 }
@@ -614,4 +616,31 @@ public enum KokoroVoicePreference {
 
 #Preview {
     NavigationStack { LibraryView() }.environment(ChatSession())
+}
+
+/// Pulled out of the Behavior section: inlining the picker plus its
+/// footnote pushed that Section's body past the SwiftUI type-checker's
+/// budget ("unable to type-check this expression in reasonable time",
+/// 2026-08-13). Its own view keeps each body small enough to infer.
+private struct ConversationModePicker: View {
+    let session: ChatSession
+
+    var body: some View {
+        @Bindable var bindable = session
+        Picker("Answer from", selection: $bindable.conversationMode) {
+            Text("Maps or Wikipedia").tag(ConversationMode.auto)
+            Text("Maps first").tag(ConversationMode.local)
+            Text("Wikipedia only").tag(ConversationMode.encyclopedia)
+        }
+        Text(Self.explanation)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+    }
+
+    private static let explanation = """
+        Only affects questions that could mean either — "what's in \
+        Georgetown?" is its cafés or its history. "Maps or Wikipedia" \
+        guesses, then falls back to the other when the guess misses. \
+        Switchable by voice: say "let's talk local" or "back to normal".
+        """
 }
