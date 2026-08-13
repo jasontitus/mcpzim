@@ -80,6 +80,30 @@ final class ClarificationAndTitleCleanupTests: XCTestCase {
         XCTAssertEqual(intent?.anyArgs["title"] as? String, "the war of 1812")
     }
 
+    // MARK: - locational prepositions in article titles
+
+    func testLocationalPrepositionIsNotPartOfTheTitle() {
+        // "what's in dupont circle?" dispatched
+        // article_overview("in dupont circle") — a title no ZIM holds,
+        // surviving only on search rescue. Surfaced 2026-08-13 by the
+        // conversational eval's first real run.
+        for (query, expected) in [
+            ("what's in dupont circle?", "dupont circle"),
+            ("what's around adams morgan?", "adams morgan"),
+            ("what's near georgetown?", "georgetown"),
+        ] {
+            let intent = IntentRouter.classify(query, currentLocation: nil)
+            XCTAssertEqual(intent?.anyArgs["title"] as? String, expected, query)
+        }
+    }
+
+    func testExplicitCategoryStillReachesTheMap() {
+        let intent = IntentRouter.classify(
+            "bars in adams morgan", currentLocation: nil)
+        XCTAssertEqual(intent?.toolName, "near_named_place")
+        XCTAssertEqual(intent?.anyArgs["place"] as? String, "adams morgan")
+    }
+
     // MARK: - titleNamesPinnedSubject
 
     func testLeadingArticleAnaphoraStaysPinned() {

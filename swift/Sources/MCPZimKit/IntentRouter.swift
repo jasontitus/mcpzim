@@ -541,7 +541,24 @@ public enum IntentRouter {
             // dispatched the whole phrase and missed). The grounded
             // answer keeps the full user question, so the facet
             // survives even though the title is reduced.
+            // "What's IN dupont circle?" / "what's AROUND adams morgan?"
+            // captured the preposition into the title, so the lookup was
+            // `article_overview("in dupont circle")` — a title no ZIM
+            // holds, salvaged only by search rescue. Strip it so the
+            // article path at least asks for the real subject. (Whether
+            // these should reach StreetZIM instead of Wikipedia is a
+            // separate routing question — the conversational eval expects
+            // near_named_place here; surfaced 2026-08-13 when that suite
+            // ran for the first time.)
             var reducedSubject = subject
+            for preposition in ["in ", "around ", "near ", "at ", "inside "]
+            where reducedSubject.hasPrefix(preposition) {
+                reducedSubject = String(
+                    reducedSubject.dropFirst(preposition.count)
+                ).trimmingCharacters(in: CharacterSet.whitespaces)
+                break
+            }
+            if reducedSubject.isEmpty { return nil }
             if let m = match(reducedSubject, pattern: #"^((?:the|its)\s+.+?)\s+of\s+(.+)$"#),
                m.count >= 2,
                ReferenceResolver.isAttributePhrase(m[0])

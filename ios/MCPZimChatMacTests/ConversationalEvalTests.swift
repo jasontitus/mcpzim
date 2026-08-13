@@ -461,12 +461,29 @@ final class ConversationalEvalTests: XCTestCase {
                        "turn did not complete within 120s: \(text)")
     }
 
+    /// Tools dispatched since `index`, counting BOTH log shapes. The
+    /// deterministic fast-path router logs "fast-path dispatch <tool>(…)"
+    /// while the LLM tool loop logs "dispatching <tool>(…)"; this helper
+    /// only knew the second, which predates the fast path entirely. The
+    /// suite couldn't notice, having never run (setupState left every
+    /// `send()` a no-op until 2026-08-13) — so as routing moved to the
+    /// fast path, every "expected tool X" assertion silently drifted to
+    /// asserting against an empty list. A single revival run logged 48
+    /// fast-path dispatches this helper could not see, against 30 it could.
     private func toolsCalled(in session: ChatSession, since index: Int) -> [String] {
         var called: [String] = []
         for entry in session.debugEntries.dropFirst(index) where entry.category == "Tool" {
             let msg = entry.message
-            guard msg.hasPrefix("dispatching ") else { continue }
-            let rest = msg.dropFirst("dispatching ".count)
+            let rest: Substring
+            if msg.hasPrefix("dispatching ") {
+                rest = msg.dropFirst("dispatching ".count)
+            } else if msg.hasPrefix("fast-path dispatch ") {
+                rest = msg.dropFirst("fast-path dispatch ".count)
+                // "fast-path dispatch failed: …" is an error line, not a call.
+                if rest.hasPrefix("failed") { continue }
+            } else {
+                continue
+            }
             let name = rest.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
             if !name.isEmpty { called.append(String(name)) }
         }
