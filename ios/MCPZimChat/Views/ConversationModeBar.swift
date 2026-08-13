@@ -18,18 +18,40 @@ struct ConversationModeBar: View {
 
     var body: some View {
         @Bindable var bindable = session
-        Picker("Answer from", selection: $bindable.conversationMode) {
-            Text("Auto").tag(ConversationMode.auto)
-            Text("Maps").tag(ConversationMode.local)
-            Text("Wikipedia").tag(ConversationMode.encyclopedia)
+        VStack(spacing: 3) {
+            Picker("Answer from", selection: $bindable.conversationMode) {
+                Text("Auto").tag(ConversationMode.auto)
+                Text("Maps").tag(ConversationMode.local)
+                Text("Wikipedia").tag(ConversationMode.encyclopedia)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Answer ambiguous questions from")
+            .accessibilityHint(
+                "Auto tries maps first and falls back to Wikipedia. "
+                + "Maps stays on your offline maps. Wikipedia stays on articles.")
+            // Both affordances, named. The segmented control shows WHICH
+            // mode is active but not that it can be tapped, and nothing
+            // on screen revealed that voice works at all.
+            Text(hint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .accessibilityLabel("Answer ambiguous questions from")
-        .accessibilityHint(
-            "Auto tries maps first and falls back to Wikipedia. "
-            + "Maps stays on your offline maps. Wikipedia stays on articles.")
+    }
+
+    /// Names the way OUT of wherever you are, not a generic blurb — in a
+    /// pinned mode the useful phrase is the one that unpins it.
+    private var hint: String {
+        switch session.conversationMode {
+        case .auto:
+            return "Tap to pin a source · or say “let’s talk local”"
+        case .local:
+            return "Maps only · tap above, or say “back to normal”"
+        case .encyclopedia:
+            return "Articles only · tap above, or say “back to normal”"
+        }
     }
 }
