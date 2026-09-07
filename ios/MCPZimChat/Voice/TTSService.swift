@@ -25,6 +25,7 @@
 
 import AVFoundation
 import Foundation
+import Darwin
 
 public enum TTSChunkBoundary: Sendable {
     case sentence
@@ -161,32 +162,72 @@ public extension TTSService {
 }
 
 public enum TTSFactory {
-    /// Build the selected on-device backend. New installs prefer Supertonic 3;
-    /// Kokoro remains available for listening comparisons and the system voice
-    /// is the zero-download fallback.
+    /// Check before allocating Kokoro. Unknown headroom is not permission
+    /// to overlap its measured synthesis peak with a loaded language model.
+    public static let kokoroPeakMemoryMB = 2_800
+    public static func prefersKokoroAutomatically(
+        assetsInstalled: Bool, availableMemoryMB: Double,
+        thermallyConstrained: Bool
+    ) -> Bool {
+        assetsInstalled && !thermallyConstrained && availableMemoryMB.isFinite
+            && availableMemoryMB >= Double(kokoroPeakMemoryMB) + 700
+    }
+
+
+    /// Automatic prefers installed Kokoro only with healthy live headroom.
+    /// Check before constructing the engine; keep explicit choices intact.
     public static func makeBest(voice: String = "af_heart") -> TTSService {
-        if TTSBackendPreference.current == .supertonic {
+        let preference = TTSBackendPreference.current
+        let thermal = ProcessInfo.processInfo.thermalState
+        let automaticKokoro = preference == .automatic && prefersKokoroAutomatically(
+            assetsInstalled: KokoroAssets.isDownloaded,
+            availableMemoryMB: availableMemoryMB(),
+            thermallyConstrained: thermal == .serious || thermal == .critical)
+        if preference == .supertonic || (preference == .automatic && !automaticKokoro) {
             #if canImport(FluidAudio)
             return Supertonic3TTSService(voice: SupertonicVoicePreference.current)
             #endif
         }
         #if canImport(KokoroSwift)
-        if TTSBackendPreference.current != .system,
+        if (preference == .kokoro || (preference == .automatic && automaticKokoro)),
            KokoroAssets.isDownloaded,
            let kokoro = try? KokoroTTSService(voice: voice) {
             return kokoro
         }
         #endif
         #if canImport(FluidAudio)
-        if TTSBackendPreference.current != .system {
+        if preference != .system {
             return Supertonic3TTSService(voice: SupertonicVoicePreference.current)
         }
         #endif
         return SystemTTSService()
     }
+
+    static func availableMemoryMB() -> Double {
+        #if os(iOS)
+        return Double(os_proc_available_memory()) / (1024 * 1024)
+        #else
+        // Conservative reclaimable RAM estimate on Mac. Do not count swap
+        // or compressed memory as space for a second inference engine.
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let host = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, host) }
+        let status = withUnsafeMutablePointer(to: &stats) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(host, HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard status == KERN_SUCCESS else { return 0 }
+        return (Double(stats.free_count) + Double(stats.inactive_count))
+            * Double(vm_kernel_page_size) / (1024 * 1024)
+        #endif
+    }
+
 }
 
 public enum TTSBackendPreference: String, CaseIterable, Sendable {
+    case automatic
     case supertonic
     case kokoro
     case system
@@ -195,6 +236,7 @@ public enum TTSBackendPreference: String, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .automatic: return "Automatic (prefer Kokoro)"
         case .supertonic: return "Supertonic 3 (ANE INT8)"
         case .kokoro: return "Kokoro (MLX)"
         case .system: return "System voice"
@@ -205,7 +247,7 @@ public enum TTSBackendPreference: String, CaseIterable, Sendable {
         get {
             guard let raw = UserDefaults.standard.string(forKey: key),
                   let value = TTSBackendPreference(rawValue: raw)
-            else { return .supertonic }
+            else { return .automatic }
             return value
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
@@ -291,7 +333,7 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     /// Measured by MCPZimTTSBenchCLI on Apple silicon with a representative
     /// 92-character, punctuation-heavy chunk. MLX briefly reached 2.74 GB
     /// above the settled prepared footprint; round up for the iOS safety gate.
-    public let peakSynthesisMemoryMB = 2_800
+    public let peakSynthesisMemoryMB = TTSFactory.kokoroPeakMemoryMB
     #if os(macOS)
     /// Mac has enough memory and substantially faster MLX execution to give
     /// Kokoro a full prosody window. This avoids turning commas in a long

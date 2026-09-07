@@ -1151,6 +1151,8 @@ public enum ArticleHeuristics {
     /// "annex…": strip one plural/verbal suffix when the remainder stays
     /// ≥4 chars.
     static func stem(_ w: String) -> String {
+        let canonical = EvidenceQuestion.lemma(w)
+        if canonical != w { return canonical }
         for suffix in ["ies", "es", "s", "ed", "ing"] where w.hasSuffix(suffix) {
             let stemmed = String(w.dropLast(suffix.count))
             if stemmed.count >= 4 { return stemmed }

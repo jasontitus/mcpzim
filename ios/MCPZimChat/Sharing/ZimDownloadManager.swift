@@ -208,9 +208,16 @@ final class ZimDownloadManager: NSObject, ObservableObject {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+        // FileHandle can return autoreleased NSData backing each Data. A
+        // detached task/session delegate need not drain its pool until this
+        // entire function returns: without this inner pool a 3.8 GB checksum
+        // can retain 3.8 GB of read buffers and kill the app before model load.
+        while try autoreleasepool(invoking: { () throws -> Bool in
+            guard let chunk = try handle.read(upToCount: 1 << 20),
+                  !chunk.isEmpty else { return false }
             hasher.update(data: chunk)
-        }
+            return true
+        }) {}
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
@@ -636,7 +643,7 @@ final class ZimDownloadManager: NSObject, ObservableObject {
             item.kind = parsed
         }
         item.sha256 = label.sha256
-        item.destination = label.destPath.flatMap(URL.init(string:))
+        item.destination = label.destPath.map { URL(fileURLWithPath: $0) }
         return item
     }
 
@@ -788,10 +795,10 @@ private final class SessionDelegateShim: NSObject, URLSessionDownloadDelegate {
                 // (same volume, so the final rename is atomic), and verify
                 // size + SHA-256 here on the session queue before the file
                 // can ever replace a working model.
-                guard let destPath = label?.destPath,
-                      let destination = URL(string: destPath) else {
+                guard let destPath = label?.destPath, destPath.hasPrefix("/") else {
                     throw CocoaError(.fileNoSuchFile)
                 }
+                let destination = URL(fileURLWithPath: destPath)
                 let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode
                 guard statusCode == 200 || statusCode == 206 else {
                     throw URLError(.badServerResponse)

@@ -477,7 +477,7 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
             guard try fileSize(url) == expectedBytes else { return false }
         }
         guard let sha256 else { return true }
-        let key = shaVerifyKey(url)
+        let key = shaVerifyKey(url) + "|" + sha256.lowercased()
         if let cached = memoizedSHA256Verdict(key) {
             return cached
         }

@@ -113,6 +113,31 @@ final class ModelDownloadTests: XCTestCase {
         XCTAssertFalse(ok)
     }
 
+    func testCachedVerdictIncludesExpectedChecksum() async throws {
+        let payload = Array("same file, different expected hash".utf8)
+        let url = try write("memo.gguf", payload)
+        let digest = SHA256.hash(data: Data(payload)).map { String(format: "%02x", $0) }.joined()
+        let good = try await LlamaCppProvider.cachedGGUFIsValid(
+            url, expectedBytes: Int64(payload.count), sha256: digest)
+        let bad = try await LlamaCppProvider.cachedGGUFIsValid(
+            url, expectedBytes: Int64(payload.count), sha256: String(repeating: "0", count: 64))
+        XCTAssertTrue(good)
+        XCTAssertFalse(bad, "A cached success must not bypass a changed expected digest")
+    }
+
+    @MainActor
+    func testRestoredModelDestinationIsFileURL() {
+        let destination = stagingDir.appendingPathComponent("model with spaces.gguf")
+        let manager = ZimDownloadManager(restoringDownloads: false)
+        let label = TaskLabel(id: "restore-model", title: "Model",
+                              urlString: "https://example.org/model.gguf", expectedBytes: 100,
+                              kind: "model", destPath: destination.path)
+        manager.adoptRestoredTasks([(label: label, taskID: 9001,
+                                    received: 10, expected: 100, live: true)])
+        XCTAssertEqual(manager.items.first?.destination, destination)
+        XCTAssertEqual(manager.items.first?.destination?.isFileURL, true)
+    }
+
     // MARK: - Storage gate message
 
     func testInsufficientStorageMessageNamesShortfall() {

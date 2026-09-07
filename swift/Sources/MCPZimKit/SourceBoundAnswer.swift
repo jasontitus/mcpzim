@@ -62,6 +62,7 @@ public enum SourceBoundAnswer {
             let score: Double
             let parentIdentity: Bool
         }
+        let contract = EvidenceQuestion.parse(question)
         let titleTerms = Set(([topic] + passages.map(\.article))
             .flatMap(ArticleHeuristics.questionKeywords).map(ArticleHeuristics.stem))
         let generic: Set<String> = ["please", "explain", "describe", "overview", "introduction",
@@ -106,7 +107,11 @@ public enum SourceBoundAnswer {
             }
             let headingCoverage = keywords.filter(headingCovers).count
             let headingOverview = !broad && headingCoverage == keywords.count
-            for (position, sentence) in sentences(passage.text).enumerated() {
+            let sourceSentences = sentences(passage.text)
+            for (position, sentence) in sourceSentences.enumerated() {
+                if let contract, !contract.accepts(sentence: sentence,
+                    preceding: Array(sourceSentences.prefix(position).suffix(4)), article: passage.article,
+                    topic: topic, section: passage.section) { continue }
                 guard sentence.count >= 8, sentence.count <= 2_400 else { continue }
                 let words = Set(ArticleHeuristics.questionKeywords(sentence).map(ArticleHeuristics.stem))
                 // A source can identify both parents in one clause without
@@ -119,7 +124,8 @@ public enum SourceBoundAnswer {
                 // repeat. Every remaining question facet still needs evidence:
                 // "Early life" + "secret dossier" cannot answer "secret password".
                 let covered = zip(keywords, variants).filter { keyword, terms in
-                    headingCovers(keyword)
+                    (contract != nil && ["write", "author", "pen"].contains(EvidenceQuestion.lemma(keyword)))
+                        || headingCovers(keyword)
                         || (collectiveParentIdentity && ["parent", "parents", "mother", "father"].contains(keyword))
                         || terms.contains { term in
                         words.contains(ArticleHeuristics.stem(term))
@@ -130,6 +136,7 @@ public enum SourceBoundAnswer {
                 var score = weighted.reduce(0.0) { sum, term in
                     sum + (words.contains(ArticleHeuristics.stem(term.term)) ? Double(term.weight) : 0)
                 }
+                if contract != nil { score += 8 }
                 if preferred.contains(sentence) { score += 4 }
                 var parentIdentity = false
                 if parentQuestion {
@@ -188,6 +195,7 @@ public enum SourceBoundAnswer {
     /// evidence about a named organization or a specific relative.
     private static func evidenceTerms(_ keyword: String) -> [String] {
         switch keyword {
+        case "write", "wrote", "written", "writing": return ["write", "wrote", "written", "authored", "penned"]
         case "nato": return ["nato", "north atlantic treaty organization", "north atlantic treaty organisation"]
         case "west": return ["west", "western"]
         case "mother", "father": return [keyword]

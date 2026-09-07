@@ -1,69 +1,17 @@
-// SPDX-License-Identifier: MIT
-//
-// Pins the `geocodeVariants` fallback ladder. Field evidence (device log
-// 2026-08-03, report 5393c74a): locate("k1 kart") threw noMatch even though
-// the streetzim name index holds "K1 Speed" — the query has no comma and no
-// " in ", so the only attempt was the full phrase and .contains("k1 kart")
-// matched nothing. The ladder now appends progressive trailing-token-drop
-// variants ("k1 kart" → "k1") AFTER the existing suffix-stripped variants,
-// so exact/full-phrase matches keep winning and the token drop only runs
-// when everything more specific missed.
-
-import Foundation
 import XCTest
 @testable import MCPZimKit
 
 final class GeocodeVariantsTests: XCTestCase {
-
-    // MARK: - Variant-ladder ordering (unit)
-
-    func testTokenDropAppendsAfterFullQuery() {
-        XCTAssertEqual(DefaultZimService.geocodeVariants(of: "k1 kart"),
-                       ["k1 kart", "k1"],
-                       "full phrase first — exact matches must still win")
+    func testNamesAreNeverShortenedIntoDifferentEntities() {
+        for name in ["k1 kart", "a good coffee shop in Salinas", "one two three four five"] {
+            let variants = DefaultZimService.geocodeVariants(of: name)
+            XCTAssertFalse(variants.contains("k1"))
+            XCTAssertFalse(variants.contains("a good"))
+            XCTAssertFalse(variants.contains("one two"))
+        }
+        XCTAssertEqual(DefaultZimService.geocodeVariants(of: "Union Square, San Francisco"),
+                       ["Union Square, San Francisco", "Union Square"])
     }
-
-    func testCommaVariantStillPrecedesTokenDrops() {
-        // The pre-existing comma strip must keep its slot: "Union Square"
-        // resolves cleanly and the ladder stops there, so appending
-        // "Union" after it can never change a query that used to work.
-        XCTAssertEqual(
-            DefaultZimService.geocodeVariants(of: "Union Square, San Francisco"),
-            ["Union Square, San Francisco", "Union Square", "Union"])
-    }
-
-    func testInVariantStillPrecedesTokenDrops() {
-        XCTAssertEqual(
-            DefaultZimService.geocodeVariants(of: "Union Square in San Francisco"),
-            ["Union Square in San Francisco", "Union Square", "Union"])
-    }
-
-    func testSingleTokenQueryUnchanged() {
-        XCTAssertEqual(DefaultZimService.geocodeVariants(of: "Stanford"),
-                       ["Stanford"],
-                       "nothing to drop — single-token behavior must not change")
-    }
-
-    func testTwoCharFloorStopsDegenerateVariants() {
-        // Dropping "b" from "a b" would leave the 1-char "a", which as a
-        // substring filter matches half the index. The floor rejects it.
-        XCTAssertEqual(DefaultZimService.geocodeVariants(of: "a b"), ["a b"])
-    }
-
-    func testVariantListCappedAtFive() {
-        let variants = DefaultZimService.geocodeVariants(
-            of: "one two three four five six seven")
-        XCTAssertEqual(variants.count, 5, "cap keeps a long phrase from fanning out")
-        XCTAssertEqual(variants.first, "one two three four five six seven")
-        XCTAssertEqual(variants, [
-            "one two three four five six seven",
-            "one two three four five six",
-            "one two three four five",
-            "one two three four",
-            "one two three",
-        ], "each variant drops exactly one trailing token, in order")
-    }
-
     // MARK: - End-to-end through the real geocoder
 
     private final class MapReader: ZimReader, @unchecked Sendable {
@@ -98,13 +46,16 @@ final class GeocodeVariantsTests: XCTestCase {
         return DefaultZimService(readers: [(name: "osm-test", reader: reader)])
     }
 
-    func testK1KartResolvesViaTokenDrop() async throws {
-        // The 2026-08-03 field case: no record contains "k1 kart", but the
-        // dropped-token variant "k1" ranks "K1 Speed" by prefix (offset 0,
-        // shortest name beats "K12 Online School").
-        let hits = try await k1Service().geocode(
-            query: "k1 kart", limit: 3, zim: nil, kinds: nil)
-        XCTAssertEqual(hits.first?.name, "K1 Speed")
+    func testK1KartCannotSilentlyBecomeK1Speed() async throws {
+        let hits = try await k1Service().geocode(query: "k1 kart", limit: 3, zim: nil, kinds: nil)
+        XCTAssertTrue(hits.isEmpty)
+    }
+
+    func testGeographicQualifierSurvivesFallback() async throws {
+        let correct = try await k1Service().geocode(query: "Union Square, San Francisco", limit: 1, zim: nil, kinds: nil)
+        XCTAssertEqual(correct.first?.name, "Union Square Cafe")
+        let wrong = try await k1Service().geocode(query: "Union Square, Salinas", limit: 1, zim: nil, kinds: nil)
+        XCTAssertTrue(wrong.isEmpty)
     }
 
     func testExactNameStillWinsWithoutFallback() async throws {

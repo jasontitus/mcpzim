@@ -26,3 +26,18 @@ final class TTSNormalizationTests: XCTestCase {
         )
     }
 }
+
+final class AutomaticVoicePolicyTests: XCTestCase {
+    func testKokoroRequiresInstalledAssetsAndMeasuredHeadroom() {
+        XCTAssertTrue(TTSFactory.prefersKokoroAutomatically(assetsInstalled: true,
+            availableMemoryMB: 3500, thermallyConstrained: false))
+        for memory in [0.0, -1, 3499, Double.nan, Double.infinity] {
+            XCTAssertFalse(TTSFactory.prefersKokoroAutomatically(assetsInstalled: true,
+                availableMemoryMB: memory, thermallyConstrained: false))
+        }
+        XCTAssertFalse(TTSFactory.prefersKokoroAutomatically(assetsInstalled: false,
+            availableMemoryMB: 8000, thermallyConstrained: false))
+        XCTAssertFalse(TTSFactory.prefersKokoroAutomatically(assetsInstalled: true,
+            availableMemoryMB: 8000, thermallyConstrained: true))
+    }
+}

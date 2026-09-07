@@ -44,6 +44,8 @@ public struct FocusEntity: Equatable, Sendable, Hashable {
     /// what we substitute for a pronoun and what we feed back to a fetch.
     public var name: String
     public var kind: Kind
+    /// Archive that supplied this entity, when present in the tool result.
+    public var zim: String?
     /// ZIM entry path when known, so a follow-up re-fetches the exact article
     /// instead of re-running search and possibly landing on a variant.
     public var zimPath: String?
@@ -57,12 +59,14 @@ public struct FocusEntity: Equatable, Sendable, Hashable {
         name: String,
         kind: Kind,
         zimPath: String? = nil,
+        zim: String? = nil,
         lat: Double? = nil,
         lon: Double? = nil,
         lastTouchedTurn: Int = 0
     ) {
         self.name = name
         self.kind = kind
+        self.zim = zim
         self.zimPath = zimPath
         self.lat = lat
         self.lon = lon

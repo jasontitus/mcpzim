@@ -205,13 +205,12 @@ public actor DefaultZimService: ZimService {
     /// the pin to one full-scan's worth of records.
     private var chunkLRU: [(zim: String, prefix: String)] = []
     private var cachedChunkRecords = 0
-    /// Parsed fan-out leaf shards, budgeted separately from `chunks` —
-    /// see `loadLeafChunk`.
+    /// Raw search shards, byte-budgeted separately from decoded category chunks.
     private struct LeafKey: Hashable {
         let zim: String
         let leaf: String
     }
-    private var leafChunks: [LeafKey: (records: [[String: Any]], bytes: Int)] = [:]
+    private var leafChunks: [LeafKey: Data] = [:]
     private var leafLRU: [LeafKey] = []
     private var cachedLeafBytes = 0
     private var manifests: [String: [String: Int]] = [:]
@@ -730,7 +729,8 @@ public actor DefaultZimService: ZimService {
         // drift, minor casing differences — slower but catches the
         // cases the direct path missed.
         for pair in candidates {
-            if let hit = (try? pair.reader.searchTitles(query: withSpaces, limit: 1))?.first {
+            if let hit = (try? pair.reader.searchTitles(query: withSpaces, limit: 12))?
+                .first(where: { EntityResolutionPolicy.sameTitle($0.title, withSpaces) }) {
                 let parsed = try await articleSections(path: hit.path, zim: pair.name)
                 let wantSection = section ?? "lead"
                 let found = ArticleSections.find(wantSection, in: parsed.sections)
@@ -881,28 +881,20 @@ public actor DefaultZimService: ZimService {
                 // can't route to one leaf — pre-filter each leaf by
                 // substring and rank the survivors once. Early-exit
                 // when we already hold plenty of candidates; leaves go
-                // through their own small byte-budgeted LRU (not the
-                // chunk cache) so a hot-prefix scan can't pin hundreds
-                // of MB.
+                // through a raw-byte LRU and bounded decoded batches so a
+                // hot-prefix scan cannot pin whole decoded shard graphs.
                 var matching: [[String: Any]] = []
                 let q = attempt.lowercased()
                 let orderedLeaves = Geocoder.prioritizeSubChunkLeaves(
                     leaves, prefix: prefix, query: attempt)
                 for (leafIndex, leaf) in orderedLeaves.enumerated() {
                     if leaves.count == 1 {
-                        matching = try loadChunk(pair: pair, prefix: leaf)
+                        matching = try loadMatchingChunk(pair: pair, leaf: leaf, query: q)
                     } else {
-                        // JSONSerialization creates a large temporary object
-                        // graph for each multi-MB shard. Drain it per leaf and
-                        // retain only matching records plus the (budgeted)
-                        // cached shard; without this pool a 256-leaf `st`
-                        // scan peaked +1.45 GB on iPhone.
+                        // Bound decoded batches as well as draining each leaf.
+                        // Only matching records survive; the cache holds bytes.
                         let leafMatches: [[String: Any]] = try autoreleasepool {
-                            let records = try loadLeafChunk(pair: pair, leaf: leaf)
-                            return records.filter {
-                                (($0["n"] as? String) ?? "")
-                                    .lowercased().contains(q)
-                            }
+                            try loadMatchingChunk(pair: pair, leaf: leaf, query: q)
                         }
                         matching += leafMatches
 
@@ -911,7 +903,7 @@ public actor DefaultZimService: ZimService {
                         // and the shortest possible containing string). Stop
                         // immediately instead of reading the other 240 hot
                         // shards. Substring queries still fan out completely.
-                        if limit == 1,
+                        if limit == 1, attempt == query,
                            let exact = Geocoder.rank(
                                records: leafMatches, query: attempt,
                                limit: 1, kinds: filterSet
@@ -924,6 +916,17 @@ public actor DefaultZimService: ZimService {
                     }
                     if matching.count >= max(200, limit * 8), leaves.count > 1 {
                         break
+                    }
+                }
+                // A stripped city qualifier remains a hard constraint.
+                // "Union Square, San Francisco" must not become any Union Square.
+                if attempt != query {
+                    let suffix = String(query.dropFirst(attempt.count))
+                        .replacingOccurrences(of: #"^[,\s]*(?:in\s+)?"#, with: "", options: [.regularExpression, .caseInsensitive])
+                    let required = ArticleHeuristics.questionKeywords(suffix)
+                    matching = matching.filter { record in
+                        let location = ((record["l"] as? String) ?? "").lowercased()
+                        return !required.isEmpty && required.allSatisfy { location.contains($0) }
                     }
                 }
                 let ranked = Geocoder.rank(records: matching, query: attempt,
@@ -960,23 +963,8 @@ public actor DefaultZimService: ZimService {
         if let c = query.range(of: " in ", options: [.caseInsensitive]) {
             push(String(query[..<c.lowerBound]))
         }
-        // Progressive trailing-token drop, tried only after the variants
-        // above. Field evidence 2026-08-03: locate("k1 kart") threw
-        // noMatch even though the index holds "K1 Speed" — the query has
-        // no comma and no " in ", so the ONLY attempt was the full
-        // phrase, and name.contains("k1 kart") matches nothing. Dropping
-        // trailing tokens ("k1 kart" → "k1") lets Geocoder.rank surface
-        // the venue by prefix. Ordered last so exact/full matches always
-        // win; the ≥2-char floor keeps a bare initial from matching half
-        // the index; the cap keeps a long phrase from fanning out into a
-        // dozen chunk scans.
-        var tokens = (out.last ?? query).split(whereSeparator: { $0.isWhitespace })
-        while tokens.count > 1, out.count < 5 {
-            tokens.removeLast()
-            let candidate = tokens.joined(separator: " ")
-            if candidate.count < 2 { break }
-            push(candidate)
-        }
+        // Never remove arbitrary name tokens. A shortened name is a search
+        // suggestion, not permission to adopt another place's coordinates.
         return out
     }
 
@@ -1243,9 +1231,7 @@ public actor DefaultZimService: ZimService {
                     // reason the default kind filter excludes them — a name
                     // hit on "Descartes Street" answers nothing.
                     let matches: [[String: Any]] = try autoreleasepool {
-                        let records = leaves.count == 1
-                            ? try loadChunk(pair: pair, prefix: leaf)
-                            : try loadLeafChunk(pair: pair, leaf: leaf)
+                        let records = try loadMatchingChunk(pair: pair, leaf: leaf, query: term)
                         return records.filter { rec in
                             let t = ((rec["t"] as? String) ?? "").lowercased()
                             guard t == "poi" || t == "place" else { return false }
@@ -2126,39 +2112,40 @@ public actor DefaultZimService: ZimService {
         return parsed
     }
 
-    /// Fan-out leaf loader with its own LRU, kept apart from the chunk
-    /// cache: hot prefixes are by construction the most-geocoded names,
-    /// so re-decompressing + re-parsing dozens of multi-MB leaves per
-    /// geocode was pure repeat cost — but one hot prefix can also span
-    /// hundreds of leaves (the "453 chunks, 5.4 GB, jetsam" war story),
-    /// so the budget stays small. Raw shard bytes stand in for parsed
-    /// footprint.
-    private func loadLeafChunk(
-        pair: (name: String, reader: ZimReader), leaf: String
+    /// Cache raw JSON, whose byte size is measurable. Decode only small
+    /// batches, retaining matching rows rather than every shard dictionary.
+    private func loadMatchingChunk(
+        pair: (name: String, reader: ZimReader), leaf: String, query: String
     ) throws -> [[String: Any]] {
+        try Task.checkCancellation()
         let key = LeafKey(zim: pair.name, leaf: leaf)
+        let data: Data
         if let cached = leafChunks[key] {
             touchLeaf(key)
-            return cached.records
-        }
-        log("loading search-data/\(leaf).json from \(pair.name)…")
-        guard let entry = try pair.reader.read(path: "search-data/\(leaf).json") else {
-            return []
-        }
-        let parsed = (try? JSONSerialization.jsonObject(with: entry.content)) as? [[String: Any]] ?? []
-        leafChunks[key] = (records: parsed, bytes: entry.content.count)
-        leafLRU.append(key)
-        cachedLeafBytes += entry.content.count
-        while cachedLeafBytes > Self.maxCachedLeafBytes
-            || leafLRU.count > Self.maxCachedLeaves,
-            leafLRU.count > 1
-        {
-            let victim = leafLRU.removeFirst()
-            if let evicted = leafChunks.removeValue(forKey: victim) {
-                cachedLeafBytes -= evicted.bytes
+            data = cached
+        } else {
+            log("loading search-data/\(leaf).json from \(pair.name)…")
+            let owned: Data? = try autoreleasepool {
+                guard let entry = try pair.reader.read(path: "search-data/\(leaf).json") else { return nil }
+                // libzim exposes a zero-copy slice whose owner can be an
+                // entire decompressed cluster. Cache our own exact-size bytes,
+                // not a slice that silently pins a much larger allocation.
+                return entry.content.withUnsafeBytes { Data($0) }
+            }
+            guard let owned else { return [] }
+            data = owned
+            while !leafLRU.isEmpty && (cachedLeafBytes + data.count > Self.maxCachedLeafBytes
+                || leafLRU.count >= Self.maxCachedLeaves) {
+                let victim = leafLRU.removeFirst()
+                if let evicted = leafChunks.removeValue(forKey: victim) { cachedLeafBytes -= evicted.count }
+            }
+            if data.count <= Self.maxCachedLeafBytes {
+                leafChunks[key] = data
+                leafLRU.append(key)
+                cachedLeafBytes += data.count
             }
         }
-        return parsed
+        return try FilteredPlaceJSON.matching(data, query: query)
     }
 
     // MARK: - Chunk-cache LRU

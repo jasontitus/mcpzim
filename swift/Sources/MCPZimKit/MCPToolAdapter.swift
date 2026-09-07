@@ -495,6 +495,25 @@ public actor MCPToolAdapter {
         return MCPToolRegistry(tools: tools)
     }
 
+    /// Host-only shortcut: accepts only an exact saved ZIM result. Model tool
+    /// arguments cannot create a pin by supplying invented coordinates.
+    public static func savedMapResult(intent: DirectIntent, focus: ConversationFocus) -> [String: Any]? {
+        guard intent.toolName == "locate",
+              case .string(let name) = intent.args["place"],
+              case .double(let lat) = intent.args["lat"],
+              case .double(let lon) = intent.args["lon"],
+              lat.isFinite, lon.isFinite, abs(lat) <= 90, abs(lon) <= 180,
+              let saved = focus.lastList.first(where: {
+                  $0.kind == .place && $0.name == name && $0.lat == lat && $0.lon == lon
+              }) else { return nil }
+        let hit = Place(name: saved.name, kind: "poi", lat: lat, lon: lon)
+        var result = encodeNearPlaces(query: name, resolved: hit, radius: 0,
+            result: NearPlacesResult(totalInRadius: 1, breakdown: ["poi": 1],
+                                     results: [(place: hit, distanceMeters: 0)]))
+        if let zim = saved.zim { result["zim"] = zim }
+        return result
+    }
+
     /// Dispatch a single tool call. `args` is the JSON object decoded from the
     /// host transport. Returns a JSON-encodable dictionary.
     public func dispatch(tool: String, args: [String: Any]) async throws -> [String: Any] {
@@ -1039,6 +1058,13 @@ public actor MCPToolAdapter {
                 requested: title,
                 candidates: candidates.filter { zim == nil || $0.zim == zim }, limit: 3
             )
+            if !suggestions.isEmpty {
+                let rows = candidates.filter { suggestions.contains($0.title) && (zim == nil || $0.zim == zim) }
+                    .map { ["title": $0.title, "path": $0.path, "zim": $0.zim] }
+                return ["error": "Article identity needs confirmation", "ambiguous": true,
+                        "resolution": "unconfirmed_title", "requested_title": title,
+                        "suggestions": suggestions, "disambiguation": rows]
+            }
             return [
                 "error": "no article titled \"\(title)\" in the offline Wikipedia",
                 "requested_title": title,

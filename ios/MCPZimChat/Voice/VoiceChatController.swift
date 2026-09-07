@@ -1032,13 +1032,9 @@ public final class VoiceChatController {
 
     /// `os_proc_available_memory` reflects the process's current iOS jetsam
     /// allowance, which is more useful here than physical device RAM or RSS.
-    /// Other platforms return zero and the shared policy permits eager TTS.
+    /// macOS uses the same live reclaimable-memory estimate as engine selection.
     private static func availableMemoryMB() -> Double {
-        #if os(iOS)
-        return Double(os_proc_available_memory()) / (1024 * 1024)
-        #else
-        return 0
-        #endif
+        TTSFactory.availableMemoryMB()
     }
 
     /// Apply the same display-time scrubbing the chat view uses, so

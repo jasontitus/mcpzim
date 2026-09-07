@@ -2899,9 +2899,10 @@ public final class ChatSession {
                     // ("that one", "the war") binds without a re-ask.
                     focus.setLastList([picked])
                     groundedQuestionOverride = pending.question
-                    let intent = DirectIntent(
-                        toolName: "article_overview",
-                        args: ["title": .string(articleTitle)])
+                    let mapIntent = picked.kind == .place
+                        ? IntentRouter.mapSelectionIntent(pending.question, focus: focus) : nil
+                    let intent = mapIntent ?? DirectIntent(
+                        toolName: "article_overview", args: ["title": .string(articleTitle)])
                     let handled = await executeDirectIntent(intent)
                     groundedQuestionOverride = nil
                     if handled {
@@ -4709,14 +4710,14 @@ public final class ChatSession {
 
         let first = await answerFromZIMEvidence(
             state: state, question: question,
-            retrievalQuestion: contextualQuestion)
+            retrievalQuestion: contextualQuestion, deferMissingAnswer: true)
         // Reactive corpus fallback: the coverage gate is lexical, so a
         // question whose keywords merely APPEAR in the articles in hand
         // ("why did he invade Ukraine?" while holding the Crimea-annexation
         // article) skips the pull, and the model rightly answers "I don't
         // see it". Treat that answer as the coverage signal: pull the best
         // corpus article for the question and regenerate ONCE.
-        if Self.looksLikeDontSee(first), let adapter {
+        if !first, let adapter {
             // FIRST: retry within the articles already in hand, excluding
             // every section the model has seen — cheaper than a corpus
             // pull and usually where the answer actually is (2026-08-02:
@@ -4726,8 +4727,8 @@ public final class ChatSession {
             let retried = await answerFromZIMEvidence(
                 state: state, question: question,
                 retrievalQuestion: contextualQuestion,
-                excludeTriedPassages: true)
-            if !Self.looksLikeDontSee(retried) {
+                excludeTriedPassages: true, deferMissingAnswer: true)
+            if retried {
                 debug("discuss: in-article retry answered after a don't-see",
                       category: "Router")
                 state.lastQuestion = question
@@ -4761,7 +4762,14 @@ public final class ChatSession {
                 _ = await answerFromZIMEvidence(
                     state: state, question: question,
                     retrievalQuestion: contextualQuestion)
+                return
             }
+        }
+        guard !Task.isCancelled else { return }
+        if !first {
+            let missing = SourceBoundAnswer.missingAnswer(topic: state.topic)
+            appendAssistant(missing)
+            debug(missing, category: "Assistant")
         }
     }
 
@@ -4832,8 +4840,10 @@ public final class ChatSession {
     private func answerFromZIMEvidence(
         state: DiscussionState, question: String,
         retrievalQuestion: String? = nil,
-        excludeTriedPassages: Bool = false
-    ) async -> String {
+        excludeTriedPassages: Bool = false,
+        deferMissingAnswer: Bool = false
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
         preemptLlamaPromptOptimizationForGroundedTurn()
         let resolvedQuestion = retrievalQuestion ?? question
         // Inspect the anchor and relevant full sections. No model context
@@ -4852,6 +4862,33 @@ public final class ChatSession {
         let rankingSources = anchorSnapback
             ? Array(state.sources.prefix(1))
             : state.sources
+        // Relationship questions inspect in-hand source sections before a
+        // semantic top-k cut. A relevant answer must not disappear merely
+        // because an influence/legacy section wins embedding similarity.
+        if EvidenceQuestion.parse(resolvedQuestion) != nil {
+            let inHand = rankingSources.flatMap { source in
+                source.sections.map { section in
+                    SourceBoundAnswer.Passage(article: source.title,
+                        section: section.title.isEmpty ? "lead" : section.title,
+                        library: state.sourceLibraries[source.title] ?? state.zim,
+                        text: section.text)
+                }
+            }
+            let answer = SourceBoundAnswer.answer(question: resolvedQuestion,
+                topic: state.topic, passages: inHand,
+                maxSentences: longerReplies ? 6 : 3,
+                maxCharacters: longerReplies ? 2_200 : 1_200)
+            if answer.hasEvidence {
+                debug("relationship evidence accepted from in-hand ZIM sections", category: "Grounding")
+                presentSourceBoundAnswer(question: resolvedQuestion,
+                    topic: state.topic, passages: inHand, selectedReply: answer)
+                if let idx = messages.indices.last, messages[idx].role == .assistant {
+                    messages[idx].suggestions = groundedSuggestions(state: state,
+                        sections: state.sources.first?.sections ?? [], after: question)
+                }
+                return true
+            }
+        }
         let ranked: [(article: String, section: ArticleSection)]
         if !state.sectionEmbeddings.isEmpty,
            let questionVector = await SemanticReranker.shared.embedText(
@@ -4921,7 +4958,7 @@ public final class ChatSession {
             "\($0.article)§\($0.section.title.isEmpty ? "lead" : $0.section.title)"
         }.joined(separator: " | "), category: "Chat")
 
-        guard !Task.isCancelled else { return "" }
+        guard !Task.isCancelled else { return false }
         let passages = picked.map {
             SourceBoundAnswer.Passage(article: $0.article,
                 section: $0.section.title.isEmpty ? "lead" : $0.section.title,
@@ -4933,14 +4970,18 @@ public final class ChatSession {
             ? groundedEvidenceSelection?.passageKeys ?? [] : []
         groundedEvidenceSelection = GroundedEvidenceSelection(topic: state.topic,
             passageKeys: previousKeys.union(picked.map(sectionKey)))
-        let answer = presentSourceBoundAnswer(question: resolvedQuestion,
-            topic: state.topic, passages: passages)
+        let answer = SourceBoundAnswer.answer(question: resolvedQuestion, topic: state.topic,
+            passages: passages, maxSentences: longerReplies ? 6 : 3,
+            maxCharacters: longerReplies ? 2_200 : 1_200)
+        presentSourceBoundAnswer(question: resolvedQuestion,
+            topic: state.topic, passages: passages, deferMissingAnswer: deferMissingAnswer,
+            selectedReply: answer)
         if let idx = messages.indices.last, messages[idx].role == .assistant {
             let sections = state.sources.first?.sections ?? state.sources.flatMap(\.sections)
             messages[idx].suggestions = groundedSuggestions(state: state,
                 sections: sections, after: question)
         }
-        return answer
+        return answer.hasEvidence
     }
 
     /// The sole factual-prose renderer: complete sentences read from ZIM
@@ -4949,13 +4990,19 @@ public final class ChatSession {
     @discardableResult
     private func presentSourceBoundAnswer(question: String, topic: String,
                                           passages: [SourceBoundAnswer.Passage],
-                                          sectionOverview: Bool = false) -> String {
+                                          sectionOverview: Bool = false,
+                                          deferMissingAnswer: Bool = false,
+                                          selectedReply: SourceBoundAnswer.Reply? = nil) -> String {
         let started = Date()
-        let reply = SourceBoundAnswer.answer(question: question, topic: topic,
+        let reply = selectedReply ?? SourceBoundAnswer.answer(question: question, topic: topic,
             passages: passages, maxSentences: longerReplies ? 6 : 3,
             maxCharacters: longerReplies ? 2_200 : 1_200,
             sectionOverview: sectionOverview)
         let text = reply.hasEvidence ? reply.text : SourceBoundAnswer.missingAnswer(topic: topic)
+        if !reply.hasEvidence && deferMissingAnswer {
+            debug("no evidence in this retrieval attempt; retrying before presentation", category: "Grounding")
+            return text
+        }
         appendAssistant(text)
         if let idx = messages.indices.last, messages[idx].role == .assistant {
             messages[idx].rawAssistantText = text
@@ -5128,9 +5175,13 @@ public final class ChatSession {
         do {
             let dispatchStarted = ProcessInfo.processInfo.systemUptime
             let dispatchMemory = MemoryStats.physFootprintMB()
-            let fullResult = try await adapter.dispatch(
-                tool: intent.toolName, args: dictArgs
-            )
+            let fullResult: [String: Any]
+            if let saved = MCPToolAdapter.savedMapResult(intent: intent, focus: focus) {
+                fullResult = saved
+                debug("map selection: reused saved ZIM coordinates", category: "Router")
+            } else {
+                fullResult = try await adapter.dispatch(tool: intent.toolName, args: dictArgs)
+            }
             try Task.checkCancellation()
             if intent.toolName == "article_overview",
                presentArticleAmbiguity(args: dictArgs, result: fullResult) { return true }
@@ -5370,44 +5421,10 @@ public final class ChatSession {
                             }
                         }
                     }
-                    // Descriptive-phrase rescue: "the ones Einstein
-                    // predicted" is a DESCRIPTION, not a title — search
-                    // for it (folding in the prior subject when the
-                    // phrase is deictic) and open the top hit. Real
-                    // capture 2026-07-02: "gravity waves" resolved to
-                    // the fluid-dynamics article; the correction "No, I
-                    // meant the ones Einstein predicted" was dispatched
-                    // as a literal title and dead-ended.
-                    if let title = dictArgs["title"] as? String {
-                        // Content words only — deictic filler ("the ones")
-                        // dragged the search to the wrong article.
-                        let kws = ArticleHeuristics.questionKeywords(title)
-                        var query = kws.isEmpty ? title : kws.joined(separator: " ")
-                        let lower = title.lowercased()
-                        if lower.hasPrefix("the one") || lower.hasPrefix("that one")
-                            || lower.hasPrefix("those "),
-                           let prior = focus.primaryEntity?.name {
-                            query = prior + " " + query
-                        }
-                        if let search = try? await adapter.dispatch(
-                            tool: "search", args: ["query": query, "limit": 3]),
-                           let hits = search["hits"] as? [[String: Any]],
-                           let topTitle = hits.first?["title"] as? String,
-                           !topTitle.isEmpty,
-                           topTitle.lowercased() != lower
-                        {
-                            if let second = try? await adapter.dispatch(
-                                tool: "article_overview", args: ["title": topTitle]),
-                               IntentRouter.articleOverviewResultIsUsable(second)
-                            {
-                                debug("article miss — search rescue “\(query)” → “\(topTitle)”",
-                                      category: "Router")
-                                return await executeDirectIntent(DirectIntent(
-                                    toolName: "article_overview",
-                                    args: ["title": .string(topTitle)]))
-                            }
-                        }
-                    }
+                    // Search results are suggestions, never identity proof.
+                    // The adapter already offers plausible title choices. If
+                    // none survive, stop here instead of silently opening a
+                    // second search's top hit ("The Pit Bar" → "Barrow pit").
                     let synth = IntentRouter.synthesizeArticleMissReply(
                         args: dictArgs, fullResult: fullResult)
                     updateAssistant(synth)
@@ -5654,6 +5671,8 @@ public final class ChatSession {
                 if await executeDirectIntent(retry) { return true }
             }
             if placesAndRouting.contains(intent.toolName), isGeocodeMiss {
+                focus.recordPlaceSearch(toolName: intent.toolName, args: dictArgs,
+                    result: ["error": errText])
                 let subject = placeSubject(from: dictArgs) ?? "that place"
                 let miss = "I can't find \"\(subject)\" in the loaded maps. "
                     + "The current streetzim may not cover that area — "
@@ -5777,6 +5796,8 @@ public final class ChatSession {
                     name: name, kind: .place,
                     zimPath: (row["wiki_path"] as? String)
                         ?? (row["path"] as? String),
+                    zim: (row["zim"] as? String) ?? (args["zim"] as? String)
+                        ?? (result["zim"] as? String),
                     lat: dbl(row["lat"]), lon: dbl(row["lon"]))
             }
             if !list.isEmpty { focus.setLastList(list) }

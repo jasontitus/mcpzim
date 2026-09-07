@@ -485,7 +485,12 @@ private struct VoiceModelSection: View {
 
     @ViewBuilder
     private var backendControls: some View {
-        if selectedBackend == .supertonic {
+        if selectedBackend == .automatic {
+            Text("Prefers Kokoro when its voice is installed and memory headroom is healthy. Uses a lighter voice when needed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            kokoroControls
+        } else if selectedBackend == .supertonic {
             #if canImport(FluidAudio)
             Picker("Voice", selection: $selectedSupertonicVoice) {
                 ForEach(SupertonicVoicePreference.available, id: \.self) { voice in

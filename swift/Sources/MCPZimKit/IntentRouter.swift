@@ -299,6 +299,9 @@ public enum IntentRouter {
             ])
         }
 
+        // A map command is an action on a saved POI, not an article request.
+        if let map = mapSelectionIntent(text, focus: focus) { return map }
+
         // Context-aware fast path. When the host supplies a conversation
         // focus and this turn reads as a follow-up that BINDS to a known
         // entity ("who built it", "the second one", "tell me more"), resolve
@@ -321,6 +324,22 @@ public enum IntentRouter {
             #"^(?:what(?:'s|\s+is)\s+here|where\s+am\s+i|what(?:'s|\s+is)\s+(?:around|near)\s+(?:me|here)|what\s+do\s+you\s+see)$"#)
         {
             return DirectIntent(toolName: "what_is_here", args: [:])
+        }
+
+        // A category and named center outrank generic "where is <name>".
+        // Never send the whole recommendation request to the name geocoder.
+        if let m = match(lower, pattern:
+            #"^(?:please\s+)?where(?:'s|\s+is|\s+are)\s+(?:(?:a|an|the|some)\s+)?(?:(?:good|best|nice|nearest|closest)\s+)?(coffee shops?|cafes?|cafés?|restaurants?|bars?|pubs?|museums?|parks?|hotels?|pharmacies|hospitals?|libraries)\s+(?:in|near|around|at)\s+(.+)$"#) {
+            let kind = placeCategoryFollowup(m[0]) ?? singularize(m[0])
+            if ["here", "me"].contains(m[1]) {
+                guard let here = currentLocation else { return nil }
+                return DirectIntent(toolName: "near_places", args: [
+                    "lat": .double(here.lat), "lon": .double(here.lon),
+                    "kinds": .array([.string(kind)]), "radius_km": .double(defaultRadiusKm)])
+            }
+            return DirectIntent(toolName: "near_named_place", args: [
+                "place": .string(m[1]), "kinds": .array([.string(kind)]),
+                "radius_km": .double(defaultRadiusKm)])
         }
 
         // Explicit map requests retain their category after a polite wrapper.
@@ -1373,6 +1392,46 @@ public enum IntentRouter {
     /// Ambiguous descriptive selectors ("the old one" matching several) and
     /// pure cache-answerable follow-ups are deliberately left to the LLM loop
     /// (return `nil`) — the router only short-circuits the unambiguous picks.
+    public static func mapSelectionIntent(
+        _ raw: String, focus: ConversationFocus?
+    ) -> DirectIntent? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        guard let groups = match(text, pattern:
+            #"^(?:please\s+)?(?:show(?:\s+me)?|put|pin|locate)\s+(.+?)\s+on\s+(?:the\s+)?map$"#)
+        else { return nil }
+        let subject = groups[0]
+        var args: [String: AnyJSONValue] = ["place": .string(subject)]
+        if let focus {
+            let places = focus.lastList.filter { $0.kind == .place }
+            func nameKey(_ name: String) -> String {
+                name.lowercased().replacingOccurrences(of: #"^the\s+"#, with: "",
+                    options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let exact = places.filter { nameKey($0.name) == nameKey(subject) }
+            if exact.count > 1 { return nil }
+            let resolved = ReferenceResolver.resolve(subject, focus: focus)
+            // Only a reference phrase may borrow coordinates. A fresh name or
+            // an explicit geographic qualifier must get its own lookup.
+            let isReference = matches(subject.lowercased(), pattern:
+                #"^(?:it|that|this|that one|this one|(?:the )?(?:first|second|third|fourth|fifth|last|other)(?: one)?|number [1-9]|the (?:bar|cafe|coffee shop|restaurant|museum|park|hotel|place))$"#)
+            let picked = exact.first ?? (isReference ? resolved.boundEntity : nil)
+            if let picked, picked.kind == .place {
+                args["place"] = .string(picked.name)
+                if let lat = picked.lat, let lon = picked.lon,
+                   lat.isFinite, lon.isFinite, abs(lat) <= 90, abs(lon) <= 180 {
+                    args["lat"] = .double(lat)
+                    args["lon"] = .double(lon)
+                }
+                if let zim = picked.zim { args["zim"] = .string(zim) }
+            } else if isReference, case .ambiguous = resolved.binding {
+                return nil // The host must ask which listed place.
+            }
+        }
+        return DirectIntent(toolName: "locate", args: args)
+    }
+
     static func continuationIntent(
         _ raw: String, focus: ConversationFocus
     ) -> DirectIntent? {
@@ -2360,6 +2419,10 @@ public enum IntentRouter {
             ?? (args["title"] as? String) ?? "that"
         let suggestions = (fullResult["suggestions"] as? [String]) ?? []
         if (fullResult["ambiguous"] as? Bool) == true {
+            if fullResult["resolution"] as? String == "unconfirmed_title" {
+                return "I couldn't confirm an exact article for “\(title)”. Did you mean: "
+                    + suggestions.prefix(6).joined(separator: ", ") + "?"
+            }
             if suggestions.isEmpty { return "“\(title)” has more than one meaning in the offline Wikipedia. Please specify the place or topic you mean." }
             return "“\(title)” can refer to more than one place or topic in the offline Wikipedia. Which did you mean: "
                 + suggestions.prefix(6).joined(separator: ", ") + "?"
