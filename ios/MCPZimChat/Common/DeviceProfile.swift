@@ -143,18 +143,20 @@ enum ModelCatalog {
     /// iOS caps a process at ~6 GB (6144 MB with `increased-memory-limit`)
     /// regardless of physical RAM, and the advertised peak underestimates
     /// the load-time spike. 2026-09-06 device crash: Bonsai-27B (5.5 GB
-    /// advertised, ~3.8 GB weights alone) passed a 5.5 GB budget on an
-    /// 8 GB+ phone and OOM-jetsamed the process because a ~1 GB library +
-    /// reranker + TTS were already resident. We reserve for ALL of that and
-    /// stay under 5.0 GB — so Bonsai (5.5) is rejected on every iPhone
-    /// (it is a Mac-class model), LFM2.5 (3.7) fits, Gemma 3 4B FT (3.2)
-    /// fits. macOS swaps, so everything fits there.
+    /// advertised, ~3.8 GB weights) passed the 5.5 GB budget on an 8 GB+
+    /// phone and was jetsamed because the ~1.8 GB semantic reranker +
+    /// speech recognizer were loading at the SAME time as the model. We
+    /// now defer those to `postSetupPrewarm` (after the model is resident),
+    /// so the competing footprint is gone; Bonsai fits an 8 GB+ phone
+    /// again. Budget stays 5.5 GB — Bonsai (5.5) is allowed on 8 GB+
+    /// devices, rejected on snug (where `min(gb−2.5,·)` is < 5.5); LFM2.5
+    /// (3.7) and Gemma 3 4B FT (3.2) fit everywhere. macOS swaps.
     static func modelFitsDevice(_ approximateMemoryMB: Int) -> Bool {
         #if os(macOS)
         return true
         #else
         let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_000_000_000
-        let budgetGB = min(gb - 2.5, 5.0)
+        let budgetGB = min(gb - 2.5, 5.5)
         return Double(approximateMemoryMB) / 1000.0 <= budgetGB
         #endif
     }
