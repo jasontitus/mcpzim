@@ -608,7 +608,7 @@ public final class ChatSession {
         // has already been transcribed and submitted.
         LocationFetcher.start()
         refreshLocationIfStale()
-        prewarmBackgroundCaches()
+        await prewarmBackgroundCaches()
         await runSetupIfNeeded()
         // `runSetupIfNeeded` now starts llama.cpp's static-prefix work here,
         // after the model becomes usable, without blocking the composer.
@@ -911,35 +911,22 @@ public final class ChatSession {
             .appendingPathComponent("llama-\(key.prefix(24)).bin")
     }
 
-    public func prewarmBackgroundCaches() {
+    public func prewarmBackgroundCaches() async {
         #if !MCPZIM_EVAL
         if SpeechRecognizerFactory.prewarmIfAuthorized() {
             debug("prewarmed on-device speech recognizer (no microphone access)",
                   category: "Voice")
         }
         #endif
-        Task { [weak self] in
-            guard let self else { return }
-            let started = Date()
-            await self.service?.prewarmStreetzims()
-            let dt = Date().timeIntervalSince(started)
-            await MainActor.run {
-                self.debug(String(format: "prewarmed streetzims in %.2fs", dt),
-                           category: "ZimSvc")
-            }
-        }
-        Task { [weak self] in
-            // Poke the semantic reranker so `NLContextualEmbedding`
-            // loads before the first search instead of blocking the
-            // first tool_call round-trip.
-            let started = Date()
-            _ = await SemanticReranker.shared.rerank(query: "warmup", hits: [])
-            let dt = Date().timeIntervalSince(started)
-            await MainActor.run {
-                self?.debug(String(format: "prewarmed reranker in %.2fs", dt),
-                            category: "Rerank")
-            }
-        }
+        // Poke the semantic reranker so `NLContextualEmbedding`
+        // loads before the first search instead of blocking the
+        // first tool_call round-trip.
+        let started = Date()
+        _ = await SemanticReranker.shared.rerank(query: "warmup", hits: [])
+        await self.service?.prewarmStreetzims()
+        let dt = Date().timeIntervalSince(started)
+        debug(String(format: "prewarmed streetzims in %.2fs", dt),
+              category: "ZimSvc")
         // NOTE: Gemma prompt-cache prewarm disabled — racing with
         // the user's first query caused the app to hang (two
         // `ModelContainer` reads serialise, and tearing down the
@@ -1891,8 +1878,20 @@ public final class ChatSession {
         // container already exists), so there's no way this double-loads.
         // Test harnesses pass `autoLoadOnInit: false` so they can control
         // memory probing around the load.
+        //
+        // 2026-09-06 device crash: on a phone with a large library (127 GB
+        // wikipedia + 3.3 GB streetzim) the Bonsai-27B auto-load raced the
+        // speech-recognition / streetzim / reranker prewarm storm. Both hit
+        // a memory warning at ~2.7 GB and the process was jetsamed BEFORE
+        // `openModel` ran — no crash report, the app just died on launch
+        // every time. Serializing the model load AFTER the prewarm storm
+        // lets the transient prewarm memory come and go first, and gives
+        // the memory-warning handler a settled state to work in.
         if autoLoadOnInit {
-            Task { @MainActor in await self.loadSelectedModel() }
+            Task { @MainActor in
+                await self.prewarmBackgroundCaches()
+                await self.loadSelectedModel()
+            }
         }
         // Subscribe to the LocationFetcher singleton. Every CL delegate
         // callback pushes a new coord into `currentLocation` with zero
