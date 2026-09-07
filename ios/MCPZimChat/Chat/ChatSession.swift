@@ -47,6 +47,30 @@ public final class ChatSession {
     /// operating point. The provider itself is registered only on macOS.
     public static let ternaryBonsai27BModelID = "bonsai-27b-q2-ternary-gguf"
 
+    /// Resolve the launch-time selected model: the saved choice when it
+    /// exists *and* plausibly fits this device, otherwise the
+    /// capacity-recommended one. The "crashes on start" OOM was Bonsai-27B
+    /// (saved) being loaded on a phone where a large library was already
+    /// resident — the model passed the old 5.5 GB budget and then jetsam'd
+    /// the process before `openModel` finished. Falling back to a model that
+    /// fits turns that abort into a working app.
+    private static func defaultModel(
+        providers: [any ModelProvider], resolvedId: String?
+    ) -> any ModelProvider {
+        if let id = resolvedId,
+           let p = providers.first(where: { $0.id == id }),
+           ModelCatalog.modelFitsDevice(p.approximateMemoryMB) {
+            return p
+        }
+        if let rec = providers.first(where: { $0.id == ModelCatalog.recommendedModelID() }) {
+            return rec
+        }
+        let fitting = providers
+            .filter { ModelCatalog.modelFitsDevice($0.approximateMemoryMB) }
+            .sorted { $0.approximateMemoryMB < $1.approximateMemoryMB }
+        return fitting.first ?? providers[0]
+    }
+
     // MARK: - Library (opened ZIMs)
 
     public struct LibraryEntry: Identifiable, Sendable {
@@ -610,6 +634,7 @@ public final class ChatSession {
         refreshLocationIfStale()
         await prewarmBackgroundCaches()
         await runSetupIfNeeded()
+        await postSetupPrewarm()
         // `runSetupIfNeeded` now starts llama.cpp's static-prefix work here,
         // after the model becomes usable, without blocking the composer.
         // Direct routes can still answer immediately; a generic LLM turn
@@ -912,29 +937,44 @@ public final class ChatSession {
     }
 
     public func prewarmBackgroundCaches() async {
+        // 2026-09-06 device kill: on a phone holding a 127 GB wikipedia +
+        // 3.3 GB streetzim library, the launch-time reranker warmup
+        // (~1.8 GB NLContextualEmbedding) landed right on top of the
+        // mapped ZIM pages and pushed resident memory past the jetsam
+        // line BEFORE the model load could run — the process died
+        // during `runSetupIfNeeded`, no crash report. The reranker is
+        // only needed on the first `search` tool_call; defer it until
+        // after the model is up (see `postSetupPrewarm`).
+        //
+        // The streetzim prewarm stays inline — it reads manifest.json
+        // only (+339 MB transient) and finishes in <0.2 s.
+        await self.service?.prewarmStreetzims()
+        debug("prewarmed streetzims", category: "ZimSvc")
+        // NOTE: Gemma prompt-cache prewarm disabled — racing with
+        // the user's first query caused the app to hang (two
+        // `ModelContainer` reads serialise, and tearing down the
+        // prewarm's inner stream while the user's task awaited the
+        // actor blocked indefinitely). Cross-turn cache hits still
+        // work via the LCP match in `Gemma4Provider.generate`.
+    }
+
+    /// Post-setup warmups that are worth having warm but are NOT worth
+    /// risking the launch memory budget: the semantic reranker (~1.8 GB
+    /// NLContextualEmbedding) and the on-device speech recognizer.
+    /// Called once `runSetupIfNeeded` completes, so the model weights
+    /// are resident before either of these allocates.
+    public func postSetupPrewarm() async {
         #if !MCPZIM_EVAL
         if SpeechRecognizerFactory.prewarmIfAuthorized() {
             debug("prewarmed on-device speech recognizer (no microphone access)",
                   category: "Voice")
         }
         #endif
-        // Poke the semantic reranker so `NLContextualEmbedding`
-        // loads before the first search instead of blocking the
-        // first tool_call round-trip.
         let started = Date()
         _ = await SemanticReranker.shared.rerank(query: "warmup", hits: [])
-        await self.service?.prewarmStreetzims()
         let dt = Date().timeIntervalSince(started)
-        debug(String(format: "prewarmed streetzims in %.2fs", dt),
-              category: "ZimSvc")
-        // NOTE: Gemma prompt-cache prewarm disabled — racing with
-        // the user's first query caused the app to hang (two
-        // `ModelContainer` reads serialise, and tearing down the
-        // prewarm's inner stream while the user's task awaited the
-        // actor blocked indefinitely). Cross-turn cache hits still
-        // work via the LCP match in `Gemma4Provider.generate`. The
-        // disk-serialised cache (planned next) avoids this race by
-        // loading state directly without touching `container.perform`.
+        debug(String(format: "prewarmed reranker in %.2fs", dt),
+              category: "Rerank")
     }
 
     /// Run a silent 1-token "hi" generation so Gemma's KV cache is
@@ -1817,9 +1857,8 @@ public final class ChatSession {
         } else if savedId == gemma3_4b_gguf.id {
             resolvedId = gemma3_4b_gguf_ft.id
         }
-        self.selectedModel = providers.first(where: { $0.id == resolvedId })
-            ?? providers.first(where: { $0.id == ModelCatalog.recommendedModelID() })
-            ?? lfm25_ft
+        self.selectedModel = Self.defaultModel(providers: providers,
+                                               resolvedId: resolvedId)
         #endif
         #else
         // Give the Mac app the same initial Bonsai operating point as the
