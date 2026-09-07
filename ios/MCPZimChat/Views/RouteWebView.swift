@@ -584,20 +584,8 @@ private final class RouteWebCoordinator: NSObject, WKNavigationDelegate, WKScrip
             decisionHandler(.allow)
             return
         }
-        guard navigationAction.navigationType == .linkActivated,
-              let url,
-              zimExternalOpenSchemes.contains(scheme)
-        else {
-            log?("blocked navigation: \(url?.absoluteString ?? "?")")
-            decisionHandler(.cancel)
-            return
-        }
+        // Only the isolated click bridge may open external links.
         decisionHandler(.cancel)
-        #if canImport(UIKit)
-        UIApplication.shared.open(url)
-        #elseif canImport(AppKit)
-        NSWorkspace.shared.open(url)
-        #endif
     }
 
     // MARK: - JS bridge
@@ -747,6 +735,7 @@ private func makeWebView(
     let script = WKUserScript(source: captureJS, injectionTime: .atDocumentStart, forMainFrameOnly: false)
     userContent.addUserScript(script)
     config.userContentController = userContent
+    ZimUserActionBridge.install(on: config)
     if #available(macOS 13.3, iOS 16.4, *) {
         config.preferences.isElementFullscreenEnabled = true
     }

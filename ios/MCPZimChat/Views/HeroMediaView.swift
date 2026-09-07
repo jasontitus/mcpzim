@@ -12,6 +12,7 @@
 
 import SwiftUI
 import WebKit
+import MCPZimKit
 
 @MainActor
 struct HeroMediaView: View {
@@ -296,18 +297,18 @@ private func mediaHTML(spec: HeroMediaView.Spec) -> String {
     let body: String
     if spec.isVideo {
         body = """
-        <video src="\(spec.mediaURL)" controls playsinline
+        <video src="\(ZimWebPolicy.escapeAttribute(spec.mediaURL))" controls playsinline
                style="width:100%;height:100%;object-fit:contain;background:#000;"></video>
         """
     } else {
         body = """
-        <img src="\(spec.mediaURL)"
+        <img src="\(ZimWebPolicy.escapeAttribute(spec.mediaURL))"
              style="width:100%;height:100%;object-fit:cover;background:#eee;"/>
         """
     }
     return """
     <!doctype html>
-    <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+    <html><head>\(ZimWebPolicy.meta)<meta name="viewport" content="width=device-width, initial-scale=1">
     <style>html,body{margin:0;padding:0;height:100%;background:#000;}</style>
     </head><body>\(body)</body></html>
     """

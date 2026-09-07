@@ -6,6 +6,7 @@ import MCPZimKit
 
 struct LibraryView: View {
     @Environment(ChatSession.self) private var session
+    @ObservedObject private var downloads = ZimDownloadManager.shared
     @State private var showImporter = false
     @State private var showOfflineSetup = false
     @State private var pendingDelete: ChatSession.LibraryEntry?
@@ -34,7 +35,7 @@ struct LibraryView: View {
                         // coarsely), so the spinner is the most
                         // reliable "the app isn't frozen" signal.
                         switch session.modelState {
-                        case .downloading, .loading:
+                        case .downloading, .waitingForNetwork, .loading:
                             ProgressView()
                                 .progressViewStyle(.circular)
                                 .controlSize(.small)
@@ -44,6 +45,11 @@ struct LibraryView: View {
                         Text(modelStateDescription)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                if let item = modelDownloadItem {
+                    ModelDownloadRow(item: item, downloads: downloads) {
+                        Task { await session.select(modelId: session.selectedModel.id) }
                     }
                 }
                 Text("The selected model downloads automatically the first time, resumes interrupted downloads, and runs entirely on this device afterward.")
@@ -128,13 +134,10 @@ struct LibraryView: View {
                 Toggle(isOn: $bindable.longerReplies) {
                     Text("Longer replies")
                 }
-                Text("Doubles the per-turn token budget (\(DeviceProfile.current.maxReplyTokens) → \(DeviceProfile.current.maxReplyTokens * 2) tokens) so the model can finish longer answers without clipping. Costs extra generation time and KV-cache memory.")
+                Text("Includes more ZIM excerpts in discussion answers and gives tool planning more time to finish.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Toggle(isOn: $bindable.routingSkipModelReply) {
-                    Text("Fast routing replies")
-                }
-                Text("Skip the model's final summary for routing questions (\"directions to X\") — the distance / first turns come straight from the tool. Saves about 5 s per route query; reply wording is more mechanical.")
+                Text("Route answers use distances and directions from the offline map.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -206,7 +209,7 @@ struct LibraryView: View {
 
                 Toggle(isOn: Binding(
                     get: { UserDefaults.standard.bool(forKey: DiagnosticsUploader.optInKey) },
-                    set: { UserDefaults.standard.set($0, forKey: DiagnosticsUploader.optInKey) }
+                    set: { DiagnosticsUploader.setEnabled($0) }
                 )) {
                     Text("Share debug logs for analysis")
                 }
@@ -264,7 +267,7 @@ struct LibraryView: View {
                 Link(destination: URL(string: "https://tiltastech-zimfo.web.app/licenses")!) {
                     Label("Licenses & attribution", systemImage: "doc.text")
                 }
-                Text("Questions, transcripts, article titles, ZIM filenames, and GPS coordinates stay on this device. Zimfo sends limited Firebase analytics and diagnostics; see the policy for details.")
+                Text("Questions, transcripts, article titles, ZIM filenames, and GPS coordinates stay on this device unless you choose to share debug logs or a report. Zimfo also sends limited usage and performance analytics; see the policy for details.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -344,6 +347,7 @@ struct LibraryView: View {
         switch session.modelState {
         case .notLoaded:          return "Not loaded. Pick a model above."
         case .loading:            return "Loading weights…"
+        case .waitingForNetwork:  return "Waiting for network…"
         case .downloading(let p):
             let pct = "\(Int(p * 100))%"
             let start = session.downloadStartedAt
@@ -363,6 +367,16 @@ struct LibraryView: View {
             return "Downloading weights… \(pct) · \(elapsedStr)"
         case .ready:              return "Ready."
         case .failed(let m):      return "Failed: \(m)"
+        }
+    }
+
+    /// The selected model's live background transfer, if any. Only surfaced
+    /// while it's actually downloading / waiting / paused / failed — a
+    /// finished download is already reflected in the "Ready." status.
+    private var modelDownloadItem: ZimDownloadManager.Item? {
+        downloads.items.first {
+            $0.kind == .model && $0.id == session.selectedModel.id
+                && $0.state != .finished
         }
     }
 
@@ -515,6 +529,10 @@ private struct VoiceModelSection: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
+        if isDownloaded {
+            Label("Kokoro ready offline", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        }
         switch downloader.state {
         case .idle, .finished, .failed:
             if isDownloaded {
@@ -564,7 +582,7 @@ private struct VoiceModelSection: View {
                 Label("Cancel download", systemImage: "xmark.circle")
             }
         }
-        Text("Kokoro v1.0 is an 82M-parameter neural TTS running on Apple MLX. Model from mlx-community/Kokoro-82M-bf16; voices from the KokoroTestApp pack.")
+        Text("Kokoro offers a richer voice and uses more memory. If memory gets tight, voice chat uses Supertonic; the active engine appears in the voice screen. Downloaded voices work offline.")
             .font(.footnote)
             .foregroundStyle(.secondary)
     }
@@ -643,4 +661,132 @@ private struct ConversationModePicker: View {
         guesses, then falls back to the other when the guess misses. \
         Switchable by voice: say "let's talk local" or "back to normal".
         """
+}
+
+/// Live control row for the selected model's background download — the same
+/// bytes / progress / state / Pause / Resume / Retry surface the ZIM catalog
+/// downloader offers, so a multi-GB GGUF pull is never an opaque percent.
+private struct ModelDownloadRow: View {
+    let item: ZimDownloadManager.Item
+    @ObservedObject var downloads: ZimDownloadManager
+    /// Re-arms the provider (re-selecting the model re-enters `load()`), so a
+    /// failed pull starts over with a fresh attempt and a fresh await.
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(item.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Spacer()
+                Menu {
+                    actions
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize()
+            }
+            if item.state != .finished {
+                ProgressView(value: item.fractionComplete)
+                    .tint(tint)
+            }
+            HStack {
+                statusText
+                Spacer()
+                if item.state == .downloading, item.bytesPerSecond > 0 {
+                    Label(SwarmFormat.rate(item.bytesPerSecond), systemImage: "arrow.down")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var tint: Color {
+        switch item.state {
+        case .paused: return .gray
+        case .failed: return .red
+        default: return .accentColor
+        }
+    }
+
+    @ViewBuilder
+    private var statusText: some View {
+        switch item.state {
+        case .downloading:
+            Text("\(SwarmFormat.bytes(item.receivedBytes)) of \(SwarmFormat.bytes(item.expectedBytes))")
+        case .waitingForNetwork:
+            Label("Waiting for network…", systemImage: "wifi.slash")
+        case .paused:
+            Text("\(SwarmFormat.bytes(item.receivedBytes)) of \(SwarmFormat.bytes(item.expectedBytes)) · Paused")
+        case .failed(let message):
+            Text(message)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+        case .finished:
+            Label("Ready to use", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        switch item.state {
+        case .downloading:
+            Button {
+                downloads.pause(id: item.id)
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+            }
+            Button(role: .destructive) {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Cancel", systemImage: "trash")
+            }
+        case .waitingForNetwork:
+            // The OS auto-resumes when connectivity returns. "Retry" tears the
+            // parked task down and re-probes immediately.
+            Button {
+                downloads.resume(id: item.id)
+            } label: {
+                Label("Retry now", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive) {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Cancel", systemImage: "trash")
+            }
+        case .paused:
+            Button {
+                downloads.resume(id: item.id)
+            } label: {
+                Label("Resume", systemImage: "play.fill")
+            }
+            Button(role: .destructive) {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Cancel", systemImage: "trash")
+            }
+        case .failed:
+            Button {
+                onRetry()
+            } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive) {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Dismiss", systemImage: "xmark")
+            }
+        case .finished:
+            Button {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Dismiss", systemImage: "xmark")
+            }
+        }
+    }
 }

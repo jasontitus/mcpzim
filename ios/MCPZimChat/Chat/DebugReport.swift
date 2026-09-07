@@ -58,8 +58,9 @@ public enum DebugReportConfig {
         get {
             if let legacy = UserDefaults.standard.string(forKey: tokenKey),
                !legacy.isEmpty {
-                githubToken = legacy
-                UserDefaults.standard.removeObject(forKey: tokenKey)
+                if storeToken(legacy) {
+                    UserDefaults.standard.removeObject(forKey: tokenKey)
+                }
                 return legacy
             }
             var query = baseQuery
@@ -74,18 +75,28 @@ public enum DebugReportConfig {
             return token
         }
         set {
-            SecItemDelete(baseQuery as CFDictionary)
-            guard let v = newValue, !v.isEmpty,
-                  let data = v.data(using: .utf8) else { return }
-            var add = baseQuery
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] =
-                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let status = SecItemAdd(add as CFDictionary, nil)
-            if status != errSecSuccess {
-                print("[DebugReport] keychain store failed: \(status)")
+            if storeToken(newValue) {
+                UserDefaults.standard.removeObject(forKey: tokenKey)
             }
         }
+    }
+
+    @discardableResult
+    private static func storeToken(_ token: String?) -> Bool {
+        guard let token, !token.isEmpty, let data = token.data(using: .utf8) else {
+            let status = SecItemDelete(baseQuery as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(baseQuery.merging(attributes) { _, new in new } as CFDictionary, nil)
+        }
+        if status != errSecSuccess { print("[DebugReport] keychain store failed: \(status)") }
+        return status == errSecSuccess
     }
 
     private static var baseQuery: [String: Any] {

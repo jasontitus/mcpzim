@@ -17,7 +17,11 @@ public final class MockProvider: ModelProvider, @unchecked Sendable {
     private var stateContinuations: [UUID: AsyncStream<ModelLoadState>.Continuation] = [:]
     private var state: ModelLoadState = .notLoaded
 
-    public init() {}
+    private let scriptedResponse: String?
+    private var _generationCount = 0
+    public var generationCount: Int { lock.withLock { _generationCount } }
+
+    public init(scriptedResponse: String? = nil) { self.scriptedResponse = scriptedResponse }
 
     public func stateStream() -> AsyncStream<ModelLoadState> {
         AsyncStream { cont in
@@ -57,14 +61,18 @@ public final class MockProvider: ModelProvider, @unchecked Sendable {
 
     public func generate(prompt: String, parameters: GenerationParameters) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
-                let reply = Self.script(for: prompt)
-                for chunk in reply.chunked(into: 8) {
-                    try? await Task.sleep(nanoseconds: 30_000_000)
-                    continuation.yield(chunk)
-                }
-                continuation.finish()
+            lock.withLock { _generationCount += 1 }
+            let reply = scriptedResponse ?? Self.script(for: prompt)
+            let task = Task {
+                do {
+                    for chunk in reply.chunked(into: 8) {
+                        try await Task.sleep(nanoseconds: 30_000_000)
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

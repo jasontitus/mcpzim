@@ -10,6 +10,16 @@ import XCTest
 @testable import MCPZimKit
 
 final class ConversationThreadsTests: XCTestCase {
+    func testForeignPolicyDoesNotInventNATOAndRetainsSourceHeading() {
+        let offers = ConversationThreads.contextualQuestions(topic: "Mira", sections: [
+            .init(title: "Foreign policy", level: 2, text: "She met a delegation."),
+        ], after: "Tell me about Mira")
+        XCTAssertEqual(offers.first?.prompt, "What about Mira's foreign policy?")
+        XCTAssertEqual(offers.first?.articleTitle, "Mira")
+        XCTAssertEqual(offers.first?.sectionTitle, "Foreign policy")
+        XCTAssertFalse(offers.contains { $0.label.contains("NATO") })
+    }
+
 
     // MARK: - WikiLinks
 
@@ -117,6 +127,23 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertEqual(threads[0].source, .nearbyPlace)
         XCTAssertEqual(threads[0].note, "420 m away")
         XCTAssertEqual(threads[0].zimPath, "A/Fenway_Park")
+    }
+
+    func testNearbyStoryCarriesResolvedWikipediaPathIntoSuggestion() {
+        let threads = ConversationThreads.extract(
+            toolName: "nearby_stories",
+            result: [
+                "stories": [[
+                    "wiki_title": "HP Garage",
+                    "path": "A/HP_Garage",
+                    "lat": 37.443,
+                    "lon": -122.154,
+                    "distance_m": 240,
+                ]],
+            ])
+        XCTAssertEqual(threads.first?.label, "HP Garage")
+        XCTAssertEqual(threads.first?.zimPath, "A/HP_Garage")
+        XCTAssertEqual(threads.first?.note, "240 m away")
     }
 
     func testWhatIsHereOffersWikiBackedNeighbours() {
@@ -251,9 +278,24 @@ final class ConversationThreadsTests: XCTestCase {
     func testOfferIncludesDistanceNote() {
         let line = ConversationThreads.offer([
             DiscoveryThread(label: "Fenway Park", kind: .place,
-                            source: .nearbyPlace, note: "420 m away"),
+                            source: .nearbyPlace, zimPath: "A/Fenway_Park",
+                            note: "420 m away"),
         ])
         XCTAssertEqual(line, "Want to hear about Fenway Park (420 m away)?")
+    }
+
+    func testMapOnlyOfferNamesTheActionHonestly() {
+        let line = ConversationThreads.offer([
+            DiscoveryThread(
+                label: "Rinconada Park",
+                kind: .place,
+                source: .nearbyPlace,
+                note: "1.2 km away · park",
+                prompt: "Show me Rinconada Park on the map"),
+        ])
+        XCTAssertEqual(
+            line,
+            "Want to open Rinconada Park (1.2 km away · park) on the map?")
     }
 
     func testContextualBiographyQuestionsAreNaturalAndSkipAskedFacet() {
@@ -395,5 +437,72 @@ final class ConversationThreadsTests: XCTestCase {
         XCTAssertTrue(suggestions.contains {
             $0.label == "What about reinforcement learning?"
         })
+    }
+
+    func testMainPageDiscoveryDropsNavigationBeforeSampling() {
+        let html = """
+        <main>
+          <p>
+            <a href="./Contents">Contents</a>
+            <a href="./A/Curious_subject">Curious subject</a>
+            <a href="./A/More_details">Read more</a>
+            <a href="./A/Second_subject">Second subject</a>
+          </p>
+        </main>
+        """
+        XCTAssertEqual(
+            WikiLinks.discoveryCandidates(html: html, max: 4),
+            [
+                .init(title: "Curious subject", path: "A/Curious_subject"),
+                .init(title: "Second subject", path: "A/Second_subject"),
+            ])
+    }
+
+    func testMainPageDiscoveryInterleavesEditorialGroups() {
+        let html = """
+        <h2>Arts</h2>
+        <p>
+          <a href="../Architecture">Architecture</a>
+          <a href="../Dance">Dance</a>
+        </p>
+        <h2>Geography</h2>
+        <p>
+          <a href="../Africa">Africa</a>
+          <a href="../Antarctica">Antarctica</a>
+        </p>
+        <h2>Kiwix</h2>
+        <p><a href="../Kiwix">Kiwix</a></p>
+        """
+        XCTAssertEqual(
+            WikiLinks.discoveryCandidates(html: html, max: 4),
+            [
+                .init(title: "Architecture", path: "Architecture"),
+                .init(title: "Antarctica", path: "Antarctica"),
+                .init(title: "Dance", path: "Dance"),
+                .init(title: "Africa", path: "Africa"),
+            ])
+    }
+
+    func testDiscoveredTopicsBecomePreviewedFollowUpQuestions() {
+        let threads = ConversationThreads.extract(
+            toolName: "discover_topics",
+            result: [
+                "topics": [
+                    [
+                        "title": "Plate tectonics",
+                        "path": "A/Plate_tectonics",
+                        "preview": "Earth's lithosphere is divided into moving plates.",
+                    ],
+                ],
+            ])
+        XCTAssertEqual(threads, [
+            DiscoveryThread(
+                label: "Plate tectonics",
+                kind: .topic,
+                source: .wikilink,
+                zimPath: "A/Plate_tectonics",
+                note: "Earth's lithosphere is divided into moving plates.",
+                prompt: "Tell me about Plate tectonics"),
+        ])
     }
 }

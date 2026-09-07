@@ -133,6 +133,7 @@
 		A332602332894F8A97B72609 /* ModelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C313188252286C00B327D81 /* ModelProvider.swift */; };
 		A3C032E9575D15C07A0F5570 /* HeroMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119D4682BACA6C6EC4BA208E /* HeroMediaView.swift */; };
 		A3F8DDA8CE492A709D73CDBC /* CoreKiwix.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C488AB551CB3BA4BA8FB329 /* CoreKiwix.xcframework */; };
+		A48D9C241C822695267563AF /* ModelDownloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B6AE9CB8C29C9ABFB5C540C /* ModelDownloadTests.swift */; };
 		A54A973CBA0A78BA50B9F26F /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
 		ABC183FA8F2C74F1291480B2 /* ObjCExceptionWrapper.m in Sources */ = {isa = PBXBuildFile; fileRef = 582650D8EC9DDD6EF2ED8F23 /* ObjCExceptionWrapper.m */; };
 		AE27F4A14BEE41CC8BE6B697 /* ZimDownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB3BD714E8800F7312E23C1 /* ZimDownloadManager.swift */; };
@@ -278,6 +279,7 @@
 		69BED8384D0E858DE623092B /* MCPZimEvalCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = MCPZimEvalCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		6AB08857ED66D69CE7FD5FC2 /* MCPZimChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPZimChatApp.swift; sourceTree = "<group>"; };
 		6AE2D547A30E2A7A5B07A6A7 /* RouteWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteWebView.swift; sourceTree = "<group>"; };
+		6B6AE9CB8C29C9ABFB5C540C /* ModelDownloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadTests.swift; sourceTree = "<group>"; };
 		6C0066AA27205AE502993C03 /* FoundationModelsNativeTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelsNativeTools.swift; sourceTree = "<group>"; };
 		71F26EEF012F57C0CF856CC2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7495A1AA64C657297341FF95 /* LocationFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationFetcher.swift; sourceTree = "<group>"; };
@@ -590,6 +592,7 @@
 				C2EF20FC6151BE685FECFE05 /* DurationFormattingTests.swift */,
 				DC554AC6A0180D10656A4F67 /* GemmaToolEmissionTests.swift */,
 				A0CFD8068F5720CFC8644A73 /* MarkdownMessageParserTests.swift */,
+				6B6AE9CB8C29C9ABFB5C540C /* ModelDownloadTests.swift */,
 				17AE6ABDFCB6CB00E445DE41 /* ModelSharingTests.swift */,
 				91040115100CBC7767537CAA /* TTSNormalizationTests.swift */,
 				197B2E738B989EBB69D3A53F /* ZimfoIntentsTests.swift */,
@@ -940,7 +943,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$CONFIGURATION\" = \"Release\" ]; then\n  \"${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run\" -gsp \"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info-Mac.plist\"\nfi\n";
+			shellScript = "if [ \"$CONFIGURATION\" = \"Release\" ]; then\n  \"${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run\" -gsp \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GoogleService-Info-Mac.plist\"\nfi\n";
 		};
 		95E95B90DCDC83B6D6AB530F /* Upload Crashlytics Symbols */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -978,6 +981,7 @@
 				2530574FC261A5C55169AD5C /* DurationFormattingTests.swift in Sources */,
 				532EF86EA533402790F7F10F /* GemmaToolEmissionTests.swift in Sources */,
 				8E0BF8E79E22F97D36E8F294 /* MarkdownMessageParserTests.swift in Sources */,
+				A48D9C241C822695267563AF /* ModelDownloadTests.swift in Sources */,
 				16CC4D7E18A5FE066712E617 /* ModelSharingTests.swift in Sources */,
 				8470E7BEF0C6E772B2B13504 /* TTSNormalizationTests.swift in Sources */,
 				E8429766D83FB7A9E83BD30E /* ZimfoIntentsTests.swift in Sources */,

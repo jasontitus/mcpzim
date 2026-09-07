@@ -4,6 +4,30 @@ import XCTest
 @testable import MCPZimKit
 
 final class StreamingSpeechPolicyTests: XCTestCase {
+    func testLongParagraphCannotBypassSupertonicCap() {
+        let paragraph = String(repeating: "historical detail ", count: 39)
+        let text = paragraph + "\n\nHe ruled the empire.\n\nYou can ask a follow-up."
+        for generating in [false, true] {
+            var remaining = text
+            var consumed = ""
+            while !remaining.isEmpty {
+                guard let prefix = StreamingSpeechPolicy.takeSpeakablePrefix(
+                    remaining, generating: generating, allowEarlyClause: true,
+                    minimumClause: 56, maximumClause: 94) else {
+                    // An unfinished short tail waits for generation to end.
+                    XCTAssertTrue(generating)
+                    break
+                }
+                XCTAssertLessThanOrEqual(prefix.text.count, 94)
+                XCTAssertGreaterThan(prefix.consumedCharacters, 0)
+                consumed += String(remaining.prefix(prefix.consumedCharacters))
+                remaining = String(remaining.dropFirst(prefix.consumedCharacters))
+            }
+            XCTAssertEqual(consumed + remaining, text)
+            if !generating { XCTAssertTrue(remaining.isEmpty) }
+        }
+    }
+
     func testCompleteSentenceStartsBeforeLaterText() {
         let result = StreamingSpeechPolicy.takeSpeakablePrefix(
             "The first sentence is ready. The second is still growing",
@@ -168,8 +192,8 @@ final class StreamingSpeechPolicyTests: XCTestCase {
             remaining = String(remaining.dropFirst(prefix.consumedCharacters))
         }
 
-        XCTAssertEqual(chunks.count, 4)
-        XCTAssertTrue(chunks.allSatisfy { $0.text.count <= 94 })
+        XCTAssertTrue(chunks.count >= 4)
+        XCTAssertTrue(chunks.allSatisfy { $0.text.trimmingCharacters(in: .whitespacesAndNewlines).count <= 94 })
         XCTAssertEqual(chunks.map(\.text).joined(),
                        "George Washington (February 22, 1732 – December 14, 1799) was a Founding Father and the first president of the United States, serving from 1789 to 1797. As commander of the Continental Army, he led Patriot forces to victory in the American Revolutionary War against the British Empire.")
     }
@@ -201,4 +225,38 @@ final class StreamingSpeechPolicyTests: XCTestCase {
         XCTAssertEqual(result?.boundary, .clause)
         XCTAssertGreaterThan(result?.consumedCharacters ?? 0, early.count)
     }
+    func testForcedWrapPrefersEarlierNaturalClause() {
+        let text = "As commander of the Continental Army, he led Patriot forces to victory in the American Revolutionary War against the British Empire."
+        let result = StreamingSpeechPolicy.takeSpeakablePrefix(text, generating: false,
+            allowEarlyClause: true, minimumClause: 56, maximumClause: 94)
+        XCTAssertEqual(result?.text, "As commander of the Continental Army,")
+        XCTAssertEqual(result?.boundary, .clause)
+        XCTAssertEqual(String(text.dropFirst(result!.consumedCharacters)),
+                       " he led Patriot forces to victory in the American Revolutionary War against the British Empire.")
+    }
+
+    func testForcedWrapKeepsParentheticalDateTogether() {
+        let text = "George Washington (February 22, 1732 – December 14, 1799) was a Founding Father and the first president of the United States, serving from 1789 to 1797."
+        let result = StreamingSpeechPolicy.takeSpeakablePrefix(text, generating: false,
+            allowEarlyClause: true, minimumClause: 56, maximumClause: 94)
+        XCTAssertEqual(result?.text, "George Washington (February 22, 1732 – December 14, 1799)")
+        XCTAssertEqual(result?.boundary, .clause)
+    }
+
+    func testEarlierClauseDoesNotForcePrematureStreamingChunk() {
+        let text = "As commander of the Continental Army, he led Patriot forces"
+        XCTAssertNil(StreamingSpeechPolicy.takeSpeakablePrefix(text, generating: true,
+            allowEarlyClause: true, minimumClause: 56, maximumClause: 94))
+    }
+
+    func testLeadingSpaceDoesNotSplitFinalPhraseAtInputLimit() {
+        let text = " he led Patriot forces to victory in the American Revolutionary War against the British Empire."
+        let result = StreamingSpeechPolicy.takeSpeakablePrefix(text, generating: false,
+            allowEarlyClause: true, minimumClause: 56, maximumClause: 94)
+        XCTAssertEqual(result?.text, text)
+        XCTAssertEqual(result?.consumedCharacters, text.count)
+        XCTAssertEqual(result?.boundary, .final)
+        XCTAssertEqual(text.trimmingCharacters(in: .whitespacesAndNewlines).count, 94)
+    }
+
 }

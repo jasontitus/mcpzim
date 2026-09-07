@@ -1,0 +1,110 @@
+{
+  "runtime": "prism-b9591 / 62061f9",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=true \u00b7 append=true \u00b7 edited=true \u00b7 pass=true",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 15.71,
+      "ttft_seconds": 15.713,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.75,
+      "total_seconds": 19.254,
+      "footprint_mb": 961.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 18.113,
+      "ttft_seconds": 18.118,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 7.87,
+      "total_seconds": 22.056,
+      "footprint_mb": 952.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "fair",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 0.817,
+      "ttft_seconds": 0.821,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.39,
+      "total_seconds": 1.917,
+      "footprint_mb": 952.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "fair",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 20.478,
+      "ttft_seconds": 20.483,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.13,
+      "total_seconds": 21.625,
+      "footprint_mb": 952.0,
+      "stop": "eog"
+    },
+    {
+      "case": "interrupted-retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 21.879,
+      "ttft_seconds": 21.882,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 6.86,
+      "total_seconds": 26.402,
+      "footprint_mb": 952.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "edited-answer",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 22.494,
+      "ttft_seconds": 22.498,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.18,
+      "total_seconds": 23.631,
+      "footprint_mb": 952.0,
+      "stop": "eog"
+    },
+    {
+      "case": "edited-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 20.813,
+      "ttft_seconds": 20.819,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.45,
+      "total_seconds": 21.905,
+      "footprint_mb": 952.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 8 pieces/24.455s \u00b7 CancellationError()"
+  ],
+  "captures": [],
+  "restores": [],
+  "verification_trials": [],
+  "verification_median_seconds": {},
+  "settings": {
+    "checkpoint": false,
+    "storage": "device",
+    "prefill_batch": 512
+  }
+}

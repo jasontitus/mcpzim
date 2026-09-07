@@ -95,6 +95,9 @@ public struct DiscoveryThread: Equatable, Sendable, Hashable {
     public var kind: FocusEntity.Kind
     public var source: Source
     public var zimPath: String?
+    /// Archive that supplied an explicit article choice (Wikipedia/WikiMed
+    /// can contain the same title with different content).
+    public var zim: String?
     public var lat: Double?
     public var lon: Double?
     /// Optional one-line gloss for the offer ("the architect", "350 m away").
@@ -105,25 +108,36 @@ public struct DiscoveryThread: Equatable, Sendable, Hashable {
     /// complete question ("How was it first detected?") so tapping one does
     /// not accidentally start a new article titled after the section.
     public var prompt: String?
+    /// Source identity for a section offer. Keep navigation independent of
+    /// its conversational wording; validate against the active archive and
+    /// article before using it to select evidence.
+    public var articleTitle: String?
+    public var sectionTitle: String?
 
     public init(
         label: String,
         kind: FocusEntity.Kind,
         source: Source,
         zimPath: String? = nil,
+        zim: String? = nil,
         lat: Double? = nil,
         lon: Double? = nil,
         note: String? = nil,
-        prompt: String? = nil
+        prompt: String? = nil,
+        articleTitle: String? = nil,
+        sectionTitle: String? = nil
     ) {
         self.label = label
         self.kind = kind
         self.source = source
         self.zimPath = zimPath
+        self.zim = zim
         self.lat = lat
         self.lon = lon
         self.note = note
         self.prompt = prompt
+        self.articleTitle = articleTitle
+        self.sectionTitle = sectionTitle
     }
 
     public var matchKey: String {
@@ -150,9 +164,54 @@ public struct ConversationFocus: Equatable, Sendable {
         }
     }
 
+    /// The search area is distinct from the first result or the user's GPS.
+    /// A category follow-up changes what to find, not where to find it.
+    public struct PlaceSearch: Equatable, Sendable {
+        public let center: Coord
+        public let kinds: [String]
+        public let radiusKm: Double
+        public let centerName: String?
+        public let zim: String?
+        public let turn: Int
+    }
+    public private(set) var lastPlaceSearch: PlaceSearch?
+
+    public var placeSearchForFollowup: PlaceSearch? {
+        guard let search = lastPlaceSearch, turn >= search.turn,
+              turn - search.turn <= 1 else { return nil }
+        return search
+    }
+
+    /// Use the tool's actual resolved center even for an empty result set.
+    /// Never adopt a result POI as the center, or preserve an invalid center.
+    public mutating func recordPlaceSearch(
+        toolName: String, args: [String: Any], result: [String: Any]
+    ) {
+        guard ["near_places", "near_named_place"].contains(toolName) else { return }
+        guard result["error"] == nil,
+              let origin = (result["origin"] as? [String: Any])
+                ?? (result["resolved"] as? [String: Any]),
+              let lat = (origin["lat"] as? NSNumber)?.doubleValue,
+              let lon = (origin["lon"] as? NSNumber)?.doubleValue,
+              let radius = (result["radius_km"] as? NSNumber)?.doubleValue,
+              lat.isFinite, lon.isFinite, radius.isFinite,
+              (-90...90).contains(lat), (-180...180).contains(lon),
+              radius > 0, radius <= 100
+        else { lastPlaceSearch = nil; return }
+        lastPlaceSearch = PlaceSearch(center: Coord(lat: lat, lon: lon), kinds: args["kinds"] as? [String] ?? [], radiusKm: radius,
+            centerName: origin["name"] as? String ?? args["center_name"] as? String,
+            zim: args["zim"] as? String ?? result["zim"] as? String,
+            turn: turn)
+    }
+
     /// Monotonic user-turn counter. `beginUserTurn` bumps it; entities and
     /// threads stamp it so recency is comparable across the whole session.
     public private(set) var turn: Int = 0
+
+    /// Discovery cursors belong to successful topic pages, not chat turns.
+    /// Separate archives can have different main-page candidate lists.
+    public private(set) var topicDiscoveryOffsets: [String: Int] = [:]
+    public private(set) var lastTopicDiscoveryKind: String?
 
     /// Most-recent-first, deduped, bounded. `entities.first` is the primary
     /// subject a bare pronoun / elliptical follow-up binds to.
@@ -221,9 +280,17 @@ public struct ConversationFocus: Equatable, Sendable {
         lastListKind = .listing
         openThreads = []
         turn = 0
+        topicDiscoveryOffsets = [:]
+        lastTopicDiscoveryKind = nil
+        lastPlaceSearch = nil
     }
 
     public mutating func beginUserTurn() { turn += 1 }
+
+    public mutating func recordTopicDiscovery(kind: String, nextOffset: Int) {
+        topicDiscoveryOffsets[kind] = max(0, nextOffset)
+        lastTopicDiscoveryKind = kind
+    }
 
     /// Bring `entity` to the front (most-recent), folding any prior mention of
     /// the same name+kind so the stack stays deduped and recency-ordered.

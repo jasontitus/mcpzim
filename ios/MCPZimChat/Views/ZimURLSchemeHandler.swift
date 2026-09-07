@@ -8,6 +8,11 @@
 import Foundation
 import WebKit
 import MCPZimKit
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable {
     /// `(zimFilename) -> ZimReader?`. Evaluated once per request so the
@@ -159,6 +164,7 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
                 httpVersion: "HTTP/1.1",
                 headerFields: [
                     "Content-Type": mime,
+                    "Content-Security-Policy": ZimWebPolicy.contentSecurityPolicy,
                     "Content-Length": "\(entry.content.count)",
                     "Cache-Control": "public, max-age=86400",
                     // Some viewers fetch cross-resource JSON from sibling
@@ -178,5 +184,66 @@ final class ZimURLSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendab
         // record the stop (main thread, same as the completion hop) so
         // the completion never touches the task afterwards.
         stoppedTasks.insert(ObjectIdentifier(urlSchemeTask))
+    }
+}
+
+
+/// Native actions are reachable only from trusted clicks observed in an
+/// isolated world. Page scripts cannot forge isTrusted or call its handler.
+@MainActor
+final class ZimUserActionBridge: NSObject, WKScriptMessageHandler {
+    static let world = WKContentWorld.world(name: "ZimfoUserActions")
+    static let handlerName = "zimfoTrustedAction"
+    private let action: ([String: Any]) -> Void
+    private init(action: @escaping ([String: Any]) -> Void) { self.action = action }
+
+    static func install(on configuration: WKWebViewConfiguration,
+                        action: @escaping ([String: Any]) -> Void = { _ in }) {
+        let bridge = ZimUserActionBridge(action: action)
+        configuration.userContentController.add(bridge, contentWorld: world, name: handlerName)
+        let script = """
+        document.addEventListener('click', function(event) {
+          if (!event.isTrusted) return;
+          var target = event.target;
+          if (!target || !target.closest) return;
+          var button = target.closest('[data-zimfo-action]');
+          var payload;
+          if (button) {
+            try { payload = JSON.parse(button.getAttribute('data-zimfo-action')); } catch (_) { return; }
+          } else {
+            var anchor = target.closest('a[href]');
+            if (!anchor || !/^(https?:|tel:|mailto:)/i.test(anchor.href)) return;
+            payload = {action: /^tel:/i.test(anchor.href) ? 'call' : 'website', value: anchor.href};
+          }
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          window.webkit.messageHandlers.zimfoTrustedAction.postMessage(payload);
+        }, true);
+        """
+        configuration.userContentController.addUserScript(WKUserScript(source: script,
+            injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == Self.handlerName,
+              message.frameInfo.securityOrigin.`protocol`.lowercased() == "zim",
+              let payload = message.body as? [String: Any],
+              let kind = payload["action"] as? String else { return }
+        if kind == "website" || kind == "call" {
+            var value = (payload["value"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if kind == "call", !value.lowercased().hasPrefix("tel:") {
+                value = "tel:" + value.filter { !$0.isWhitespace }
+            } else if kind == "website", !value.contains("://"), !value.lowercased().hasPrefix("mailto:") {
+                value = "https://" + value
+            }
+            let allowed = kind == "call" ? ["tel"] : ["http", "https", "mailto"]
+            guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+                  allowed.contains(scheme) else { return }
+            #if canImport(UIKit)
+            UIApplication.shared.open(url)
+            #elseif canImport(AppKit)
+            NSWorkspace.shared.open(url)
+            #endif
+        } else { action(payload) }
     }
 }

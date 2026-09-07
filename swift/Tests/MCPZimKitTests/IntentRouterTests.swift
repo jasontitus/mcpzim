@@ -554,6 +554,21 @@ final class IntentRouterTests: XCTestCase {
         }
     }
 
+    func testExplicitMapRequestAfterArticleDiscussion() {
+        var focus = ConversationFocus()
+        focus.remember(FocusEntity(name: "Albert Einstein", kind: .topic))
+        for question in ["Show me cafes in Palo Alto", "Please show me cafes in Palo Alto", "Find cafes in Palo Alto"] {
+            let intent = IntentRouter.classify(question, focus: focus)
+            XCTAssertEqual(intent?.toolName, "near_named_place")
+            XCTAssertEqual(intent?.args["place"], .string("palo alto"))
+            XCTAssertEqual(intent?.args["kinds"], .array([.string("cafe")]))
+        }
+        let local = IntentRouter.classify("Show me cafes near me", currentLocation: (37, -122), focus: focus)
+        XCTAssertEqual(local?.toolName, "near_places")
+        XCTAssertEqual(local?.args["kinds"], .array([.string("cafe")]))
+        XCTAssertNotEqual(IntentRouter.classify("Show me changes in physics")?.toolName, "near_named_place")
+    }
+
     // MARK: - `<category> near me`
 
     func testClassifyNearMeRequiresLocation() {
@@ -1200,6 +1215,8 @@ final class IntentRouterTests: XCTestCase {
             toolName: "near_named_place", args: args, fullResult: result
         )
         XCTAssertTrue(s.contains("No museums found"), "got: \(s)")
+        XCTAssertFalse(s.contains("map below"), "got: \(s)")
+        XCTAssertTrue(s.contains("loaded offline maps"), "got: \(s)")
         // Zero-results caption drops the "tap List" hint since there's
         // nothing to list.
         XCTAssertFalse(s.contains("tap List"), "got: \(s)")
@@ -1380,4 +1397,142 @@ extension IntentRouterTests {
         let i = IntentRouter.classify("When did it join nato?")
         XCTAssertNotEqual(i?.anyArgs["title"] as? String, "it")
     }
+}
+
+// MARK: - Grounded discovery fast paths
+
+extension IntentRouterTests {
+    func testOpenEndedTopicDiscoveryAvoidsGenericModelLoop() {
+        for query in [
+            "Help me explore a Wikipedia topic I might enjoy.",
+            "Show me a few Wikipedia topics to explore",
+            "Surprise me",
+            "Find me a topic",
+            "What can I learn about?",
+        ] {
+            let intent = IntentRouter.classify(query)
+            XCTAssertEqual(intent?.toolName, "discover_topics", query)
+            XCTAssertEqual(intent?.args["kind"], .string("wikipedia"), query)
+            XCTAssertEqual(intent?.args["limit"], .int(6), query)
+        }
+    }
+
+    func testMoreTopicsAdvancesDeterministicSampler() {
+        var focus = ConversationFocus()
+        for _ in 0..<20 { focus.beginUserTurn() }
+        XCTAssertEqual(IntentRouter.classify("Find me a topic", focus: focus)?
+            .args["offset"], .int(0), "Ordinary turns must not skip the first page")
+        focus.recordTopicDiscovery(kind: "wikipedia", nextOffset: 9)
+        for _ in 0..<20 { focus.beginUserTurn() }
+        let intent = IntentRouter.classify(
+            "Show me more topics", focus: focus)
+        XCTAssertEqual(intent?.toolName, "discover_topics")
+        XCTAssertEqual(intent?.args["offset"], .int(9))
+        focus.recordTopicDiscovery(kind: "mdwiki", nextOffset: 3)
+        XCTAssertEqual(IntentRouter.classify("more topics", focus: focus)?
+            .args["kind"], .string("mdwiki"))
+        XCTAssertEqual(IntentRouter.classify("more topics", focus: focus)?
+            .args["offset"], .int(3))
+        XCTAssertEqual(IntentRouter.classify("Show me Wikipedia topics", focus: focus)?
+            .args["offset"], .int(9))
+        focus.reset()
+        XCTAssertEqual(IntentRouter.classify("more topics", focus: focus)?
+            .args["offset"], .int(0))
+        XCTAssertNil(focus.lastTopicDiscoveryKind)
+    }
+
+    func testNearbyStoryDiscoveryUsesStreetZIMCompositeDirectly() {
+        let here = (lat: 37.441, lon: -122.155)
+        let local = IntentRouter.classify(
+            "Tell me something interesting around here",
+            currentLocation: here)
+        XCTAssertEqual(local?.toolName, "nearby_stories")
+        XCTAssertEqual(local?.args["lat"], .double(here.lat))
+        XCTAssertEqual(local?.args["lon"], .double(here.lon))
+
+        let named = IntentRouter.classify(
+            "Tell me a local story about Palo Alto")
+        XCTAssertEqual(named?.toolName, "nearby_stories")
+        XCTAssertEqual(named?.args["place"], .string("palo alto"))
+        XCTAssertEqual(named?.articleFallbackTitle, "palo alto")
+    }
+
+    func testWikipediaModeKeepsAmbiguousInterestingSubjectOnArticle() {
+        let intent = IntentRouter.classify(
+            "Tell me something interesting about quantum mechanics",
+            mode: .encyclopedia)
+        XCTAssertEqual(intent?.toolName, "article_overview")
+        XCTAssertEqual(intent?.args["title"], .string("quantum mechanics"))
+    }
+
+    func testNearbyStorySynthesisLeadsWithGroundedHook() {
+        let reply = IntentRouter.synthesizeNearbyStoriesReply(
+            args: ["lat": 37.4, "lon": -122.1],
+            fullResult: [
+                "stories": [
+                    [
+                        "wiki_title": "HP Garage",
+                        "distance_m": 240,
+                        "excerpt": "The HP Garage is a private museum in Palo Alto. It is considered the birthplace of Silicon Valley.",
+                    ],
+                    [
+                        "wiki_title": "Stanford Theatre",
+                        "distance_m": 500,
+                        "excerpt": "The Stanford Theatre opened in 1925.",
+                    ],
+                ],
+            ])
+        XCTAssertTrue(reply.contains("**HP Garage** (240 m away)"))
+        XCTAssertTrue(reply.contains("birthplace of Silicon Valley"))
+        XCTAssertTrue(reply.contains("1 more local thread"))
+    }
+
+    func testConnectedNearbyFollowUpRequestsMoreGroundedStories() {
+        var focus = ConversationFocus()
+        focus.beginUserTurn()
+        focus.remember(FocusEntity(
+            name: "Pacific Art League",
+            kind: .place,
+            lat: 37.4438,
+            lon: -122.1599))
+        let intent = IntentRouter.classify(
+            "What else nearby connects to it?", focus: focus)
+        XCTAssertEqual(intent?.toolName, "nearby_stories")
+        XCTAssertEqual(intent?.args["lat"], .double(37.4438))
+        XCTAssertEqual(intent?.args["lon"], .double(-122.1599))
+        XCTAssertEqual(
+            intent?.args["exclude_names"],
+            .array([.string("Pacific Art League")]))
+    }
+
+    func testSpokenDiscoveryActionsAlwaysOpenAnotherBranch() {
+        var topicFocus = ConversationFocus()
+        topicFocus.beginUserTurn()
+        XCTAssertEqual(
+            IntentRouter.classify(
+                "Another topic", focus: topicFocus)?.toolName,
+            "discover_topics")
+
+        var localFocus = ConversationFocus()
+        localFocus.beginUserTurn()
+        localFocus.remember(FocusEntity(
+            name: "Pacific Art League",
+            kind: .place,
+            lat: 37.4438,
+            lon: -122.1599))
+        localFocus.setThreads([DiscoveryThread(
+            label: "Masterworks",
+            kind: .place,
+            source: .nearbyPlace,
+            lat: 37.444,
+            lon: -122.160)])
+        let next = IntentRouter.classify(
+            "Another nearby lead", focus: localFocus)
+        XCTAssertEqual(next?.toolName, "nearby_stories")
+        XCTAssertEqual(next?.args["exclude_names"], .array([
+            .string("Pacific Art League"),
+            .string("Masterworks"),
+        ]))
+    }
+
 }

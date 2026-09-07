@@ -94,6 +94,60 @@ final class SecurityTests: XCTestCase {
         XCTAssertThrowsError(try m.validate())
     }
 
+    func testRejectsMaximumPeerSizesAndIndicesWithoutOverflow() throws {
+        for size in [Int64.max, Int64.max - 1] {
+            var manifest = try makeValidManifest()
+            manifest.files[0].sizeBytes = size
+            manifest.totalBytes = size
+            XCTAssertThrowsError(try manifest.validate())
+        }
+        for index in [Int.min, Int.max] {
+            var manifest = try makeValidManifest()
+            manifest.files[0].startChunkIndex = index
+            manifest.files[0].endChunkIndex = index
+            XCTAssertThrowsError(try manifest.validate())
+        }
+    }
+
+    func testDownloadThroughDirectoryAliasAcceptsMissingChildren() throws {
+        let manifest = try makeValidManifest()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = root.appendingPathComponent("real")
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        XCTAssertNoThrow(try ChunkStore.forDownloading(manifest: manifest,
+                            directory: alias.appendingPathComponent("new/receive")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: real.appendingPathComponent("new/receive/a.bin").path))
+    }
+
+    func testDownloadRejectsEscapingDataAndMetadataSymlinks() throws {
+        let manifest = try makeValidManifest()
+        for name in ["a.bin", ".localswarm-bitfield", ".localswarm-manifest.json"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let incoming = root.appendingPathComponent("incoming")
+            let outside = root.appendingPathComponent("outside")
+            try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
+            try Data("preserve existing bytes".utf8).write(to: outside)
+            try FileManager.default.createSymbolicLink(at: incoming.appendingPathComponent(name), withDestinationURL: outside)
+            XCTAssertThrowsError(try ChunkStore.forDownloading(manifest: manifest, directory: incoming))
+            XCTAssertEqual(try Data(contentsOf: outside), Data("preserve existing bytes".utf8))
+        }
+    }
+
+    func testDownloadRejectsDanglingSymlink() throws {
+        let manifest = try makeValidManifest()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incoming = root.appendingPathComponent("incoming")
+        try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: incoming.appendingPathComponent("a.bin"),
+                                                  withDestinationURL: root.appendingPathComponent("missing"))
+        XCTAssertThrowsError(try ChunkStore.forDownloading(manifest: manifest, directory: incoming))
+    }
+
     // MARK: - Wire decode limits
 
     func testBitfieldDecodeRejectsMismatchedPackedLength() throws {

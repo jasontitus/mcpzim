@@ -34,6 +34,7 @@ public actor StubZimService: ZimService {
         /// Raw article HTML keyed by path. Composite-tool tests use this to
         /// exercise wikilink and hatnote extraction without a real ZIM.
         public var articleHTML: [String: String] = [:]
+        public var mainPages: [ArticleResult] = []
         /// Keyed by article path (see `keyArticleSections`). Serves the
         /// composite tools (`article_overview`, `narrate_article`,
         /// `compare_articles`, `article_relationship`) that need the full
@@ -201,7 +202,9 @@ public actor StubZimService: ZimService {
         throw StubError.noFixture(method: "articleSection", key: "path=\(path),section=\(section)")
     }
 
-    public func mainPage(zim: String?) async throws -> [ArticleResult] { [] }
+    public func mainPage(zim: String?) async throws -> [ArticleResult] {
+        fixture.mainPages.filter { zim == nil || $0.zim == zim }
+    }
 
     public func planDrivingRoute(_ req: RouteRequest) async throws -> Route {
         throw StubError.noFixture(method: "planDrivingRoute",

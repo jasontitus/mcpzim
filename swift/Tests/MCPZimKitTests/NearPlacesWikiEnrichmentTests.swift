@@ -302,6 +302,67 @@ final class NearPlacesWikiEnrichmentTests: XCTestCase {
                        "OSM-tagged path resolves first; fallback shouldn't overwrite it")
     }
 
+    func testNearbyStoriesFallsBackToGroundedMapLeads() async throws {
+        var fixture = StubZimService.Fixture()
+        fixture.nearPlaces[StubZimService.keyNearPlaces(
+            lat: 37.441, lon: -122.155, kinds: nil
+        )] = .init(result: NearPlacesResult(
+            totalInRadius: 0, breakdown: [:], results: []))
+        let preferred = [
+            "museum", "historic", "attraction",
+            "landmark", "monument", "park",
+        ]
+        let park = Place(
+            name: "Rinconada Park",
+            kind: "leisure",
+            lat: 37.448,
+            lon: -122.144,
+            subtype: "park")
+        fixture.nearPlaces[StubZimService.keyNearPlaces(
+            lat: 37.441, lon: -122.155, kinds: preferred
+        )] = .init(result: NearPlacesResult(
+            totalInRadius: 1,
+            breakdown: ["park": 1],
+            results: [(park, 1_240)]))
+
+        let adapter = await MCPToolAdapter(
+            service: StubZimService(fixture: fixture),
+            hasStreetzim: true)
+        let result = try await adapter.dispatch(
+            tool: "nearby_stories",
+            args: [
+                "lat": 37.441,
+                "lon": -122.155,
+                "radius_km": 5.0,
+                "max_stories": 4,
+            ])
+
+        XCTAssertEqual(result["story_source"] as? String, "streetzim")
+        let stories = try XCTUnwrap(result["stories"] as? [[String: Any]])
+        XCTAssertEqual(stories.first?["place_name"] as? String, "Rinconada Park")
+        let threads = ConversationThreads.extract(
+            toolName: "nearby_stories", result: result)
+        XCTAssertEqual(threads.first?.prompt, "Show me Rinconada Park on the map")
+        XCTAssertEqual(threads.first?.note, "1.2 km away · park")
+    }
+
+    func testCanonicalStoryExclusionDoesNotReturnTheSamePlaceAsAMapLead() async throws {
+        var fixture = fixtureWithOneWikiTaggedMuseum()
+        let key = StubZimService.keyArticleByTitle(title: "en:Cantor_Arts_Center", section: "lead")
+        fixture.articleByTitle[key] = .init(zim: "wikipedia.zim", path: "A/Iris_Center",
+            title: "Iris Center", section: ArticleSection(title: "lead", level: 0,
+                text: "The Iris Center is an art museum on the campus of Stanford University in California. "
+                    + "Its collection includes works from many cultures and historical periods."))
+        let adapter = await MCPToolAdapter(service: StubZimService(fixture: fixture), hasStreetzim: true)
+        let result = try await adapter.dispatch(tool: "nearby_stories", args: [
+            "lat": 37.441, "lon": -122.155, "kinds": ["museum"],
+            "exclude_names": ["Iris Center"],
+        ])
+        let stories = try XCTUnwrap(result["stories"] as? [[String: Any]])
+        XCTAssertEqual(stories.compactMap { $0["place_name"] as? String }, ["The Foster Museum"])
+        XCTAssertEqual(result["story_source"] as? String, "streetzim")
+    }
+
     // MARK: - parsePlacesJSON consumes the enriched output
 
     func testEndToEndResultRouteFromDispatchThroughParse() async throws {

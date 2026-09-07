@@ -4,6 +4,11 @@
 **Target:** iPhone 17 Pro Max, with an on-device LLM resident
 **Status:** Mac screening complete; iPhone latency, jetsam, thermal, and listening gates remain
 
+The July measurements below are historical. See the
+[September 5 review and new Mac benchmarks](ON_DEVICE_TTS_REVIEW_2026-09-05.md)
+for current Supertonic status, newer Kokoro/Pocket/Inflect runtimes, and
+measured ANE/CPU placement tradeoffs.
+
 This document is intentionally project-independent. It can be copied into any
 Apple-platform project that uses Kokoro or needs low-latency, offline speech.
 The measurements identify which engines deserve phone testing; they are not

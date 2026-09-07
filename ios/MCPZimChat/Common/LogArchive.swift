@@ -77,6 +77,27 @@ public final class LogArchive: @unchecked Sendable {
         }
     }
 
+    /// Synchronous append. `append`'s async enqueue means a hard
+    /// `abort(3)` inside llama.cpp loses the trailing lines (they were
+    /// still queued). The startup trace must be on disk BEFORE the
+    /// step it describes runs, so a SIGABRT / OOM-kill leaves the exact
+    /// stage in the log for the next launch's `previousSessionUncleanTail`
+    /// to surface.
+    public func appendSync(_ line: String) {
+        queue.sync { [self] in
+            guard let handle, let data = (line + "\n").data(using: .utf8) else { return }
+            try? handle.write(contentsOf: data)
+        }
+    }
+
+    /// Startup crash breadcrumb. Writes (synchronously) to the
+    /// persistent session log so a hard crash still leaves the exact
+    /// stage on disk. Only compiled into the launch path — callers must
+    /// not spam this at per-turn frequency.
+    public func trace(_ line: String) {
+        appendSync("[trace] " + line)
+    }
+
     // MARK: - Unclean-exit detection
 
     /// Post-mortem breadcrumb: did the PREVIOUS session's log end in the

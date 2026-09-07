@@ -55,6 +55,14 @@ enum AppTelemetry {
         }
     }
 
+    static var isConfigured: Bool {
+        #if canImport(FirebaseCore)
+        return FirebaseApp.app() != nil
+        #else
+        return false
+        #endif
+    }
+
     static func configure() {
         #if canImport(FirebaseCore)
         guard FirebaseApp.app() == nil else { return }
@@ -63,7 +71,7 @@ enum AppTelemetry {
             forResource: "GoogleService-Info-Mac", ofType: "plist"),
               let options = FirebaseOptions(contentsOfFile: path)
         else {
-            assertionFailure("Missing GoogleService-Info-Mac.plist")
+            print("Telemetry disabled: missing GoogleService-Info-Mac.plist")
             return
         }
         FirebaseApp.configure(options: options)
@@ -76,7 +84,7 @@ enum AppTelemetry {
         guard Bundle.main.path(
             forResource: "GoogleService-Info", ofType: "plist") != nil
         else {
-            assertionFailure("Missing GoogleService-Info.plist")
+            print("Telemetry disabled: missing GoogleService-Info.plist")
             return
         }
         FirebaseApp.configure()
@@ -129,13 +137,14 @@ enum AppTelemetry {
             self.library = library
 
             #if canImport(FirebasePerformance) && !os(macOS)
-            performanceTrace = Performance.startTrace(name: "query_\(queryType)")
+            performanceTrace = AppTelemetry.isConfigured ? Performance.startTrace(name: "query_\(queryType)") : nil
             performanceTrace?.setValue(modelID, forAttribute: "model_id")
             performanceTrace?.setValue(
                 library.wikipediaVariant, forAttribute: "wiki_variant")
             #endif
 
             #if canImport(FirebaseAnalytics)
+            if AppTelemetry.isConfigured {
             Analytics.logEvent("query_started", parameters: [
                 "query_type": queryType,
                 "model_id": modelID,
@@ -147,6 +156,7 @@ enum AppTelemetry {
             Crashlytics.crashlytics().setCustomValue(queryType, forKey: "last_query_type")
             Crashlytics.crashlytics().setCustomValue(library.mix, forKey: "last_library_mix")
             Crashlytics.crashlytics().log("Query started: \(queryType)")
+            }
             #endif
         }
 
@@ -205,6 +215,7 @@ enum AppTelemetry {
             #endif
 
             #if canImport(FirebaseAnalytics)
+            if AppTelemetry.isConfigured {
             Analytics.logEvent("query_completed", parameters: [
                 "query_type": queryType,
                 "route": route,
@@ -228,6 +239,7 @@ enum AppTelemetry {
             Crashlytics.crashlytics().setCustomValue(totalMS, forKey: "last_query_total_ms")
             Crashlytics.crashlytics().log(
                 "Query completed: \(queryType), route=\(route), total_ms=\(totalMS)")
+            }
             #endif
         }
 

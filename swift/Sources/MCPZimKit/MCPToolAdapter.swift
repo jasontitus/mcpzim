@@ -789,6 +789,11 @@ public actor MCPToolAdapter {
             // from the model's declared registry: Swift invokes it for narrow
             // founding-date questions so the phone avoids two LLM prefills.
             return await dispatchArticleFactoid(args: args)
+        case "discover_topics":
+            // Host-internal main-page sampler for open-ended topic
+            // discovery. Keeping it out of the model registry avoids another
+            // schema and guarantees the fast path remains deterministic.
+            return try await dispatchDiscoverTopics(args: args)
         case "discuss_article":
             return try await dispatchDiscussArticle(args: args)
         case "compare_articles":
@@ -961,42 +966,31 @@ public actor MCPToolAdapter {
                 title: resolved.title,
                 leadText: resolved.sections.first?.text ?? "")
             if leadLooksDisambig {
-                // The page IS a disambiguation ("Apple TV may refer to:") —
-                // its own links name the real meanings in display order, and
-                // the first substantial one is what "tell me about X" meant.
-                // (Search can't be trusted here: title-index variants crowd
-                // out "Apple TV (device)" before FTS results merge.) The
-                // runner-up meanings resurface via the swapped article's
-                // hatnotes, which feed the disambiguation offer downstream.
-                if let page = try? await service.article(
-                    path: resolved.path, zim: resolved.zim) {
-                    // parseAll, not parse: the prose-only default returns
-                    // NOTHING here — disambiguation pages put their
-                    // meanings in <ul> lists, not paragraphs.
-                    for link in WikiLinks.parseAll(html: page.text, max: 6) {
-                        // Kiwix hrefs are relative to the article namespace;
-                        // accept both bare and A/-prefixed forms.
-                        let candidates = link.path.hasPrefix("A/")
-                            ? [link.path] : [link.path, "A/" + link.path]
-                        var found: (zim: String, title: String, sections: [ArticleSection])?
-                        var foundPath = link.path
-                        for p in candidates {
-                            if let alt = try? await service.articleSections(
-                                path: p, zim: resolved.zim) {
-                                found = alt; foundPath = p; break
-                            }
-                        }
-                        if let alt = found,
-                           alt.sections.reduce(0, { $0 + $1.text.count }) > 2000,
-                           !ArticleHeuristics.isDisambiguationArticle(
-                               title: alt.title,
-                               leadText: alt.sections.first?.text ?? "")
-                        {
-                            resolved = (resolved.zim, foundPath, alt.title, alt.sections)
+                // Preserve ambiguity instead of silently adopting the first
+                // substantial link (Carmel Valley previously became its AVA).
+                var choices: [[String: String]] = []
+                if let page = try? await service.article(path: resolved.path, zim: resolved.zim) {
+                    var seen = Set<String>()
+                    for link in WikiLinks.parseAll(html: page.text, max: 24) {
+                        let paths = link.path.hasPrefix("A/") ? [link.path] : [link.path, "A/" + link.path]
+                        for path in paths {
+                            guard let alt = try? await service.articleSections(path: path, zim: resolved.zim),
+                                  !alt.sections.isEmpty,
+                                  alt.title.lowercased().replacingOccurrences(of: "_", with: " ")
+                                    .contains(title.lowercased().replacingOccurrences(of: "_", with: " ")
+                                      .replacingOccurrences(of: " (disambiguation)", with: "")),
+                                  !ArticleHeuristics.isDisambiguationArticle(title: alt.title,
+                                      leadText: alt.sections.first?.text ?? ""),
+                                  seen.insert(alt.title).inserted else { continue }
+                            choices.append(["title": alt.title, "path": path, "zim": resolved.zim])
                             break
                         }
+                        if choices.count >= 6 { break }
                     }
                 }
+                return ["error": "Article title is ambiguous", "ambiguous": true,
+                        "requested_title": title, "suggestions": choices.map { $0["title"]! },
+                        "disambiguation": choices]
             } else if resolvedChars < 500,
                let hits = try? await service.search(query: title, limit: 12, kind: nil) {
                 // Non-disambig thin stub: prefer a same-titled search hit
@@ -1005,6 +999,9 @@ public actor MCPToolAdapter {
                 let want = title.lowercased()
                     .replacingOccurrences(of: "_", with: " ")
                 for hit in hits where hit.path != resolved.path {
+                    // A topic card can pin WikiMed even when Wikipedia is
+                    // also loaded. A larger stub replacement must honor it.
+                    guard zim == nil || hit.zim == resolved.zim else { continue }
                     var hitTitle = hit.title.lowercased()
                     if let paren = hitTitle.range(
                         of: #"\s+\([^)]*\)$"#, options: .regularExpression) {
@@ -1037,9 +1034,10 @@ public actor MCPToolAdapter {
             // drops full-text noise (a bare keyword search can surface
             // unrelated songs / admin pages).
             let candidates = (try? await service.search(
-                query: title, limit: 8, kind: .wikipedia)) ?? []
+                query: title, limit: 8, kind: zim == nil ? .wikipedia : nil)) ?? []
             let suggestions = Self.didYouMeanTitles(
-                requested: title, candidates: candidates, limit: 3
+                requested: title,
+                candidates: candidates.filter { zim == nil || $0.zim == zim }, limit: 3
             )
             return [
                 "error": "no article titled \"\(title)\" in the offline Wikipedia",
@@ -1845,6 +1843,103 @@ public actor MCPToolAdapter {
         ]
     }
 
+    /// Sample real articles from the loaded encyclopedia's editorial main
+    /// page. Each candidate is opened before it is returned, so the user sees
+    /// a canonical title plus an actual lead preview—not a navigation label
+    /// or an invented category. This is intentionally host-only; the
+    /// deterministic intent router calls it without a model round-trip.
+    private func dispatchDiscoverTopics(
+        args: [String: Any]
+    ) async throws -> [String: Any] {
+        let requestedKind = (args["kind"] as? String)
+            .flatMap(ZimKind.init(rawValue:))
+        let limit = max(1, min(8, (args["limit"] as? Int) ?? 6))
+        let requestedOffset = max(0, (args["offset"] as? Int) ?? 0)
+        let inventory = try await service.inventory()
+        let encyclopedias = inventory.zims.filter {
+            $0.kind == .wikipedia || $0.kind == .mdwiki
+        }
+        guard let selected = encyclopedias.first(where: {
+            requestedKind == nil || $0.kind == requestedKind
+        }) ?? encyclopedias.first else {
+            return [
+                "error": "No Wikipedia or WikiMed archive is loaded.",
+                "count": 0,
+                "topics": [] as [[String: Any]],
+            ]
+        }
+        guard let page = try await service.mainPage(zim: selected.name).first
+        else {
+            return [
+                "error": "The loaded \(selected.kind.rawValue) archive has no readable main page.",
+                "zim": selected.name,
+                "count": 0,
+                "topics": [] as [[String: Any]],
+            ]
+        }
+
+        let links = WikiLinks.discoveryCandidates(
+            html: page.text, max: 96)
+        // A cursor points into a stable candidate list. Do not reopen every
+        // previous article on each page, or clamp later pages to one offset.
+        let offset = requestedOffset < links.count ? requestedOffset : 0
+        var nextOffset = 0
+        var resolved: [[String: Any]] = []
+        var seenTitles = Set<String>()
+        for (index, link) in links.enumerated().dropFirst(offset) {
+            try Task.checkCancellation()
+            nextOffset = index + 1 < links.count ? index + 1 : 0
+            guard !link.path.isEmpty else { continue }
+            let article: ArticleResult
+            if let exact = try? await service.article(
+                path: link.path, zim: selected.name)
+            {
+                article = exact
+            } else if let byTitle = try? await service.articleByTitle(
+                title: link.title, zim: selected.name, section: "lead")
+            {
+                article = ArticleResult(
+                    zim: byTitle.zim,
+                    path: byTitle.path,
+                    title: byTitle.title,
+                    mimetype: "text/html",
+                    text: byTitle.section.text,
+                    bytes: byTitle.section.bytes)
+            } else {
+                continue
+            }
+            let sections = article.mimetype.contains("html")
+                ? ArticleSections.parse(html: article.text)
+                : [ArticleSection(title: "", level: 0, text: article.text)]
+            guard let lead = sections.first(where: { $0.title.isEmpty }),
+                  let cleaned = Self.cleanedWikiExcerpt(
+                    title: article.title, leadText: lead.text)
+            else { continue }
+            let title = article.title.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            let key = title.lowercased()
+            guard title.count >= 3, cleaned.count >= 80,
+                  seenTitles.insert(key).inserted
+            else { continue }
+            resolved.append([
+                "title": title,
+                "path": article.path,
+                "preview": ArticleHeuristics.trimToSentence(
+                    cleaned, maxChars: 280),
+            ])
+            if resolved.count >= limit { break }
+        }
+        return [
+            "zim": selected.name,
+            "kind": selected.kind.rawValue,
+            "source_title": page.title,
+            "count": resolved.count,
+            "topics": resolved,
+            "next_offset": nextOffset,
+            "cycle_complete": nextOffset == 0,
+        ]
+    }
+
     private func dispatchNearbyStories(args: [String: Any]) async throws -> [String: Any] {
         guard let lat = args["lat"] as? Double,
               let lon = args["lon"] as? Double,
@@ -1860,11 +1955,16 @@ public actor MCPToolAdapter {
         let maxStories = max(1, min(10, (args["max_stories"] as? Int) ?? 4))
         let kinds = args["kinds"] as? [String]
         let zim = args["zim"] as? String
+        let excludeNames = Set(
+            ((args["exclude_names"] as? [String]) ?? []).map {
+                $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            })
         return try await buildNearbyStories(
             lat: lat, lon: lon, radius: radius,
             maxStories: maxStories, kinds: kinds, zim: zim,
             origin: ["lat": lat, "lon": lon],
-            resolved: nil
+            resolved: nil,
+            excludeNames: excludeNames
         )
     }
 
@@ -1877,6 +1977,10 @@ public actor MCPToolAdapter {
         let maxStories = max(1, min(10, (args["max_stories"] as? Int) ?? 4))
         let kinds = args["kinds"] as? [String]
         let zim = args["zim"] as? String
+        let excludeNames = Set(
+            ((args["exclude_names"] as? [String]) ?? []).map {
+                $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            })
         // Reuse the streetzim geocode path used by near_named_place — fans
         // out across loaded streetzims if the pinned one misses.
         let hits = try await service.geocode(
@@ -1889,7 +1993,8 @@ public actor MCPToolAdapter {
             lat: first.lat, lon: first.lon, radius: radius,
             maxStories: maxStories, kinds: kinds, zim: zim,
             origin: nil,
-            resolved: first
+            resolved: first,
+            excludeNames: excludeNames
         )
     }
 
@@ -1900,7 +2005,8 @@ public actor MCPToolAdapter {
     private func buildNearbyStories(
         lat: Double, lon: Double, radius: Double,
         maxStories: Int, kinds: [String]?, zim: String?,
-        origin: [String: Double]?, resolved: Place?
+        origin: [String: Double]?, resolved: Place?,
+        excludeNames: Set<String>
     ) async throws -> [String: Any] {
         let overfetch = max(maxStories * 3, maxStories + 3)
         let nearby = try await service.nearPlaces(
@@ -1911,23 +2017,67 @@ public actor MCPToolAdapter {
             zim: zim,
             hasWiki: true
         )
+        func isExcluded(_ place: Place, names: Set<String>) -> Bool {
+            let name = place.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            let wikiTitle = (place.wiki ?? "").split(separator: ":", maxSplits: 1).last
+                .map(String.init)?.replacingOccurrences(of: "_", with: " ")
+                .lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return names.contains(name) || (!wikiTitle.isEmpty && names.contains(wikiTitle))
+        }
         let candidates: [(place: Place, distanceMeters: Double)] = nearby.results
             .filter { pair in
                 let w = pair.place.wiki ?? ""
-                return !w.isEmpty
+                return !w.isEmpty && !isExcluded(pair.place, names: excludeNames)
             }
 
-        if candidates.isEmpty {
-            var out: [String: Any] = [
-                "radius_km": radius,
-                "count": 0,
-                "stories": [] as [[String: Any]],
-                "note": "No wiki-linked places found in range. Try widening "
-                    + "`radius_km` or dropping the `kinds` filter.",
+
+        func streetMapFallback(excluding names: Set<String>) async throws -> [[String: Any]] {
+            let preferredKinds = kinds ?? [
+                "museum", "historic", "attraction",
+                "landmark", "monument", "park",
             ]
-            if let origin { out["origin"] = origin }
-            if let resolved { out["resolved"] = Self.encodePlace(resolved) }
-            return out
+            var places = try await service.nearPlaces(
+                lat: lat, lon: lon,
+                radiusKm: radius,
+                limit: maxStories * 2,
+                kinds: preferredKinds,
+                zim: zim,
+                hasWiki: false)
+            var rows = places.results.filter { pair in
+                !isExcluded(pair.place, names: names)
+            }
+            if rows.isEmpty, kinds == nil {
+                places = try await service.nearPlaces(
+                    lat: lat, lon: lon,
+                    radiusKm: radius,
+                    limit: maxStories * 2,
+                    kinds: nil,
+                    zim: zim,
+                    hasWiki: false)
+                rows = places.results.filter { pair in
+                    !isExcluded(pair.place, names: names)
+                }
+            }
+            return rows.prefix(maxStories).map { pair in
+                let place = pair.place
+                let category = place.subtype.isEmpty
+                    ? place.kind
+                    : place.subtype
+                let categoryLabel = category.replacingOccurrences(
+                    of: "_", with: " ")
+                return [
+                    "place_name": place.name,
+                    "place_kind": place.kind,
+                    "place_subtype": place.subtype,
+                    "lat": place.lat,
+                    "lon": place.lon,
+                    "distance_m": Int(pair.distanceMeters.rounded()),
+                    "excerpt": categoryLabel.isEmpty
+                        ? "A real place in the loaded offline map."
+                        : "Offline map category: \(categoryLabel).",
+                    "has_more_sections": false,
+                ] as [String: Any]
+            }
         }
 
         let svc = service
@@ -1976,25 +2126,43 @@ public actor MCPToolAdapter {
             return collected
         }
 
-        let ordered = excerpts
+        try Task.checkCancellation()
+        // The article's canonical title can differ from both the map name
+        // and its wiki tag. Exclude aliases too, including the map fallback.
+        let resolvedExclusions = Set(excerpts.compactMap { row -> String? in
+            guard let title = row.1["wiki_title"] as? String,
+                  excludeNames.contains(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
+            else { return nil }
+            return (row.1["place_name"] as? String)?
+                .lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        })
+        var stories = excerpts
+            .filter { !resolvedExclusions.contains(($0.1["place_name"] as? String ?? "")
+                .lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) }
             .sorted { $0.0 < $1.0 }
             .prefix(maxStories)
             .map(\.1)
+        var storySource = "wikipedia"
+        var note: String?
+        if stories.isEmpty {
+            stories = try await streetMapFallback(excluding: excludeNames.union(resolvedExclusions))
+            storySource = "streetzim"
+            note = stories.isEmpty
+                ? "No notable places were found in range."
+                : "No nearby Wikipedia articles resolved; returned grounded "
+                    + "StreetZIM map leads instead."
+        } else if stories.count < maxStories
+                    && candidates.count > stories.count {
+            note = "Some wiki-linked places had articles that didn't resolve "
+                + "in the loaded Wikipedia ZIM — returned the ones that did."
+        }
         var out: [String: Any] = [
             "radius_km": radius,
-            "count": ordered.count,
-            "stories": Array(ordered),
+            "count": stories.count,
+            "story_source": storySource,
+            "stories": stories,
         ]
-        if ordered.isEmpty {
-            out["note"] = "Found \(candidates.count) wiki-linked places but "
-                + "none of their articles resolved in the loaded Wikipedia "
-                + "ZIMs. Try a different region or check that the matching "
-                + "Wikipedia ZIM is loaded."
-        } else if ordered.count < maxStories && candidates.count > ordered.count {
-            out["note"] = "Some wiki-linked places had articles that didn't "
-                + "resolve in the loaded Wikipedia ZIMs — returned the ones "
-                + "that did."
-        }
+        if let note { out["note"] = note }
         if let origin { out["origin"] = origin }
         if let resolved { out["resolved"] = Self.encodePlace(resolved) }
         return out

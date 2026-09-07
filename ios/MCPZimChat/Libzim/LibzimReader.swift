@@ -11,6 +11,17 @@
 import Foundation
 import MCPZimKit
 
+/// The scope lives as long as the reader, including in-flight web/tool reads.
+private final class ArchiveSecurityScope: @unchecked Sendable {
+    private let url: URL
+    private let acquired: Bool
+    init(url: URL, enabled: Bool) {
+        self.url = url
+        acquired = enabled && url.startAccessingSecurityScopedResource()
+    }
+    deinit { if acquired { url.stopAccessingSecurityScopedResource() } }
+}
+
 #if canImport(CoreKiwix)
 import CoreKiwix
 
@@ -19,8 +30,10 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
     public static let isLinked = true
     private let archive: ZimArchive   // Obj-C++ wrapper around zim::Archive
     private let url: URL
+    private let securityScope: ArchiveSecurityScope
 
-    public init(url: URL) throws {
+    public init(url: URL, accessSecurityScope: Bool = false) throws {
+        self.securityScope = ArchiveSecurityScope(url: url, enabled: accessSecurityScope)
         self.url = url
         self.archive = try ZimArchive(fileURL: url)
         self.metadata = Self.readMetadata(archive)
@@ -117,7 +130,7 @@ public final class LibzimReader: ZimReader, @unchecked Sendable {
     public let hasTitleIndex = false
     public let hasRoutingData = false
 
-    public init(url: URL) throws {
+    public init(url: URL, accessSecurityScope: Bool = false) throws {
         throw LibzimError.notLinked
     }
 

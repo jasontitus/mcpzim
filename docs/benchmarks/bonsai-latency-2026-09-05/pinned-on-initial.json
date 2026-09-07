@@ -1,0 +1,80 @@
+{
+  "runtime": "prism-b9591 / 62061f9",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=false \u00b7 append=true \u00b7 edited=false \u00b7 pass=false",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 15.11,
+      "ttft_seconds": 15.112,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.76,
+      "total_seconds": 18.649,
+      "footprint_mb": 1103.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.291,
+      "ttft_seconds": 0.399,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.7,
+      "total_seconds": 3.964,
+      "footprint_mb": 1103.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 0.848,
+      "ttft_seconds": 0.85,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 7.19,
+      "total_seconds": 1.824,
+      "footprint_mb": 1103.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 19.165,
+      "ttft_seconds": 19.171,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.31,
+      "total_seconds": 20.28,
+      "footprint_mb": 1103.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 0 pieces/5.875s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 512..<1024 of 1223\")",
+    "interrupted-retry \u00b7 stopped after 0 pieces/0.006s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1223\")",
+    "edited-answer \u00b7 stopped after 0 pieces/0.002s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1250\")",
+    "edited-reference \u00b7 stopped after 0 pieces/0.002s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1250\")"
+  ],
+  "captures": [
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 2.767s",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 0.630s",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 4.141s"
+  ],
+  "restores": [
+    "tokens=1222 \u00b7 0.103s"
+  ],
+  "verification_trials": [],
+  "verification_median_seconds": {},
+  "settings": {
+    "checkpoint": true,
+    "storage": "device",
+    "prefill_batch": 512
+  }
+}

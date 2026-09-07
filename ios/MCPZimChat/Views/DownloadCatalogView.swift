@@ -331,7 +331,7 @@ private struct HTTPDownloadRow: View {
 
     private var tint: Color {
         switch item.state {
-        case .paused: return .gray
+        case .paused, .waitingForNetwork: return .gray
         case .failed: return .red
         default: return .accentColor
         }
@@ -342,6 +342,8 @@ private struct HTTPDownloadRow: View {
         switch item.state {
         case .downloading, .paused:
             Text("\(SwarmFormat.bytes(item.receivedBytes)) of \(SwarmFormat.bytes(item.expectedBytes))\(item.state == .paused ? " · Paused" : "")")
+        case .waitingForNetwork:
+            Label("Waiting for network…", systemImage: "wifi.slash")
         case .failed(let message):
             Text(message)
                 .foregroundStyle(.red)
@@ -360,6 +362,17 @@ private struct HTTPDownloadRow: View {
                 downloads.pause(id: item.id)
             } label: {
                 Label("Pause", systemImage: "pause.fill")
+            }
+            Button(role: .destructive) {
+                downloads.cancel(id: item.id)
+            } label: {
+                Label("Cancel", systemImage: "trash")
+            }
+        case .waitingForNetwork:
+            Button {
+                downloads.resume(id: item.id)
+            } label: {
+                Label("Retry now", systemImage: "arrow.clockwise")
             }
             Button(role: .destructive) {
                 downloads.cancel(id: item.id)

@@ -82,6 +82,58 @@ final class NearPlacesChipIndexTests: XCTestCase {
         ]
     }
 
+    func testCarmelValleyWiderSearchReturnsActualArchiveCafeRecords() async throws {
+        var fixture = newZimWithChips()
+        fixture["category-index/chip-cafes.json"] = #"[{"n": "Carmel Valley Creamery Co.", "t": "poi", "s": "coffee_shop", "a": 36.473565, "o": -121.728071}, {"n": "Wild Goose Bakery Cafe", "t": "poi", "s": "cafe", "a": 36.47836579786404, "o": -121.72914862632751}, {"n": "Fro N Joe", "t": "poi", "s": "coffee_shop", "a": 36.479633, "o": -121.731155}, {"n": "Corkscrew Cafe", "t": "poi", "s": "cafe", "a": 36.48036, "o": -121.734718}]"#
+        let svc = service(fixture)
+        let narrow = try await svc.nearPlaces(lat: 36.4326, lon: -121.6625,
+            radiusKm: 5, limit: 10, kinds: ["coffee shop"], zim: nil)
+        let wide = try await svc.nearPlaces(lat: 36.4326, lon: -121.6625,
+            radiusKm: 10, limit: 10, kinds: ["coffee shop"], zim: nil)
+        XCTAssertEqual(narrow.totalInRadius, 0)
+        XCTAssertEqual(wide.totalInRadius, 4)
+        XCTAssertEqual(wide.results.first?.place.name, "Carmel Valley Creamery Co.")
+        XCTAssertTrue(wide.results.allSatisfy { $0.distanceMeters > 5000 && $0.distanceMeters <= 10000 })
+    }
+
+    func testUnreadableAdvertisedCategoryIsNotReportedAsZeroPlaces() async throws {
+        var fixture = newZimWithChips()
+        fixture.removeValue(forKey: "category-index/chip-cafes.json")
+        do {
+            _ = try await service(fixture).nearPlaces(lat: lat, lon: lon,
+                radiusKm: 5, limit: 10, kinds: ["cafe"], zim: nil)
+            XCTFail("An unreadable index must not masquerade as no matching places")
+        } catch ZimServiceError.placeIndexUnavailable(let name) {
+            XCTAssertEqual(name, "osm-test")
+        }
+    }
+
+    func testOutsideCoverageIsNotReportedAsZeroPlaces() async throws {
+        var fixture = newZimWithChips()
+        fixture["streetzim-meta.json"] = """
+        {"bbox":{"minLat":37,"maxLat":38,"minLon":-123,"maxLon":-122}}
+        """
+        let svc = service(fixture)
+        do {
+            _ = try await svc.nearPlaces(lat: 45, lon: -122.5, radiusKm: 5,
+                limit: 10, kinds: ["cafe"], zim: nil)
+            XCTFail("Missing coverage must not appear as a successful empty search")
+        } catch ZimServiceError.outsideMapCoverage(let name) {
+            XCTAssertEqual(name, "osm-test")
+        }
+    }
+
+    func testEmptySearchInsideCoverageRemainsSuccessful() async throws {
+        var fixture = newZimWithChips()
+        fixture["streetzim-meta.json"] = """
+        {"bbox":{"minLat":37,"maxLat":38,"minLon":-123,"maxLon":-122}}
+        """
+        let result = try await service(fixture).nearPlaces(lat: 37.9, lon: -122.5,
+            radiusKm: 1, limit: 10, kinds: ["cafe"], zim: nil)
+        XCTAssertEqual(result.totalInRadius, 0)
+        XCTAssertTrue(result.results.isEmpty)
+    }
+
     func testNewZimBroadRestaurantUsesChipNoFilter() async throws {
         // kinds=["restaurant"] → restaurants chip, returned whole (web
         // chip-tap parity). The two PA restaurants are in radius; the
@@ -249,6 +301,28 @@ final class NearPlacesChipIndexTests: XCTestCase {
     }
 
     // MARK: - Layer 2: legacy ZIM (poi bundle, no chips)
+
+    func testMuseumChipDoesNotRelabelLandmarksGalleriesOrMuseumCafes() async throws {
+        let svc = service([
+            "category-index/manifest.json": #"{"categories":{},"chips":{"museums":{"count":7}}}"#,
+            "category-index/chip-museums.json": """
+            [{"n":"Town Collection","t":"poi","s":"museum","a":37.442,"o":-122.155},
+             {"n":"History Museum","t":"poi","s":"tourism","a":37.442,"o":-122.155},
+             {"n":"Old Fountain","t":"poi","s":"tourism","a":37.442,"o":-122.155},
+             {"n":"Town Gallery","t":"poi","s":"gallery","a":37.442,"o":-122.155},
+             {"n":"Historic Plaque","t":"poi","s":"memorial","a":37.442,"o":-122.155},
+             {"n":"Museum Cafe","t":"poi","s":"cafe","a":37.442,"o":-122.155},
+             {"n":"Far Museum","t":"poi","s":"museum","a":38.58,"o":-121.49}]
+            """,
+        ])
+        let museums = try await svc.nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+            limit: 20, kinds: ["museum"], zim: nil, hasWiki: false)
+        XCTAssertEqual(Set(museums.results.map { $0.place.name }), ["Town Collection", "History Museum"])
+        XCTAssertEqual(museums.totalInRadius, 2)
+        let galleries = try await svc.nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+            limit: 20, kinds: ["gallery"], zim: nil, hasWiki: false)
+        XCTAssertEqual(galleries.results.map { $0.place.name }, ["Town Gallery"])
+    }
 
     private func legacyZimWithPoiBundle() -> [String: String] {
         [

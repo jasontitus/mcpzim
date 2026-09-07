@@ -58,16 +58,18 @@ public final class VoiceChatController {
     /// started but silent for several seconds. Keep TTS genuinely lazy and
     /// construct it only after the user's utterance has been submitted.
     @ObservationIgnored private var ttsStorage: TTSService?
+    public private(set) var activeVoiceName = TTSBackendPreference.current.displayName
     public var tts: TTSService {
         if let ttsStorage { return ttsStorage }
         let service = TTSFactory.makeBest(
             voice: KokoroVoicePreference.current)
         ttsStorage = service
+        activeVoiceName = service.displayName
         log("TTS backend initialized after capture — \(service.displayName)")
         return service
     }
     /// Swap a genuinely high-memory synthesis backend for the always-
-    /// affordable system voice when the device can't spare its peak. Small
+    /// affordable Supertonic voice when the device can't spare its peak. Small
     /// Core ML/ANE voices such as Supertonic are preserved even under thermal
     /// pressure; the safety fallback targets the multi-gigabyte Kokoro + LLM
     /// overlap that has actually crashed on-device.
@@ -86,14 +88,20 @@ public final class VoiceChatController {
         ttsPreparation?.cancel()
         ttsPreparation = nil
         if thermallyConstrained {
-            log("High-memory TTS backend \(current.displayName) skipped under \(thermal == .critical ? "critical" : "serious") thermal state — using English system voice this session")
+            log("High-memory TTS backend \(current.displayName) skipped under \(thermal == .critical ? "critical" : "serious") thermal state — selecting a lightweight voice")
         } else {
             log(String(format:
-                "High-memory TTS backend %@ needs ~%d MB peak but only %.0f MB free — using English system voice this session (avoids MLX synthesis abort)",
+                "High-memory TTS backend %@ needs ~%d MB peak but only %.0f MB free — selecting a lightweight voice",
                 current.displayName, current.peakSynthesisMemoryMB, available))
         }
         current.stop()
+        #if canImport(FluidAudio)
+        ttsStorage = Supertonic3TTSService(voice: SupertonicVoicePreference.current)
+        log("Memory fallback selected Supertonic 3; preferred engine remains unchanged")
+        #else
         ttsStorage = SystemTTSService(languageCode: "en-US")
+        #endif
+        activeVoiceName = ttsStorage?.displayName ?? "Voice unavailable"
     }
 
     public let session: ChatSession
@@ -183,8 +191,12 @@ public final class VoiceChatController {
         session.debug(message, category: "Voice")
     }
 
+    private var startAttempt: UUID?
+
     public func start() async {
         guard state == .idle || isErrorState else { return }
+        let attempt = UUID()
+        startAttempt = attempt
         voiceStartRequestedAt = ProcessInfo.processInfo.systemUptime
         state = .starting
         let ttsLabel = ttsStorage?.displayName
@@ -197,6 +209,7 @@ public final class VoiceChatController {
         // beginListening(). On macOS the engine could successfully start while
         // that sheet was still up, but never deliver input until an app restart.
         let microphoneAuth = await requestMicrophoneAuthorization()
+        guard startAttempt == attempt, !Task.isCancelled else { return }
         guard microphoneAuth.authorized else {
             log("microphone auth denied")
             state = .error("Microphone access is required for voice chat. Enable it in System Settings > Privacy & Security > Microphone.")
@@ -204,6 +217,7 @@ public final class VoiceChatController {
         }
 
         let auth = await stt.requestAuthorization()
+        guard startAttempt == attempt, !Task.isCancelled else { return }
         guard auth == .authorized else {
             log("STT auth denied: \(auth)")
             state = .error(authMessage(auth))
@@ -231,6 +245,7 @@ public final class VoiceChatController {
             try? await Task.sleep(nanoseconds: 250_000_000)
             #endif
         }
+        guard startAttempt == attempt, !Task.isCancelled else { return }
         do {
             try configureAudioSession()
             try beginListening()
@@ -241,6 +256,7 @@ public final class VoiceChatController {
     }
 
     public func stop() {
+        startAttempt = nil
         log("stop() — tearing down session")
         if session.isGenerating { session.stopGeneration() }
         sttTask?.cancel()
@@ -253,6 +269,7 @@ public final class VoiceChatController {
         generationWatcher = nil
         stt.cancel()
         ttsStorage?.stop()
+        ttsStorage = nil
         if engine.isRunning {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -804,6 +821,8 @@ public final class VoiceChatController {
             return
         }
         pendingAssistantIndex = nil
+        _ = tts
+        ensureAffordableTTS()
         let maximumChunk = max(
             40, tts.preferredStreamingChunkCharacters ?? 112)
         let defaultMinimum = min(56, max(24, maximumChunk - 28))
@@ -816,11 +835,10 @@ public final class VoiceChatController {
         // with a large resident LLM: the synthesis either defers forever
         // (silent turn) or, once generation frees the compute gate, aborts
         // inside MLX — EXC_BREAKPOINT in mlx_array_eval, real crash 2026-08-02
-        // (Kokoro + Bonsai 27B). Downgrade to the ~5 MB system voice for the
+        // (Kokoro + Bonsai 27B). Downgrade to Supertonic for the
         // rest of the session when the selected backend can't fit the current
         // jetsam headroom, so the user hears the answer instead of silence or
         // a crash.
-        ensureAffordableTTS()
         let t0 = Date()
         // Keep the UI honest: we are still thinking until the first chunk is
         // actually handed to the audio backend.
@@ -942,8 +960,8 @@ public final class VoiceChatController {
                                     synthesisStarted.timeIntervalSince($0)
                                 } ?? 0
                                 log(String(format:
-                                    "TTS first audio ready · boundary=%@ · chars=%d · text-wait=%.2fs · synthesis=%.2fs · turn=%.2fs · available=%.0f MB",
-                                    String(describing: prefix.boundary),
+                                    "TTS first audio ready · backend=%@ · boundary=%@ · chars=%d · text-wait=%.2fs · synthesis=%.2fs · turn=%.2fs · available=%.0f MB",
+                                    tts.displayName, String(describing: prefix.boundary),
                                     prefix.consumedCharacters, textWait,
                                     audioReady.timeIntervalSince(synthesisStarted),
                                     audioReady.timeIntervalSince(t0), availableMB))
@@ -999,6 +1017,9 @@ public final class VoiceChatController {
             return
         }
         await tts.awaitPlayback()
+        // Interrupt/stop can resume the playback waiter. Its new listening
+        // cycle owns capture; the cancelled reply must not rearm it again.
+        guard !Task.isCancelled else { return }
         // wall = generation overlap + audio + gaps + final drain. When
         // audio+gaps ≈ wall the turn length is real speech; large uncounted
         // remainder means waiting on text (generation-bound), not TTS.

@@ -58,10 +58,12 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     /// library/article/section identity needed to answer "where did this come
     /// from?" in the normal chat UI.
     public var groundingSources: [GroundingSource] = []
+    /// Factual prose consists of complete excerpts from retrieved ZIM text.
+    public var usesSourceExcerpts: Bool = false
     /// Deterministic per-sentence alignment of the reply against the exact
-    /// passages that were in the prompt (AnswerAttribution). Sentences with
-    /// `passageIndex == nil` made claims the offline sources don't contain —
-    /// trained-data leakage or hallucination — and the UI flags them.
+    /// retrieved source passages (AnswerAttribution). A nil match means the
+    /// sentence is not an exact source excerpt; lexical similarity alone
+    /// does not establish that a claim follows from the source.
     public var sentenceAttributions: [SentenceAttribution] = []
 
     public init(id: UUID = UUID(), role: Role, text: String = "",
@@ -77,14 +79,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
         self.finishedAt = finishedAt
     }
 
-    /// The assistant emission EXACTLY as the model produced it, before any
-    /// display-side mutation (thread-offer append, disambiguation appendix,
-    /// whitespace trim, map-reduce replacement). Prompt rebuilds must use
-    /// this: the provider's KV mirror holds the tokens actually generated,
-    /// so rebuilding from mutated display text diverges at the last
-    /// assistant reply and — on hybrid models that cannot partially
-    /// truncate — forces a full re-prefill every following turn
-    /// (PERFORMANCE_REVIEW.md A2). nil ⇒ `text` was never mutated.
+    /// Approved assistant text retained before host-generated suggestions or
+    /// clarification appendices. Raw model drafts must never be stored here:
+    /// this field is included in subsequent provider prompts.
     public var rawAssistantText: String?
 
     /// Exact text inserted into the provider transcript. The UI and user

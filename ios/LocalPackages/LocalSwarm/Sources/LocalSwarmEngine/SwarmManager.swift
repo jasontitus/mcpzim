@@ -56,6 +56,10 @@ public final class SwarmManager: ObservableObject {
         let pin: String?
     }
     private var downloadParams: [String: DownloadParams] = [:]
+    // A swarm ID identifies content, not a particular start/resume attempt.
+    // Late callbacks from a retired attempt must not revive or complete it.
+    private var downloadAttempts: [String: UUID] = [:]
+    private var receiveAttempts: [String: UUID] = [:]
 
     /// swarmIDs whose late session snapshots must be ignored (paused/canceled),
     /// so a user action isn't immediately undone by an in-flight status update.
@@ -316,8 +320,12 @@ public final class SwarmManager: ObservableObject {
                                                netQueue: self.netQueue,
                                                ioQueue: self.ioQueue,
                                                pin: pin)
-                    session.onSnapshot = { [weak self] status in
-                        DispatchQueue.main.async { self?.applyStatus(status) }
+                    session.onSnapshot = { [weak self, weak session] status in
+                        DispatchQueue.main.async {
+                            guard let self, let session,
+                                  self.hostSessions[manifest.swarmID] === session else { return }
+                            self.applyStatus(status)
+                        }
                     }
                     session.onAdvertiserState = { [weak self] transport, state in
                         DispatchQueue.main.async {
@@ -325,14 +333,20 @@ public final class SwarmManager: ObservableObject {
                             self?.rebuildDiagnostics()
                         }
                     }
-                    session.startAdvertising(peerID: peerID)
-                    session.start()
                     DispatchQueue.main.async {
+                        guard self.hostPreparations.contains(where: { $0.id == prepID }) else {
+                            self.netQueue.async { session.stop() }
+                            return
+                        }
                         let previous = self.hostSessions[manifest.swarmID] // re-sharing same content
                         self.hostSessions[manifest.swarmID] = session
                         self.hostedManifests = self.hostSessions.values.map { $0.manifest }
                         self.hostPreparations.removeAll { $0.id == prepID }
-                        self.netQueue.async { previous?.stop() }
+                        self.netQueue.async {
+                            previous?.stop()
+                            session.startAdvertising(peerID: peerID)
+                            session.start()
+                        }
                         // If a download is in progress, this new host session must
                         // not advertise either (AWDL role conflict).
                         self.updateAdvertisingForDownloads()
@@ -341,6 +355,7 @@ public final class SwarmManager: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async {
+                    guard self.hostPreparations.contains(where: { $0.id == prepID }) else { return }
                     self.hostPreparations.removeAll { $0.id == prepID }
                     self.lastError = "Couldn't share files: \(error.localizedDescription)"
                 }
@@ -364,6 +379,7 @@ public final class SwarmManager: ObservableObject {
 
     /// Stops seeding every hosted swarm.
     public func stopHosting() {
+        hostPreparations.removeAll()
         let sessions = Array(hostSessions.values)
         for id in hostSessions.keys { statusByID[id] = nil }
         hostSessions = [:]
@@ -382,8 +398,12 @@ public final class SwarmManager: ObservableObject {
         guard statusByID[swarm.swarmID] == nil,
               !pendingReceives.contains(where: { $0.swarmID == swarm.swarmID }) else { return }
         pendingReceives.append(PendingReceive(swarmID: swarm.swarmID, name: swarm.name))
+        let attempt = UUID()
+        receiveAttempts[swarm.swarmID] = attempt
         Task { @MainActor in
             let manifest = await fetchManifest(for: swarm, pin: pin)
+            guard receiveAttempts[swarm.swarmID] == attempt else { return }
+            receiveAttempts[swarm.swarmID] = nil
             if let manifest {
                 startDownload(manifest: manifest, selecting: [], from: swarm, pin: pin)
             }
@@ -414,6 +434,16 @@ public final class SwarmManager: ObservableObject {
                               from swarm: DiscoveredSwarm,
                               using preferredTransport: Transport? = nil,
                               pin: String? = nil) {
+        do { try manifest.validate() }
+        catch { lastError = "Couldn't start download: \(error.localizedDescription)"; return }
+        let availableFiles = Set(manifest.files)
+        guard manifest.swarmID == swarm.swarmID,
+              files.allSatisfy({ availableFiles.contains($0) }) else {
+            lastError = "The selected files are not in this share."
+            return
+        }
+        // Treat duplicate selections as one file, matching chunkIndices.
+        let files = Array(Set(files))
         let peerID = localPeerID
         // Use the requested transport if the swarm offers it; otherwise fall back
         // to any transport it does offer (so a download never silently no-ops).
@@ -441,6 +471,10 @@ public final class SwarmManager: ObservableObject {
         }
 
         downloadManifests[manifest.swarmID] = manifest // for completedFileURLs(swarmID:)
+        let attempt = UUID()
+        downloadAttempts[manifest.swarmID] = attempt
+        let previous = downloadSessions.removeValue(forKey: manifest.swarmID)
+        netQueue.async { previous?.stop() }
         suppressedSwarmIDs.remove(manifest.swarmID)
         downloadParams[manifest.swarmID] = DownloadParams(
             manifest: manifest, files: files, swarm: swarm, pin: pin)
@@ -476,11 +510,14 @@ public final class SwarmManager: ObservableObject {
                                            ioQueue: self.ioQueue,
                                            pin: pin)
                 session.onSnapshot = { [weak self] status in
-                    DispatchQueue.main.async { self?.applyStatus(status) }
+                    DispatchQueue.main.async {
+                        guard let self, self.downloadAttempts[manifest.swarmID] == attempt else { return }
+                        self.applyStatus(status)
+                    }
                 }
                 session.onComplete = { [weak self] in
                     DispatchQueue.main.async {
-                        guard let self = self else { return }
+                        guard let self, self.downloadAttempts[manifest.swarmID] == attempt else { return }
                         // Download done → this node can advertise/seed again.
                         self.activeDownloads.remove(manifest.swarmID)
                         self.updateAdvertisingForDownloads()
@@ -490,14 +527,21 @@ public final class SwarmManager: ObservableObject {
                 // Note: a leecher does NOT advertise while downloading — the
                 // session begins seeding only once the download completes (an
                 // active AWDL listener throttles the AWDL download badly).
-                session.startDownload(from: sources)
-                session.start()
                 DispatchQueue.main.async {
-                    self.downloadSessions[manifest.swarmID]?.stop()
+                    guard self.downloadAttempts[manifest.swarmID] == attempt else {
+                        self.netQueue.async { session.stop() }
+                        return
+                    }
                     self.downloadSessions[manifest.swarmID] = session
+                    self.netQueue.async {
+                        session.startDownload(from: sources)
+                        session.start()
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
+                    guard self.downloadAttempts[manifest.swarmID] == attempt else { return }
+                    self.downloadAttempts[manifest.swarmID] = nil
                     // Startup failed after we optimistically suspended advertising
                     // and showed a row — undo both so hosting stays discoverable
                     // and the failed transfer doesn't linger.
@@ -516,12 +560,13 @@ public final class SwarmManager: ObservableObject {
     /// Pauses an active download. Partial data + bitfield stay on disk; the
     /// transfer can be resumed.
     public func pauseDownload(swarmID: String) {
-        guard let session = downloadSessions[swarmID] else { return }
+        guard downloadAttempts.removeValue(forKey: swarmID) != nil else { return }
+        let session = downloadSessions[swarmID]
         suppressedSwarmIDs.insert(swarmID)
         downloadSessions[swarmID] = nil
         activeDownloads.remove(swarmID)
         updateAdvertisingForDownloads()
-        netQueue.async { session.stop() }
+        netQueue.async { session?.stop() }
         if var status = statusByID[swarmID] {
             status.role = .paused
             status.bytesPerSecond = 0
@@ -554,6 +599,9 @@ public final class SwarmManager: ObservableObject {
     /// Stops a download (active or paused) and deletes its partial data. A
     /// completed/re-seeding transfer is stopped but its finished files are kept.
     public func cancelDownload(swarmID: String) {
+        downloadAttempts[swarmID] = nil
+        receiveAttempts[swarmID] = nil
+        pendingReceives.removeAll { $0.swarmID == swarmID }
         let wasComplete = statusByID[swarmID]?.role == .complete
         if let status = statusByID[swarmID] {
             TransferLogger.shared.record(event: "cancel", status: status, transport: transport, elapsed: 0)
@@ -568,10 +616,13 @@ public final class SwarmManager: ObservableObject {
         activeDownloads.remove(swarmID)
         updateAdvertisingForDownloads()
         recomputeTransfers()
-        netQueue.async { session?.stop() }
-        if !wasComplete, let manifest {
-            let directory = directory(for: manifest)
-            ioQueue.async { try? FileManager.default.removeItem(at: directory) }
+        // Order cleanup with startup/resume, rather than racing a concurrent
+        // delete against a newly created store for the same content.
+        netQueue.async {
+            session?.stop()
+            if !wasComplete, let manifest {
+                try? FileManager.default.removeItem(at: self.directory(for: manifest))
+            }
         }
     }
 

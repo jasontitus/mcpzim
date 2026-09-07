@@ -41,6 +41,8 @@ public extension QueryComplexity {
         let navigationalSignals = [
             "route", "directions", "how do i get", "how do i drive",
             "get to ", "get from ", "near here", "near me",
+            "around here", "around me", "where i am", "my location",
+            "local story", "local stories",
             "what's around", "whats around", "what is around",
             "what's in ", "whats in ", "what is in ",
             "what's nearby", "whats nearby", "what is nearby",

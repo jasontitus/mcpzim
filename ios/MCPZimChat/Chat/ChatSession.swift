@@ -78,7 +78,7 @@ public final class ChatSession {
                 for: .documentDirectory, in: .userDomainMask,
                 appropriateFor: nil, create: false
             ) else { return false }
-            return url.path.hasPrefix(docs.path)
+            return ArchiveFilePolicy.contains(url, in: docs)
         }
     }
 
@@ -222,6 +222,7 @@ public final class ChatSession {
         let topic: String
         let zim: String?
         var sources: [(title: String, sections: [ArticleSection])]
+        var sourceLibraries: [String: String] = [:]
         /// Normalized titles of articles directly linked from any source
         /// currently in hand. Corpus expansion must follow one of these
         /// Wikipedia edges; lexical similarity alone is not enough.
@@ -235,22 +236,15 @@ public final class ChatSession {
         var lastQuestion: String?
     }
     private var discussionState: DiscussionState?
+    private var nativeEvidenceMessageID: UUID?
 
-    /// Exact grounded transcript retained across Wikipedia follow-ups. The
-    /// llama.cpp provider can reuse a hybrid model's recurrent/KV state only
-    /// when the next prompt is a strict append. Re-sending a freshly ranked
-    /// standalone passage bundle changes the prompt near the beginning and
-    /// forces Bonsai to prefill all ~2k tokens again. This cache instead
-    /// appends only newly selected passages + the next question, while the
-    /// provider keeps the matching prefix in RAM.
-    private struct GroundedPromptCache {
+    /// Sections already inspected for the current topic. This drives one
+    /// bounded retrieval retry; generated prose is never retained as evidence.
+    private struct GroundedEvidenceSelection {
         let topic: String
-        let modelID: String
-        let systemPreamble: String
-        var turns: [ChatTurn]
         var passageKeys: Set<String>
     }
-    private var groundedPromptCache: GroundedPromptCache?
+    private var groundedEvidenceSelection: GroundedEvidenceSelection?
 
     /// The question that hit `.ambiguous` and the candidates we offered,
     /// held for exactly one turn. When the user's next turn picks one
@@ -279,8 +273,9 @@ public final class ChatSession {
     private static func exitsDiscussion(_ toolName: String) -> Bool {
         switch toolName {
         case "route_from_places", "plan_driving_route", "near_places",
-             "near_named_place", "what_is_here", "locate",
-             "discuss_article", "compare_articles":
+             "near_named_place", "nearby_stories",
+             "nearby_stories_at_place", "what_is_here", "locate",
+             "discover_topics", "discuss_article", "compare_articles":
             return true
         default:
             return false
@@ -297,14 +292,9 @@ public final class ChatSession {
         _ intent: DirectIntent, state: DiscussionState, userText: String
     ) -> Bool {
         if Self.exitsDiscussion(intent.toolName) {
-            // A factual correction can contain a syntactic “X in Y” fragment
-            // that a stateless places regex mistakes for a POI request. Keep
-            // it pinned instead of launching a map. The classifier has the
-            // same guard; this host check prevents future regex drift from
-            // recreating the TestFlight 2026-08-10 crash path.
-            if IntentRouter.isConversationalKnowledgeRequest(userText) {
-                return false
-            }
+            // The classifier already rejects prose that merely contains a
+            // locational preposition. A real map intent must leave the pin,
+            // including question-shaped requests such as "what's around here?".
             return true
         }
         let articleTools: Set<String> = [
@@ -666,6 +656,12 @@ public final class ChatSession {
                     progress: fraction
                 )
                 signature = "downloading:\(Int(fraction * 1000))"
+            case .waitingForNetwork:
+                setupState = .running(
+                    stage: "Waiting for network to download \(selectedModel.displayName)…",
+                    progress: nil
+                )
+                signature = "waitingForNetwork"
             case .loading:
                 setupState = .running(
                     stage: "Opening \(selectedModel.displayName)…",
@@ -682,7 +678,13 @@ public final class ChatSession {
                 setupState = .failed(message)
                 return
             }
-            if signature != lastSignature {
+            if signature == "waitingForNetwork" {
+                // The OS parked the transfer on connectivity — not a stall.
+                // Keep the setup alive until bytes resume or the provider
+                // reports a real failure.
+                lastSignature = signature
+                lastAdvance = Date()
+            } else if signature != lastSignature {
                 lastSignature = signature
                 lastAdvance = Date()
             } else if Date().timeIntervalSince(lastAdvance) > stallTimeout {
@@ -1481,7 +1483,7 @@ public final class ChatSession {
     public func awaitLocationIfAny(maxWait: TimeInterval = 5) async {
         if currentLocation != nil { return }
         let deadline = Date().addingTimeInterval(maxWait)
-        while currentLocation == nil, Date() < deadline {
+        while currentLocation == nil, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
         }
     }
@@ -1499,7 +1501,7 @@ public final class ChatSession {
         if let tail = LogArchive.shared.previousSessionUncleanTail() {
             let msg = "⚠️ PREVIOUS SESSION ENDED UNCLEANLY (no clean background/terminate). Last lines of \(tail)"
             print(msg)
-            LogArchive.shared.append(msg)
+            LogArchive.shared.appendSync(msg)
         }
         let defaults = UserDefaults.standard
         let storedCap = defaults.integer(forKey: Self.articleCapKBKey)
@@ -1598,6 +1600,8 @@ public final class ChatSession {
             displayName: "Gemma 3 4B IT (Q4_K_M · llama.cpp)",
             huggingFaceRepo: "bartowski/google_gemma-3-4b-it-GGUF",
             ggufFilename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+            expectedGGUFBytes: 2_489_758_112,
+            expectedGGUFSHA256: "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
             approximateMemoryMB: 3200,
             template: Gemma3Template()
         )
@@ -1614,6 +1618,8 @@ public final class ChatSession {
             displayName: "Gemma 3 4B IT FT (Q4_K_M · llama.cpp)",
             huggingFaceRepo: "sliderforthewin/gemma-3-4b-it-ft-GGUF",
             ggufFilename: "gemma-3-4b-it-ft.Q4_K_M.gguf",
+            expectedGGUFBytes: 2_867_473_600,
+            expectedGGUFSHA256: "bc5ee0ce3a634612258f753da52d2d83150f089b7886146d24de97d5fc43919c",
             approximateMemoryMB: 3200,
             template: Gemma3Template()
         )
@@ -1636,6 +1642,8 @@ public final class ChatSession {
             displayName: "LFM2.5 8B-A1B FT (IQ3_XS · llama.cpp)",
             huggingFaceRepo: "sliderforthewin/lfm2.5-8b-a1b-ft-GGUF",
             ggufFilename: "lfm2.5-8b-a1b-ft.imx.IQ3_XS.gguf",
+            expectedGGUFBytes: 3_555_421_440,
+            expectedGGUFSHA256: "6a5ece502dbd8cd28d6f846111b840fdae9b9d8eafdc5d9d67743153c0b50083",
             // llama.cpp KV is fixed at n_ctx, so long replies are nearly free
             // here — give the FT room for thorough/discuss answers (and a
             // <think> preamble) instead of the device's TTS-tuned default.
@@ -1664,6 +1672,7 @@ public final class ChatSession {
             huggingFaceRepo: "prism-ml/Bonsai-27B-gguf",
             ggufFilename: "Bonsai-27B-Q1_0.gguf",
             expectedGGUFBytes: 3_803_452_480,
+            expectedGGUFSHA256: "17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0",
             replyTokensFloor: 512,
             approximateMemoryMB: 5500,
             // Bonsai has only 16 attention layers and uses Q4 KV: 16K costs
@@ -1705,6 +1714,7 @@ public final class ChatSession {
             huggingFaceRepo: "prism-ml/Ternary-Bonsai-27B-gguf",
             ggufFilename: "Ternary-Bonsai-27B-Q2_0.gguf",
             expectedGGUFBytes: 7_165_121_600,
+            expectedGGUFSHA256: "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757",
             replyTokensFloor: 1024,
             approximateMemoryMB: 9000,
             contextTokens: 32768,
@@ -1798,22 +1808,31 @@ public final class ChatSession {
         #if DEBUG
         let bonsaiSelectionMigrationKey = "chat.didSelectBonsai27B1BitV2"
         if !defaults.bool(forKey: bonsaiSelectionMigrationKey) {
-            resolvedId = bonsai27b_1bit.id
-            defaults.set(bonsai27b_1bit.id, forKey: Self.selectedModelKey)
+            // Only exercise Bonsai on a device with real headroom — the
+            // ~5.5 GB peak is past the 6 GB process cap on a snug/tight
+            // phone and OOMs at load (the "100% model download" crash).
+            if ModelCatalog.modelFitsDevice(bonsai27b_1bit.approximateMemoryMB) {
+                resolvedId = bonsai27b_1bit.id
+                defaults.set(bonsai27b_1bit.id, forKey: Self.selectedModelKey)
+            }
             defaults.set(true, forKey: bonsaiSelectionMigrationKey)
         } else if crashesOnDevice.contains(savedId ?? "") {
             resolvedId = gemma3_4b_gguf_ft.id
         } else if savedId == gemma3_4b_gguf.id {
             resolvedId = gemma3_4b_gguf_ft.id
         }
-        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? bonsai27b_1bit
+        self.selectedModel = providers.first(where: { $0.id == resolvedId })
+            ?? providers.first(where: { $0.id == ModelCatalog.recommendedModelID() })
+            ?? bonsai27b_1bit
         #else
         if crashesOnDevice.contains(savedId ?? "") {
             resolvedId = gemma3_4b_gguf_ft.id
         } else if savedId == gemma3_4b_gguf.id {
             resolvedId = gemma3_4b_gguf_ft.id
         }
-        self.selectedModel = providers.first(where: { $0.id == resolvedId }) ?? lfm25_ft
+        self.selectedModel = providers.first(where: { $0.id == resolvedId })
+            ?? providers.first(where: { $0.id == ModelCatalog.recommendedModelID() })
+            ?? lfm25_ft
         #endif
         #else
         // Give the Mac app the same initial Bonsai operating point as the
@@ -2022,7 +2041,7 @@ public final class ChatSession {
                 // so the UI can show elapsed seconds during the window
                 // where Hub progress is stuck at 1%.
                 switch state {
-                case .downloading:
+                case .downloading, .waitingForNetwork:
                     if self.downloadStartedAt == nil {
                         self.downloadStartedAt = Date()
                     }
@@ -2043,7 +2062,10 @@ public final class ChatSession {
         let files = (try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil))?.filter {
             $0.pathExtension.lowercased() == "zim"
         } ?? []
-        await openReaders(urls: files)
+        let opened = await openEach(urls: files, useSecurityScope: false)
+        // Refresh Documents without dropping user-imported external archives.
+        library = library.filter { !ArchiveFilePolicy.contains($0.url, in: docs) } + opened
+        await rebuildService()
     }
 
     /// Open a fresh set of readers (typically from `scanDocumentsFolder()`).
@@ -2063,15 +2085,26 @@ public final class ChatSession {
     ///      (e.g. in `~/Downloads` where Kiwix also reads from).
     /// Also persists each picked URL as a bookmark so next launch reopens
     /// it without another pick.
-    public func addReaders(urls: [URL]) async {
-        await addReaders(urls: urls, invalidatePromptCache: true)
+    public func addReaders(urls: [URL], reloadExisting: Bool = false) async {
+        await addReaders(urls: urls, invalidatePromptCache: true, reloadExisting: reloadExisting)
     }
 
     private func addReaders(
         urls: [URL],
-        invalidatePromptCache: Bool
+        invalidatePromptCache: Bool,
+        reloadExisting: Bool = false
     ) async {
-        let opened = await openEach(urls: urls, useSecurityScope: true)
+        let existing = Set(library.map { $0.url.standardizedFileURL })
+        var seen: Set<URL> = []
+        let candidates = urls.filter {
+            let key = $0.standardizedFileURL
+            return seen.insert(key).inserted && (reloadExisting || !existing.contains(key))
+        }
+        let opened = await openEach(urls: candidates, useSecurityScope: true)
+        if reloadExisting {
+            let replacements = Set(opened.map { $0.url.standardizedFileURL })
+            library.removeAll { replacements.contains($0.url.standardizedFileURL) }
+        }
         // Skip duplicates — the user picking the same file again shouldn't
         // create a second entry.
         let existingPaths = Set(library.map { $0.url.path })
@@ -2096,23 +2129,23 @@ public final class ChatSession {
         var opened: [LibraryEntry] = []
         for url in urls {
             let memBefore = MemoryStats.physFootprintMB()
-            // External-picked files live outside our sandbox; we must enter
-            // the security scope before libzim can open them.
-            var scoped = false
-            if useSecurityScope {
-                scoped = url.startAccessingSecurityScopedResource()
-            }
             do {
-                let reader = try LibzimReader(url: url)
+                let reader = try await Task.detached(priority: .userInitiated) {
+                    try LibzimReader(url: url, accessSecurityScope: useSecurityScope)
+                }.value
                 let delta = MemoryStats.physFootprintMB() - memBefore
                 let mb = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64).flatMap { $0 } ?? 0
                 debug(String(format: "opened %@ (file=%.0f MB, Δmem=%+.1f MB%@)",
                              url.lastPathComponent, Double(mb) / 1_048_576, delta,
-                             scoped ? ", external" : ""),
+                             useSecurityScope ? ", imported" : ""),
                       category: "Library")
-                opened.append(LibraryEntry(url: url, reader: reader))
+                let docs = try? FileManager.default.url(for: .documentDirectory,
+                    in: .userDomainMask, appropriateFor: nil, create: false)
+                let disabled = Set(UserDefaults.standard.stringArray(
+                    forKey: ArchiveFilePolicy.disabledArchivesKey) ?? [])
+                opened.append(LibraryEntry(url: url, reader: reader,
+                    isEnabled: !disabled.contains(ArchiveFilePolicy.identity(url, documents: docs))))
             } catch {
-                if scoped { url.stopAccessingSecurityScopedResource() }
                 debug("open failed for \(url.lastPathComponent): \(error)", category: "Library")
                 libraryError = "Could not open \(url.lastPathComponent): \(error)"
             }
@@ -2147,7 +2180,7 @@ public final class ChatSession {
         let docs = (try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false))?.path
         let externalURLs = library.map { $0.url }.filter { url in
             guard let docs else { return true }
-            return !url.path.hasPrefix(docs)
+            return !ArchiveFilePolicy.contains(url, in: URL(fileURLWithPath: docs))
         }
         let blobs: [Data] = externalURLs.compactMap { url in
             #if os(macOS)
@@ -2200,7 +2233,25 @@ public final class ChatSession {
     /// Rebuild the in-process tool service from the *enabled* subset of the
     /// library. Called after `openReaders` and on every toggle so the tool
     /// registry (and thus what the model sees) stays in sync with user intent.
+    private var libraryRevision: UInt64 = 0
+
     private func rebuildService() async {
+        libraryRevision &+= 1
+        let revision = libraryRevision
+        if isGenerating {
+            stopGeneration()
+            await generationTask?.value
+        }
+        guard revision == libraryRevision else { return }
+        // A removed/disabled/replaced source cannot remain the evidence for
+        // a future discussion turn, nor leave actionable stale topic cards.
+        readingState = nil
+        discussionState = nil
+        groundedEvidenceSelection = nil
+        focus.reset()
+        if let index = messages.indices.last, messages[index].role == .assistant {
+            messages[index].suggestions = []
+        }
         let pairs = library
             .filter { $0.isEnabled }
             .map { ($0.url.lastPathComponent, $0.reader as ZimReader) }
@@ -2212,7 +2263,6 @@ public final class ChatSession {
                 self?.debug(msg, category: "ZimSvc")
             }
         }
-        self.service = svc
         let adapter = await MCPToolAdapter.from(service: svc, surface: .conversational)
         // Phase 3: semantic reranker on top of BM25. Uses Apple's
         // `NLContextualEmbedding` when available — graceful no-op
@@ -2234,6 +2284,8 @@ public final class ChatSession {
         await adapter.installHostStateProvider {
             await ZimfoContext.shared.mcpSnapshot()
         }
+        guard revision == libraryRevision else { return }
+        self.service = svc
         self.adapter = adapter
         // Wire the native-tools Apple-FM variant to the freshly-built
         // service so its Tool conformances dispatch to the same
@@ -2244,14 +2296,26 @@ public final class ChatSession {
                as? FoundationModelsProvider {
             // Mirror the conversational surface — same seven tools
             // the text-loop path exposes, minus the raw-coord trio.
+            let dispatcher = NativeGroundedDispatcher(adapter: adapter,
+                begin: { [weak self] in self?.nativeEvidenceMessageID },
+                record: { [weak self] messageID, trace in
+                    guard let self, self.messages.last?.id == messageID else { return }
+                    self.recordToolTrace(trace)
+                    if let raw = trace.rawResult.data(using: .utf8),
+                       let result = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+                       let argumentData = trace.arguments.data(using: .utf8),
+                       let args = try? JSONSerialization.jsonObject(with: argumentData) as? [String: Any] {
+                        self.updateFocusAfterTool(toolName: trace.name, args: args, result: result)
+                    }
+                })
             native.installNativeTools([
-                NearNamedPlaceNativeTool(service: svc),
-                RouteFromPlacesNativeTool(service: svc),
-                SearchNativeTool(service: svc),
-                GetArticleNativeTool(service: svc),
-                GetMainPageNativeTool(service: svc),
-                ListLibrariesNativeTool(service: svc),
-                ZimInfoNativeTool(service: svc),
+                NearNamedPlaceNativeTool(service: svc, groundedDispatcher: dispatcher),
+                RouteFromPlacesNativeTool(service: svc, groundedDispatcher: dispatcher),
+                SearchNativeTool(service: svc, groundedDispatcher: dispatcher),
+                GetArticleNativeTool(service: svc, groundedDispatcher: dispatcher),
+                GetMainPageNativeTool(service: svc, groundedDispatcher: dispatcher),
+                ListLibrariesNativeTool(service: svc, groundedDispatcher: dispatcher),
+                ZimInfoNativeTool(service: svc, groundedDispatcher: dispatcher),
             ])
         }
     }
@@ -2289,6 +2353,13 @@ public final class ChatSession {
         guard let idx = library.firstIndex(where: { $0.id == entryID }) else { return }
         guard library[idx].isEnabled != enabled else { return }
         library[idx].isEnabled = enabled
+        let docs = try? FileManager.default.url(for: .documentDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: false)
+        let key = ArchiveFilePolicy.identity(library[idx].url, documents: docs)
+        var disabled = Set(UserDefaults.standard.stringArray(
+            forKey: ArchiveFilePolicy.disabledArchivesKey) ?? [])
+        if enabled { disabled.remove(key) } else { disabled.insert(key) }
+        UserDefaults.standard.set(disabled.sorted(), forKey: ArchiveFilePolicy.disabledArchivesKey)
         await rebuildService()
         // A toggle can change the available tool registry (for example when
         // the last StreetZIM is disabled), so recompute the exact static
@@ -2299,7 +2370,17 @@ public final class ChatSession {
 
     // MARK: - Model switching
 
+    private var isSwitchingModel = false
+
     public func select(modelId: String) async {
+        guard !isSwitchingModel else { return }
+        isSwitchingModel = true
+        defer { isSwitchingModel = false }
+        if isGenerating {
+            stopGeneration()
+            await generationTask?.value
+        }
+        guard !Task.isCancelled else { return }
         guard let found = models.first(where: { $0.id == modelId }) else { return }
         if found.id == selectedModel.id {
             // A menu selection is also the user's retry gesture. Previously
@@ -2369,10 +2450,14 @@ public final class ChatSession {
     /// worker is scheduled as soon as the old lock is released.
     @MainActor
     private func startLlamaPromptOptimizationIfNeeded() {
+        #if DEBUG
+        // Direct inference probes own seq-0 and supply their own prompt.
+        if ProcessInfo.processInfo.environment["MCPZIM_BENCH_LATENCY"] == "1" { return }
+        #endif
         guard setupState == .ready,
               modelState.isReady,
               !isGenerating,
-              groundedPromptCache == nil,
+              groundedEvidenceSelection == nil,
               !messages.contains(where: { $0.role == .user }),
               let llama = selectedModel as? LlamaCppProvider,
               let adapter
@@ -2558,8 +2643,8 @@ public final class ChatSession {
             }
         }
     }
-
     public func loadSelectedModel() async {
+        LogArchive.shared.trace("loadSelectedModel: \(selectedModel.displayName) · auto")
         debug("Loading \(selectedModel.displayName)…", category: "Load")
         do {
             try await selectedModel.load()
@@ -2578,6 +2663,7 @@ public final class ChatSession {
     /// provider-side conversation state (Apple FM's warm session owns
     /// the transcript internally and needs to be told).
     public func resetConversation() {
+        guard !isGenerating else { stopGeneration(); return }
         messages.removeAll()
         // Discourse state is conversation-scoped — a "new chat" must forget
         // it, or the next turn stays pinned to the old topic (real bug
@@ -2588,7 +2674,7 @@ public final class ChatSession {
         readingState = nil
         discussionState = nil
         lastDiscussionPreparationStats = nil
-        groundedPromptCache = nil
+        groundedEvidenceSelection = nil
         preambleLocationSnapshot = nil
         focus.reset()
         pendingFactoidPredicate = nil
@@ -2625,7 +2711,7 @@ public final class ChatSession {
     /// carry category-specific guidance (Phase 2b).
     public private(set) var lastQueryComplexity: QueryComplexity = .topical
 
-    public func send(_ text: String) {
+    public func send(_ submittedText: String, suggestion: DiscoveryThread? = nil) {
         // Setup must have finished (prompt-cache prewarm / load) before
         // we let a real turn hit the generator — otherwise the user's
         // first query races with the prewarm's container.perform and
@@ -2636,9 +2722,27 @@ public final class ChatSession {
             debug("send() ignored — setup still running (\(setupState))", category: "Chat")
             return
         }
-        guard !isGenerating else {
+        guard !isGenerating, !isSwitchingModel else {
             debug("send() ignored — a turn is still generating", category: "Chat")
             return
+        }
+        // Spoken card choices use the exact same prompt as a tap, before
+        // classification or pinned-discussion routing. Only the latest reply
+        // can offer actions; old cards and unshown tool candidates cannot.
+        // Pending clarification answers must keep their original wording.
+        let suggestions = messages.last?.role == .assistant
+            ? (messages.last?.suggestions ?? []) : []
+        let selectedSuggestion = pendingDisambiguation == nil && pendingFactoidPredicate == nil
+            ? (suggestion ?? ConversationSuggestionSelection.selection(
+                for: submittedText, suggestions: suggestions)) : nil
+        let text = selectedSuggestion.map(ConversationSuggestionSelection.action)
+            ?? submittedText
+        if selectedSuggestion != nil, let idx = messages.indices.last,
+           messages[idx].role == .assistant {
+            messages[idx].suggestions = []
+        }
+        if text != submittedText {
+            debug("suggestion choice: \(submittedText) → \(text)", category: "Router")
         }
         // Refresh GPS if our last fix is stale — the preamble built in
         // `runGenerationLoop` injects `currentLocation`, so a recent
@@ -2676,6 +2780,14 @@ public final class ChatSession {
         isGenerating = true
         generationTask = Task {
             defer {
+                if Task.isCancelled, messages.last?.role == .assistant,
+                   messages.last?.text.isEmpty == true {
+                    updateAssistant("Stopped.")
+                }
+                isGenerating = false
+                if let index = messages.indices.last, messages[index].role == .assistant {
+                    messages[index].finishedAt = Date()
+                }
                 let responseCharacters = messages.last?.role == .assistant
                     ? (messages.last?.text.count ?? 0)
                     : 0
@@ -2713,6 +2825,7 @@ public final class ChatSession {
                           category: "Location")
                 }
             }
+            guard !Task.isCancelled else { return }
             let pendingFactoidIntent: DirectIntent? = {
                 guard let predicate = pendingFactoidPredicate else {
                     return nil
@@ -2765,6 +2878,16 @@ public final class ChatSession {
                 }
                 // No pick (or the fetch missed): the turn is a fresh query
                 // and normal routing below handles it.
+            }
+            if let selectedSuggestion,
+               let intent = ConversationSuggestionSelection.articleIntent(for: selectedSuggestion),
+               await executeDirectIntent(intent)
+            {
+                isGenerating = false
+                if let idx = messages.indices.last, messages[idx].role == .assistant {
+                    messages[idx].finishedAt = Date()
+                }
+                return
             }
             // A tentative factoid may be tried while deciding whether a turn
             // leaves a pinned discussion. If that probe misses and the turn
@@ -2851,7 +2974,7 @@ public final class ChatSession {
                 text, focus: focus)
             {
                 discussionState = nil
-                groundedPromptCache = nil
+                groundedEvidenceSelection = nil
                 debug("explicit source directive: Wikipedia article “\(sourceDirective.title)”"
                     + (sourceDirective.question.map { " · question=\($0)" } ?? ""),
                     category: "Router")
@@ -2888,7 +3011,7 @@ public final class ChatSession {
                 if IntentRouter.isDiscussionExit(text) {
                     activeQueryTelemetry?.setRoute("discussion")
                     discussionState = nil
-                    groundedPromptCache = nil
+                    groundedEvidenceSelection = nil
                     updateAssistant("Okay — we can stop there. What next?")
                     isGenerating = false
                     if let i = messages.indices.last, messages[i].role == .assistant {
@@ -2910,7 +3033,7 @@ public final class ChatSession {
                         debug("discussion leave (factoid): title=\((intent.anyArgs["title"] as? String) ?? "?") vs pinned \(ds.topic)",
                               category: "Router")
                         discussionState = nil
-                        groundedPromptCache = nil
+                        groundedEvidenceSelection = nil
                     }
                     let handled = await executeDirectIntent(intent)
                     if handled {
@@ -2926,7 +3049,8 @@ public final class ChatSession {
                     // pinned sections. A new-topic miss falls through to the
                     // normal router below instead of querying the old article.
                     if discussionState != nil {
-                        await answerWithinDiscussion(ds, question: text)
+                        await answerWithinDiscussion(ds, question: text, suggestion: selectedSuggestion)
+                        await appendThreadOfferIfUseful()
                         isGenerating = false
                         if let i = messages.indices.last,
                            messages[i].role == .assistant {
@@ -2939,9 +3063,10 @@ public final class ChatSession {
                     debug("discussion leave: \(intent.toolName)(\((intent.anyArgs["title"] as? String) ?? "-")) vs pinned \(ds.topic)",
                           category: "Router")
                     discussionState = nil   // topic change → normal routing below
-                    groundedPromptCache = nil
+                    groundedEvidenceSelection = nil
                 } else {
-                    await answerWithinDiscussion(ds, question: text)
+                    await answerWithinDiscussion(ds, question: text, suggestion: selectedSuggestion)
+                    await appendThreadOfferIfUseful()
                     isGenerating = false
                     if let i = messages.indices.last, messages[i].role == .assistant {
                         messages[i].finishedAt = Date()
@@ -3038,22 +3163,6 @@ public final class ChatSession {
             }
             await awaitLlamaPromptOptimizationIfNeeded()
             await runGenerationLoop()
-            // Phase 2c: for explanatory turns, if the model pulled
-            // >=2 sections, run a stateless map-reduce synthesis
-            // over those sections to ground the final answer. Peak
-            // memory stays flat (one section in prompt at a time).
-            // The model's first-pass synthesis is discarded and
-            // replaced with the reduced output — yes, that's a
-            // wasted generation; worth it for the quality lift on
-            // multi-source questions.
-            if complexity == .explanatory {
-                // `runGenerationLoop` already flipped isGenerating
-                // false via its defer; keep the UI disabled while
-                // the extra phase runs.
-                isGenerating = true
-                await maybeMapReduceExplanatory(userQuery: text)
-                isGenerating = false
-            }
             // Drift: end the reply by offering 1–3 vetted threads
             // (related wikilinks / nearby places) surfaced from this
             // turn's tool results, so the conversation can keep moving.
@@ -3250,7 +3359,6 @@ public final class ChatSession {
         // a genuinely stuck loop terminates.
         let maxIters = 6
         var toolLoopGuard = ToolLoopGuard()
-        var forcedSummaryReason: String?
         toolLoop: for iter in 0..<maxIters {
             // Preemptive memory-pressure guard. MLX's Metal backend
             // doesn't surface command-buffer errors as Swift errors —
@@ -3418,37 +3526,26 @@ public final class ChatSession {
                 maxTokens: effectiveMaxReplyTokens,
                 temperature: 0.3, topP: 0.9
             )
-            // Throttle UI pushes to ~10 Hz. Each `appendToAssistant` mutates
-            // the observable `messages` array, which cascades into
-            // re-layout of the chat bubble + scroll view + debug pane.
-            // Doing that per token pegs a CPU core; 10 Hz is indistinguishable
-            // to the eye and recovers most of the main-thread headroom.
-            var lastUIPush = Date.distantPast
-            let uiMinInterval: TimeInterval = 0.1
+            // Draft prose stays private. Only host-rendered tool results
+            // may reach the answer bubble or speech controller.
             // Do not turn on whole-buffer parsing for arbitrary prose/code
             // containing '<' or a backtick. Wait for one of the concrete
             // tool-call openers our templates accept.
             var sawToolCallOpener = false
             do {
                 for try await chunk in selectedModel.generate(prompt: prompt, parameters: params) {
+                    try Task.checkCancellation()
                     buffer += chunk
                     chunkCount += 1
-                    let now = Date()
-                    if now.timeIntervalSince(lastUIPush) >= uiMinInterval {
-                        appendToAssistant(buffer)
-                        lastUIPush = now
-                    }
                     if !sawToolCallOpener {
                         sawToolCallOpener = Self.containsToolCallOpener(buffer)
                     }
                     if sawToolCallOpener, let call = self.extractToolCall(in: buffer) {
-                        appendToAssistant(buffer)
                         toolCall = call
                         break
                     }
                 }
-                // Flush the final tokens — the throttle may have skipped them.
-                appendToAssistant(buffer)
+                try Task.checkCancellation()
                 // Post-stream rescue: generation ended naturally without
                 // the strict streaming parser matching a tool call. Qwen
                 // 3.5 (and occasionally Qwen 3) sometimes gets clipped by
@@ -3467,9 +3564,7 @@ public final class ChatSession {
                 }
             } catch is CancellationError {
                 debug("generation stopped by user", category: "Chat")
-                if buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    updateAssistant("Stopped.")
-                }
+                updateAssistant("Stopped.")
                 return
             } catch {
                 debug("generate threw: \(error)", category: "Chat")
@@ -3477,11 +3572,7 @@ public final class ChatSession {
                 // Never leave a silently EMPTY assistant bubble — the user
                 // has no idea the turn died (real capture 2026-07-02: an
                 // n_ctx overflow threw here and the reply was blank).
-                if buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    updateAssistant(
-                        "Sorry — I hit an error generating that reply. "
-                        + "Try asking again, or reset the conversation if it keeps happening.")
-                }
+                updateAssistant("I couldn't finish searching the loaded ZIM files. Please try again.")
                 return
             }
 
@@ -3497,12 +3588,8 @@ public final class ChatSession {
                 debug(String(format: "iter %d · done (%d chunks, %.2fs, %d chars)",
                               iter, chunkCount, dt, buffer.count),
                       category: "Chat")
-                // Mirror the final assistant text into the debug pane so
-                // you see the full Q/A pair inline with the tool calls.
-                let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    debug(trimmed, category: "Assistant")
-                }
+                debug("unverified model prose discarded", category: "Grounding")
+                finishSourceBoundToolAnswer()
                 return
             }
             debug(String(format: "iter %d · tool_call %@ after %.2fs (%d chunks)",
@@ -3519,39 +3606,28 @@ public final class ChatSession {
             let argsData = try? JSONSerialization.data(
                 withJSONObject: resolvedArgs, options: [.sortedKeys])
             let argsStr = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-            let pre = String(buffer[..<call.range.lowerBound])
             switch toolLoopGuard.evaluate(
                 toolName: call.name, canonicalArguments: argsStr)
             {
             case .allow:
                 break
             case .stop(let reason):
-                // Keep the model's prose before the rejected call, but do not
-                // append the redundant tool emission to the transcript. The
-                // forced no-tools summary below can answer from results that
-                // are already present without another exploratory dispatch.
-                updateAssistant(pre)
-                forcedSummaryReason = reason
-                debug("tool-loop circuit breaker: \(reason) — forcing summary",
+                // End planning and render only previously retrieved results.
+                debug("tool-loop circuit breaker: \(reason) — using ZIM results",
                       category: "Chat")
                 break toolLoop
             }
-            // Use the FULL buffer (not trimmed at call.range.upperBound).
-            // The sampler's last token often decodes to text that spans
-            // the `<tool_call|>` marker AND a few chars past it (e.g. a
-            // trailing newline). Those post-marker chars are already
-            // in the Gemma4Provider KV cache; if we trimmed them off
-            // here, encode(iter-1 prompt) would not match the cache
-            // mirror's last token and LCP would fall short by 1 token —
-            // every follow-up turn in the same conversation would pay
-            // a full prefill. Feeding the whole buffer keeps the cache
-            // mirror and the re-encoded prompt in sync.
-            let assistantTurnText = buffer
+            // Keep only the parsed tool invocation in history. Any prose
+            // before/after it was generated without validated evidence.
+            let assistantTurnText = String(buffer[call.range])
             let memBefore = MemoryStats.physFootprintMB()
             let toolStart = Date()
             debug("dispatching \(call.name)(\(argsStr)) — first call against a ZIM may block on graph/index load", category: "Tool")
             do {
                 let fullResult = try await adapter.dispatch(tool: call.name, args: resolvedArgs)
+                try Task.checkCancellation()
+                if call.name == "article_overview",
+                   presentArticleAmbiguity(args: resolvedArgs, result: fullResult) { return }
                 // Record what this fetch was about + the vetted drift
                 // threads it surfaced, so the next turn's follow-up
                 // resolves and the reply can offer where to go next.
@@ -3633,7 +3709,6 @@ public final class ChatSession {
                     rawResult: rawStr,
                     error: nil
                 ))
-                updateAssistant(pre) // truncate the <tool_call> block from the visible message.
                 if !assistantTurnText.isEmpty {
                     turns.append(ChatTurn(role: .assistant, text: assistantTurnText))
                 }
@@ -3662,13 +3737,18 @@ public final class ChatSession {
                     return
                 }
 
+                if !SourceBoundAnswer.passages(toolName: call.name, result: fullResult).isEmpty {
+                    finishSourceBoundToolAnswer()
+                    return
+                }
+
                 // Optional fast path for routing tools — skip iter 1.
                 // Saves ~5 s per routing turn by synthesizing the reply
                 // directly from the tool result instead of asking the
                 // model to rephrase it. Controlled by
                 // `routingSkipModelReply` (Library → Settings).
                 let routingTools: Set<String> = ["route_from_places", "plan_driving_route"]
-                if routingSkipModelReply && routingTools.contains(call.name) {
+                if routingTools.contains(call.name) {
                     let synth = Self.synthesizeRoutingReply(from: fullResult)
                     if !synth.isEmpty {
                         updateAssistant(synth)
@@ -3726,220 +3806,95 @@ public final class ChatSession {
                                     toolResponse: toolTurnText)
             }
         }
-        // Loop exhausted with unresolved tool results — force one last
-        // no-tool-call generation so the user sees a reply instead of
-        // an empty assistant bubble. Happens on small/slower models
-        // that burn iterations exploring.
-        if let last = messages.last, last.role == .assistant,
-           forcedSummaryReason != nil || last.text.isEmpty {
-            if let forcedSummaryReason {
-                debug("tool loop stopped (\(forcedSummaryReason)) — forcing a summary turn",
-                      category: "Chat")
-            } else {
-                debug("tool loop exhausted after \(maxIters) iters — forcing a summary turn",
-                      category: "Chat")
-            }
-            let summaryPrompt: String
-            let summaryInstruction = ChatTurn(
-                role: .user,
-                text: "You've used your tool budget. Without calling any more "
-                    + "tools, summarize what you found for the user in 1–3 "
-                    + "sentences based on the tool results above."
-            )
-            var finalTurns = turns
-            finalTurns.append(summaryInstruction)
-            // Same trained-format path as iter-0 (see the note there).
-            summaryPrompt = selectedModel.template.renderTranscript(
-                systemPreamble: systemMessage, tools: toolDecls, turns: finalTurns
-            )
-            var buffer = ""
-            let params = GenerationParameters(
-                maxTokens: 256, temperature: 0.3, topP: 0.9,
-                useModelSamplingProfile: false)
-            do {
-                for try await chunk in selectedModel.generate(prompt: summaryPrompt, parameters: params) {
-                    buffer += chunk
-                    appendToAssistant(buffer)
-                }
-            } catch {
-                debug("summary generation failed: \(error)", category: "Chat")
-            }
-            let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                debug(trimmed, category: "Assistant")
-            }
-        }
+        // Exhaustion never authorizes a free-form answer from training data.
+        finishSourceBoundToolAnswer()
     }
 
-    // MARK: - Map-reduce synthesis for explanatory turns
+    /// Finish a tool-planning turn using only this turn's actual tool
+    /// results. Search snippets and model prose cannot become article facts.
+    private func presentArticleAmbiguity(args: [String: Any], result: [String: Any]) -> Bool {
+        guard (result["ambiguous"] as? Bool) == true else { return false }
+        discussionState = nil
+        let text = IntentRouter.synthesizeArticleMissReply(args: args, fullResult: result)
+        updateAssistant(text)
+        let rows = result["disambiguation"] as? [[String: String]] ?? []
+        let choices = rows.compactMap { row -> DiscoveryThread? in
+            guard let title = row["title"] else { return nil }
+            return DiscoveryThread(label: title, kind: .topic, source: .wikilink,
+                zimPath: row["path"], zim: row["zim"], prompt: "Tell me about \(title)")
+        }
+        if let idx = messages.indices.last { messages[idx].suggestions = choices }
+        focus.setLastList(rows.compactMap { row in
+            guard let title = row["title"] else { return nil }
+            return FocusEntity(name: title, kind: .topic, zimPath: row["path"])
+        }, kind: .disambiguation)
+        debug(text, category: "Assistant")
+        return true
+    }
 
-    /// Guard + extract: only run map-reduce if the last assistant
-    /// turn pulled multiple `get_article_section` sources. One source
-    /// is better served by the direct-answer path.
-    private func maybeMapReduceExplanatory(userQuery: String) async {
-        guard let lastIdx = messages.lastIndex(where: { $0.role == .assistant })
-        else { return }
-        let sectionTraces = messages[lastIdx].toolCalls
-            .filter { $0.name == "get_article_section" && $0.succeeded }
-        guard sectionTraces.count >= 2 else {
-            debug("explanatory: only \(sectionTraces.count) section source(s), skipping map-reduce",
-                  category: "MapReduce")
+    private func finishSourceBoundToolAnswer() {
+        guard !Task.isCancelled, let last = messages.last, last.role == .assistant else { return }
+        let question = messages.last(where: { $0.role == .user })?.text ?? ""
+        let results: [(name: String, args: [String: Any], result: [String: Any])] = last.toolCalls.compactMap { trace in
+            guard trace.succeeded,
+                  let data = (trace.rawResult.isEmpty ? trace.result : trace.rawResult).data(using: .utf8),
+                  let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  result["error"] == nil else { return nil }
+            let args = trace.arguments.data(using: .utf8).flatMap {
+                try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+            } ?? [:]
+            return (trace.name, args, result)
+        }
+        let passages = results.flatMap { SourceBoundAnswer.passages(toolName: $0.name, result: $0.result) }
+        if !passages.isEmpty {
+            if let article = results.first(where: {
+                !SourceBoundAnswer.passages(toolName: $0.name, result: $0.result).isEmpty
+            }) {
+                // Native sessions discard their unverified private draft.
+                // Follow-ups instead use the host's source-backed anchor.
+                noteDiscussionAnchor(toolName: "article_overview", result: article.result)
+            }
+            presentSourceBoundAnswer(question: question, topic: passages[0].article, passages: passages)
             return
         }
-        await runMapReduce(userQuery: userQuery, sectionTraces: sectionTraces)
-    }
-
-    /// Decode a `get_article_section` result JSON into its human
-    /// fields. Returns nil for malformed / non-article traces.
-    private struct MapReduceSection {
-        let article: String
-        let section: String
-        let body: String
-    }
-
-    private func decodeSectionTrace(_ trace: ToolCallTrace) -> MapReduceSection? {
-        guard let data = trace.result.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = obj["text"] as? String, !text.isEmpty
-        else { return nil }
-        let article = (obj["title"] as? String)
-            ?? (obj["path"] as? String)
-            ?? "(unknown)"
-        let section = (obj["section"] as? String) ?? "lead"
-        return MapReduceSection(article: article, section: section, body: text)
-    }
-
-    /// Stateless map-reduce over the sections the model fetched:
-    ///   • Map — for each section, generate a short, section-only
-    ///     digest of points that answer the user's question. Each
-    ///     call runs in its own generation with a minimal prompt
-    ///     (one section body at a time), so peak MLX KV-cache
-    ///     reservation is bounded by the largest single section
-    ///     rather than the sum.
-    ///   • Reduce — feed the digests back as notes and stream one
-    ///     final answer to the UI, replacing the first-pass text.
-    private func runMapReduce(userQuery: String, sectionTraces: [ToolCallTrace]) async {
-        let sections = sectionTraces.compactMap(decodeSectionTrace)
-        guard sections.count >= 2 else { return }
-
-        debug("map-reduce: \(sections.count) sections → per-section digests",
-              category: "MapReduce")
-
-        // ===== Map phase =====
-        var summaries: [String] = []
-        let mapParams = GenerationParameters(
-            maxTokens: 256, temperature: 0.2, topP: 0.9,
-            useModelSamplingProfile: false)
-        for (i, sec) in sections.enumerated() {
-            let mapUserTurn = """
-            User's question: \(userQuery)
-
-            Text from the article "\(sec.article)" (section: \(sec.section)):
-
-            \(sec.body)
-
-            List 3–6 concise bullet points from THIS TEXT that help answer \
-            the user's question. Only include facts explicitly present in \
-            the text above. No outside knowledge, no invention.
-            """
-            let preamble = "You are a careful note-taker."
-            let turns = [ChatTurn(role: .user, text: mapUserTurn)]
-            let prompt: String
-            if selectedModel is Gemma4Provider {
-                prompt = selectedModel.template.renderTranscript(
-                    systemPreamble: preamble, tools: [], turns: turns
-                )
-            } else {
-                prompt = selectedModel.formatTranscript(
-                    systemPreamble: preamble, turns: turns
-                )
-            }
-            debug("map \(i + 1)/\(sections.count): \(sec.article) § \(sec.section) · \(sec.body.count) chars",
-                  category: "MapReduce")
-            var buf = ""
-            do {
-                for try await chunk in selectedModel.generate(
-                    prompt: prompt, parameters: mapParams
-                ) {
-                    buf += chunk
+        for item in results.reversed() {
+            let text: String
+            switch item.name {
+            case "route_from_places", "plan_driving_route":
+                text = Self.synthesizeRoutingReply(from: item.result)
+            case "nearby_stories", "nearby_stories_at_place":
+                text = IntentRouter.synthesizeNearbyStoriesReply(args: item.args, fullResult: item.result)
+            case "near_named_place", "near_places", "locate":
+                text = IntentRouter.synthesizePlacesReply(toolName: item.name, args: item.args, fullResult: item.result)
+            case "search":
+                let hits = (item.result["hits"] as? [[String: Any]]) ?? []
+                let choices = hits.prefix(6).compactMap { hit -> DiscoveryThread? in
+                    guard let title = hit["title"] as? String else { return nil }
+                    return DiscoveryThread(label: title, kind: .topic, source: .wikilink,
+                        zimPath: hit["path"] as? String, zim: hit["zim"] as? String,
+                        prompt: "Tell me about \(title)")
                 }
-            } catch {
-                debug("map \(i + 1) failed: \(error)", category: "MapReduce")
-                continue
+                if !choices.isEmpty, let idx = messages.indices.last {
+                    messages[idx].suggestions = choices
+                    text = "I found these titles in the loaded ZIM files. Choose one to read its source text."
+                } else { continue }
+            case "list_libraries":
+                let rows = (item.result["zims"] as? [[String: Any]]) ?? []
+                let names = rows.compactMap { $0["name"] as? String }
+                text = names.isEmpty ? "No ZIM archives were listed." : "Loaded ZIM archives: " + names.joined(separator: ", ") + "."
+            default: continue
             }
-            let trimmed = buf.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                summaries.append(
-                    "### From \"\(sec.article)\" § \(sec.section)\n\(trimmed)"
-                )
+            if !text.isEmpty {
+                updateAssistant(text)
+                if let idx = messages.indices.last { messages[idx].rawAssistantText = text }
+                debug(text, category: "Assistant")
+                return
             }
         }
-        guard !summaries.isEmpty else {
-            debug("map-reduce: no non-empty digests, keeping first-pass answer",
-                  category: "MapReduce")
-            return
-        }
-
-        // ===== Reduce phase =====
-        debug("reduce: synthesising from \(summaries.count) digest(s)",
-              category: "MapReduce")
-        let reduceUserTurn = """
-        User's question: \(userQuery)
-
-        Notes I gathered from the available articles:
-
-        \(summaries.joined(separator: "\n\n"))
-
-        Write a clear, thorough answer to the user's question, grounded \
-        only in the notes above. Use natural prose — DO NOT open with \
-        "per the 'lead' section…" or "according to the article…". Cite \
-        a specific source only when the user would genuinely benefit \
-        (e.g. contrasting two sources). Do NOT add facts that aren't \
-        in the notes.
-        """
-        let preamble = "You are a helpful, grounded writer."
-        let turns = [ChatTurn(role: .user, text: reduceUserTurn)]
-        let prompt: String
-        if selectedModel is Gemma4Provider {
-            prompt = Gemma4PromptTemplate.render(
-                systemMessage: preamble, tools: [], turns: turns
-            )
-        } else {
-            prompt = selectedModel.formatTranscript(
-                systemPreamble: preamble, turns: turns
-            )
-        }
-
-        // Replace first-pass text with a visible placeholder so the
-        // user sees the phase transition.
-        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-            messages[idx].text = "_Synthesising from \(summaries.count) grounded sources…_\n\n"
-        }
-
-        var buffer = ""
-        let reduceParams = GenerationParameters(
-            maxTokens: effectiveMaxReplyTokens,
-            temperature: 0.3, topP: 0.9,
-            useModelSamplingProfile: false
-        )
-        var lastUIPush = Date.distantPast
-        do {
-            for try await chunk in selectedModel.generate(
-                prompt: prompt, parameters: reduceParams
-            ) {
-                buffer += chunk
-                let now = Date()
-                if now.timeIntervalSince(lastUIPush) >= 0.1 {
-                    appendToAssistant(buffer)
-                    lastUIPush = now
-                }
-            }
-            appendToAssistant(buffer)
-        } catch {
-            debug("reduce failed: \(error)", category: "MapReduce")
-            return
-        }
-        debug("map-reduce complete: \(buffer.count) chars", category: "MapReduce")
+        let text = SourceBoundAnswer.missingAnswer()
+        updateAssistant(text)
+        if let idx = messages.indices.last { messages[idx].rawAssistantText = text }
+        debug(text, category: "Assistant")
     }
 
     /// Single-turn dispatch for Apple Foundation Models native-tools.
@@ -3959,31 +3914,29 @@ public final class ChatSession {
         )
         var buffer = ""
         let genStart = Date()
-        var lastUIPush = Date.distantPast
-        let uiMinInterval: TimeInterval = 0.1
+        let replyID = messages.last?.id
+        nativeEvidenceMessageID = replyID
+        defer {
+            provider.resetNativeConversation()
+            if nativeEvidenceMessageID == replyID { nativeEvidenceMessageID = nil }
+        }
         do {
             for try await chunk in provider.generateNativeTurn(userMessage: lastUser, parameters: params) {
+                try Task.checkCancellation()
                 buffer += chunk
-                let now = Date()
-                if now.timeIntervalSince(lastUIPush) >= uiMinInterval {
-                    appendToAssistant(buffer)
-                    lastUIPush = now
-                }
             }
-            appendToAssistant(buffer)
+            try Task.checkCancellation()
         } catch {
             debug("native-tools turn threw: \(error)", category: "Chat")
             lastError = String(describing: error)
+            updateAssistant(Task.isCancelled ? "Stopped." : "I couldn't finish searching the loaded ZIM files.")
             return
         }
         let dt = Date().timeIntervalSince(genStart)
         debug(String(format: "native-tools turn · done (%.2fs, %d chars)",
                      dt, buffer.count),
               category: "Chat")
-        let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            debug(trimmed, category: "Assistant")
-        }
+        finishSourceBoundToolAnswer()
     }
 
     // MARK: - Transcript helpers
@@ -3992,17 +3945,6 @@ public final class ChatSession {
         if messages.last?.role == .assistant {
             messages[messages.count - 1].text = text
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                activeQueryTelemetry?.markFirstResponse()
-            }
-        }
-    }
-
-    private func appendToAssistant(_ replacement: String) {
-        if messages.last?.role == .assistant {
-            let scrubbed = scrubReasoning(replacement)
-            recordRawEmissionIfScrubbed(raw: replacement, scrubbed: scrubbed)
-            messages[messages.count - 1].text = scrubbed
-            if !scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 activeQueryTelemetry?.markFirstResponse()
             }
         }
@@ -4186,7 +4128,7 @@ public final class ChatSession {
         // `messages[count - 1]` — the reply lands in the new turn's bubble
         // and two Tasks race `isGenerating`/`finishedAt` (2026-08-13
         // review).
-        guard !isGenerating else {
+        guard !isGenerating, !isSwitchingModel else {
             debug("triggerArticleRead ignored — a turn is still generating",
                   category: "Chat")
             return
@@ -4202,7 +4144,7 @@ public final class ChatSession {
         messages.append(ChatMessage(role: .user, text: caption))
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
         isGenerating = true
-        Task {
+        generationTask = Task {
             let intent = DirectIntent(toolName: "get_article_section", args: [
                 "path":    .string(path),
                 "section": .string("lead")
@@ -4237,7 +4179,7 @@ public final class ChatSession {
         }
         // See `triggerArticleRead` — a second turn started mid-stream
         // corrupts the transcript both entry points write to.
-        guard !isGenerating else {
+        guard !isGenerating, !isSwitchingModel else {
             debug("triggerDirections ignored — a turn is still generating",
                   category: "Chat")
             return
@@ -4254,7 +4196,7 @@ public final class ChatSession {
         messages.append(ChatMessage(role: .user, text: caption))
         messages.append(ChatMessage(role: .assistant, text: "", startedAt: Date()))
         isGenerating = true
-        Task {
+        generationTask = Task {
             let intent = DirectIntent(toolName: "plan_driving_route", args: [
                 "origin_lat": .double(origin.lat),
                 "origin_lon": .double(origin.lon),
@@ -4383,7 +4325,7 @@ public final class ChatSession {
         let topic = ArticleHeuristics.topicCore(title)
         if let ds = discussionState,
            ds.topic.caseInsensitiveCompare(topic) == .orderedSame { return }
-        groundedPromptCache = nil
+        groundedEvidenceSelection = nil
         discussionState = DiscussionState(
             anchorTitle: title, topic: topic,
             zim: result["zim"] as? String, sources: [],
@@ -4438,8 +4380,8 @@ public final class ChatSession {
                 $0 + ($1.count * MemoryLayout<Float>.size)
             },
             elapsedSeconds: preparationElapsed)
-        groundedPromptCache = nil
-        discussionState = DiscussionState(
+        groundedEvidenceSelection = nil
+        let state = DiscussionState(
             anchorTitle: title,
             topic: ArticleHeuristics.topicCore(title),
             zim: fullResult["zim"] as? String,
@@ -4447,13 +4389,21 @@ public final class ChatSession {
             linkedArticleTitles: Self.linkedArticleTitles(from: fullResult),
             sectionEmbeddings: embeddings,
             lastQuestion: nil)
+        discussionState = state
         updateAssistant(preparing
-            + "\n\nReady. What would you like to explore about \(title)?")
+            + "\n\nReady. Pick a question below, or ask your own.")
+        if let idx = messages.indices.last,
+           messages[idx].role == .assistant
+        {
+            messages[idx].suggestions = groundedSuggestions(
+                state: state, sections: sections, after: "")
+        }
         debug(String(format:
             "discuss: prepared %@ · strategy=%@ · %d sections · %d semantic vectors · %.2fs",
             title, discussionPreparationStrategy.rawValue,
             sections.count, embeddings.count, preparationElapsed),
             category: "Router")
+        await appendThreadOfferIfUseful()
         return true
     }
 
@@ -4588,7 +4538,7 @@ public final class ChatSession {
             sectionEmbeddings: embeddings,
             lastQuestion: nil)
         discussionState = state
-        groundedPromptCache = nil
+        groundedEvidenceSelection = nil
         focus.remember(FocusEntity(
             name: title, kind: .topic,
             zimPath: result["path"] as? String))
@@ -4600,6 +4550,7 @@ public final class ChatSession {
             state.lastQuestion = nil
             discussionState = state
             await answerWithinDiscussion(state, question: question)
+            await appendThreadOfferIfUseful()
         } else {
             updateAssistant(
                 "Okay — I’ll use the Wikipedia article “\(title)” as the source. "
@@ -4608,15 +4559,14 @@ public final class ChatSession {
         return true
     }
 
-    /// Answer one follow-up within discussion mode: retrieve the lead +
-    /// the section(s) most relevant to the question, then stream a single
-    /// generation grounded strictly in those passages (mirrors the
-    /// map-reduce reduce phase). The small model only ever sees the few
-    /// passages a question needs — never the whole article.
+    /// Answer a follow-up with source excerpts. Section cards navigate their
+    /// source directly; free-form questions retrieve relevant passages.
     @MainActor
-    private func answerWithinDiscussion(_ ds: DiscussionState, question: String) async {
+    private func answerWithinDiscussion(_ ds: DiscussionState, question: String,
+                                        suggestion: DiscoveryThread? = nil) async {
         activeQueryTelemetry?.setRoute("discussion")
         var state = ds
+        let needsPreparation = state.sources.isEmpty
         let contextualQuestion = ArticleHeuristics
             .contextualizedDiscussionQuestion(
                 question, previousQuestion: state.lastQuestion)
@@ -4636,16 +4586,45 @@ public final class ChatSession {
                     raw.map(Self.decodedArticleSection)
                 )]
                 state.linkedArticleTitles = Self.linkedArticleTitles(from: res)
-                if discussionPreparationStrategy == .semanticSections {
-                    state.sectionEmbeddings = await prepareDiscussionEmbeddings(
-                        sources: state.sources)
-                }
                 discussionState = state
             }
         }
         guard !state.sources.isEmpty else {
             updateAssistant("What would you like to know about \(state.topic)?")
             return
+        }
+        // The app already knows which section produced a suggested question.
+        // Validate that identity against the current source, then read it
+        // directly. No embedding/prefill or lexical re-interpretation of the
+        // card's friendly wording is necessary.
+        if let suggestion, let anchor = state.sources.first,
+           anchor.title == state.anchorTitle {
+            let sections = ConversationSuggestionSelection.sections(
+                for: suggestion, articleTitle: anchor.title, zim: state.zim,
+                sections: anchor.sections)
+            if !sections.isEmpty {
+                guard !Task.isCancelled else { return }
+                preemptLlamaPromptOptimizationForGroundedTurn()
+                state.lastQuestion = question
+                discussionState = state
+                let passages = sections.map {
+                    SourceBoundAnswer.Passage(article: anchor.title, section: $0.title,
+                        library: state.sourceLibraries[anchor.title] ?? state.zim, text: $0.text)
+                }
+                debug("discuss section choice: \(anchor.title)§\(suggestion.sectionTitle ?? "") · direct ZIM excerpts",
+                      category: "Chat")
+                presentSourceBoundAnswer(question: question, topic: state.topic,
+                    passages: passages, sectionOverview: true)
+                if let idx = messages.indices.last, messages[idx].role == .assistant {
+                    messages[idx].suggestions = groundedSuggestions(state: state,
+                        sections: anchor.sections, after: question)
+                }
+                return
+            }
+        }
+        if needsPreparation, discussionPreparationStrategy == .semanticSections {
+            state.sectionEmbeddings = await prepareDiscussionEmbeddings(sources: state.sources)
+            discussionState = state
         }
         // Direct-link fallback: if none of the articles in hand cover the
         // follow-up, search for a useful candidate but accept it only when an
@@ -4690,7 +4669,7 @@ public final class ChatSession {
         state.lastQuestion = question
         discussionState = state   // persist any pulled-in article
 
-        let first = await generateGroundedAnswer(
+        let first = await answerFromZIMEvidence(
             state: state, question: question,
             retrievalQuestion: contextualQuestion)
         // Reactive corpus fallback: the coverage gate is lexical, so a
@@ -4706,7 +4685,7 @@ public final class ChatSession {
             // Bulgaria's NATO facts sat two sections below the Geography
             // pick). Only fall through to the corpus when the in-article
             // retry also comes up dry.
-            let retried = await generateGroundedAnswer(
+            let retried = await answerFromZIMEvidence(
                 state: state, question: question,
                 retrievalQuestion: contextualQuestion,
                 excludeTriedPassages: true)
@@ -4741,7 +4720,7 @@ public final class ChatSession {
                 discussionState = state
                 debug("discuss: retry — pulled “\(pulled.title)” after a don't-see answer",
                       category: "Router")
-                _ = await generateGroundedAnswer(
+                _ = await answerFromZIMEvidence(
                     state: state, question: question,
                     retrievalQuestion: contextualQuestion)
             }
@@ -4788,40 +4767,44 @@ public final class ChatSession {
             source: .section,
             note: "Complete Wikipedia article",
             prompt: "Read the full article about \(state.anchorTitle) aloud")
+        let anotherTopic = DiscoveryThread(
+            label: "Another topic",
+            kind: .topic,
+            source: .relation,
+            note: "Return to the offline encyclopedia trailhead",
+            prompt: "Show me another topic")
         let contextual = ConversationThreads.contextualQuestions(
             topic: state.topic,
             sections: sections,
             after: question,
-            max: 3)
-        return [readFull] + contextual
+            max: 3).map { suggestion in
+                var bound = suggestion
+                bound.articleTitle = state.anchorTitle
+                bound.zim = state.zim
+                return bound
+            }
+        return contextual + [anotherTopic, readFull]
     }
 
-    /// One grounded generation over the discussion's current sources:
+    /// Select source excerpts from the discussion's current articles:
     /// rank sections for the question, assemble capped passages, stream
     /// the answer into the assistant bubble, and return the final text.
     @MainActor
     @discardableResult
-    private func generateGroundedAnswer(
+    private func answerFromZIMEvidence(
         state: DiscussionState, question: String,
         retrievalQuestion: String? = nil,
         excludeTriedPassages: Bool = false
     ) async -> String {
         preemptLlamaPromptOptimizationForGroundedTurn()
         let resolvedQuestion = retrievalQuestion ?? question
-        // Anchor lead for topic context + the top-ranked sections across all
-        // articles in hand. Wider budget (6) than before — llama.cpp KV is
-        // cheap, and specific-fact follow-ups need the deeper section, not
-        // just the lead. Each passage is capped so several fit in n_ctx.
+        // Inspect the anchor and relevant full sections. No model context
+        // window can truncate the source before names or qualifications.
         let defaultPassageLimit = ArticleHeuristics
             .groundedPassageLimit(for: resolvedQuestion)
         let passageLimit = longerReplies
             ? min(8, max(6, defaultPassageLimit + 2))
             : defaultPassageLimit
-        let defaultCharacterLimit = ArticleHeuristics
-            .groundedPassageCharacterLimit(for: resolvedQuestion)
-        let passageCharacterLimit = longerReplies
-            ? min(2_400, max(1_400, defaultCharacterLimit + 500))
-            : defaultCharacterLimit
         // A content-free referential follow-up ("What are they?", "tell me
         // more") refers to the pinned topic, not whichever linked support
         // article happened to be retrieved most recently. Rank only the
@@ -4881,7 +4864,7 @@ public final class ChatSession {
         // 2026-08-02). Keys are section-granular prefixes of the cache's
         // window-granular keys.
         let excludedSectionKeys: Set<String> = excludeTriedPassages
-            ? Set((groundedPromptCache?.passageKeys ?? []).map {
+            ? Set((groundedEvidenceSelection?.passageKeys ?? []).map {
                 String($0.split(separator: "\u{1F}").prefix(2).joined(separator: "\u{1F}"))
             })
             : []
@@ -4900,376 +4883,71 @@ public final class ChatSession {
             "\($0.article)§\($0.section.title.isEmpty ? "lead" : $0.section.title)"
         }.joined(separator: " | "), category: "Chat")
 
-        func passageText(_ p: (article: String, section: ArticleSection)) -> String {
-            ArticleHeuristics.groundedPassageWindow(
-                p.section.text,
-                question: resolvedQuestion,
-                maxChars: passageCharacterLimit)
+        guard !Task.isCancelled else { return "" }
+        let passages = picked.map {
+            SourceBoundAnswer.Passage(article: $0.article,
+                section: $0.section.title.isEmpty ? "lead" : $0.section.title,
+                library: state.sourceLibraries[$0.article] ?? state.zim, text: $0.section.text)
         }
-        func passageKey(_ p: (article: String, section: ArticleSection)) -> String {
-            // Include the selected sentence window, not just the section.
-            // "parents" and "school" can both live in Early life and
-            // education; deduping only by heading would prevent the later
-            // question from appending its distinct evidence window.
-            let rawTitle = p.section.title.lowercased()
-            let normalizedTitle = (rawTitle.isEmpty || rawTitle == "lead")
-                ? "lead" : rawTitle
-            let base = p.article.lowercased() + "\u{1F}" + normalizedTitle
-            // Cache the anchor lead once. Letting every question create a
-            // different lead window consumed the warm turn's one-new-passage
-            // allowance before the actually relevant Parents/Education
-            // section could be appended.
-            if normalizedTitle == "lead" {
-                return base
-            }
-            return base + "\u{1F}" + passageText(p)
+        // Exclusion belongs to this question's retry, not the entire chat.
+        // Otherwise a later question cannot retry a section read earlier.
+        let previousKeys = excludeTriedPassages && groundedEvidenceSelection?.topic == state.topic
+            ? groundedEvidenceSelection?.passageKeys ?? [] : []
+        groundedEvidenceSelection = GroundedEvidenceSelection(topic: state.topic,
+            passageKeys: previousKeys.union(picked.map(sectionKey)))
+        let answer = presentSourceBoundAnswer(question: resolvedQuestion,
+            topic: state.topic, passages: passages)
+        if let idx = messages.indices.last, messages[idx].role == .assistant {
+            let sections = state.sources.first?.sections ?? state.sources.flatMap(\.sections)
+            messages[idx].suggestions = groundedSuggestions(state: state,
+                sections: sections, after: question)
         }
-        func renderPassages(
-            _ items: [(article: String, section: ArticleSection)]
-        ) -> String {
-            items.map { p -> String in
-                let head = p.section.title.isEmpty
-                    ? p.article : "\(p.article) — \(p.section.title)"
-                return "## \(head)\n\(passageText(p))"
-            }.joined(separator: "\n\n")
-        }
-        let answerStyle = longerReplies
-            ? "Be detailed but natural, and don't say \"according to the passage\". For broad questions, answer in four to eight substantive sentences and cover the main context, chronology, and consequences supported by the evidence."
-            : "Be conversational and informative, and don't say \"according to the passage\". Usually answer in two to four substantive sentences: give the direct answer first, then add the most useful context supported by the evidence. A truly atomic fact may use one sentence. For historical questions, include the date or period when the evidence gives it, then briefly explain what happened and why it mattered."
-        let preamble = """
-        You are discussing "\(state.topic)" with the user using offline Wikipedia evidence supplied throughout this conversation. Answer using ONLY that evidence. \(answerStyle) If the answer isn't in the evidence, say you don't see it in what you have on \(state.topic). Attribute carefully: the evidence may mix statements by DIFFERENT parties (\(state.topic), other governments, critics) — never put one party's words in another's mouth; if the question asks what someone said, report only THAT person's statements. For a broad school or education question, include both secondary school and university when the evidence supplies both. For "how many died", report figures explicitly labeled killed or dead for each side; a broader casualty figure may include wounded and is NOT a death count, so label it separately rather than substituting it for deaths. When casualty figures conflict, label each side or source's estimate separately; never combine killed and wounded into a total death count. When asked who fought or about opposing sides, name every opposing side supported by the evidence, not only the most recently mentioned force. Use at least two sentences for a participant question: identify the principal sides first, then add supported context such as other participants, foreign intervention, or what each side represented. Give just the answer directly — no reasoning steps, no preamble, no <think> block.
-        """
-
-        var cache: GroundedPromptCache
-        if let existing = groundedPromptCache,
-           existing.modelID == selectedModel.id,
-           existing.topic.caseInsensitiveCompare(state.topic) == .orderedSame,
-           existing.systemPreamble == preamble {
-            cache = existing
-        } else {
-            cache = GroundedPromptCache(
-                topic: state.topic,
-                modelID: selectedModel.id,
-                systemPreamble: preamble,
-                turns: [],
-                passageKeys: [])
-        }
-
-        let wasWarm = !cache.turns.isEmpty
-        let lowerQuestion = resolvedQuestion.lowercased()
-        let refreshLeadForSides = ArticleHeuristics
-            .asksAboutOpposingSides(lowerQuestion)
-        // Put genuinely unseen evidence first. Participant questions may
-        // also refresh a previously cached lead because a different sentence
-        // window can contain the sides, but that refresh must never consume
-        // the warm turn's one-passage budget ahead of a newly pulled exact
-        // event article.
-        var passagesForTurn = picked.filter {
-            !cache.passageKeys.contains(passageKey($0))
-        }
-        if refreshLeadForSides {
-            passagesForTurn += picked.filter { passage in
-                let title = passage.section.title.lowercased()
-                let isLead = title.isEmpty || title == "lead"
-                return isLead
-                    && cache.passageKeys.contains(passageKey(passage))
-            }
-        }
-        if !wasWarm {
-            passagesForTurn = picked
-        } else if anchorSnapback, let anchorPassage = picked.first {
-            // Repeat the anchor evidence even when its cache key is already
-            // present. The newest user turn then carries an explicit topic
-            // reset instead of asking the model to resolve a bare pronoun
-            // against a potentially newer auxiliary article.
-            passagesForTurn = [anchorPassage]
-        } else if passagesForTurn.count > 1 {
-            // Earlier evidence remains in the append-only transcript. Add at
-            // most the best unseen section per follow-up; appending all
-            // newly ranked sections made a simple "How are they created?"
-            // turn prefill 905 avoidable tokens even though the lead already
-            // covered the answer. A genuinely new facet/article still gets
-            // its highest-ranked 1,500-character passage; the don't-see retry
-            // can append a pulled article if that evidence is insufficient.
-            passagesForTurn = Array(passagesForTurn.prefix(1))
-        }
-
-        // Date/quantity follow-ups get the single best-matching sentence
-        // from ANY section quoted verbatim as evidence. Section-level
-        // ranking can miss the fact ("When did Bulgaria join NATO?" pulled
-        // no new passage and the model invented 2009), and even with the
-        // right section a 1-bit model paraphrases dates badly ("joined
-        // NATO as a member of the OSCE") — real captures 2026-08-02.
-        let keyFact: (article: String, sentence: String)? =
-            ArticleHeuristics.isFactoidShaped(question)
-            ? ArticleHeuristics.keyFactSentence(
-                question: resolvedQuestion, sources: state.sources)
-            : nil
-        if let keyFact {
-            debug("discuss key fact: \(keyFact.article) · “\(String(keyFact.sentence.prefix(90)))…”",
-                  category: "Chat")
-        }
-        func makeUserTurn(
-            passages: [(article: String, section: ArticleSection)]
-        ) -> ChatTurn {
-            var evidence: String
-            if passages.isEmpty {
-                evidence = "No new evidence for this turn; use the offline Wikipedia evidence already supplied earlier in the conversation."
-            } else {
-                evidence = "New offline Wikipedia evidence:\n\n" + renderPassages(passages)
-            }
-            if let keyFact {
-                evidence += "\n\nKey sentence from \(keyFact.article): \"\(keyFact.sentence).\""
-            }
-            return ChatTurn(
-                role: .user,
-                text: "\(evidence)\n\nQuestion: \(resolvedQuestion)")
-        }
-        func renderPrompt(_ turns: [ChatTurn]) -> String {
-            if selectedModel is Gemma4Provider {
-                return selectedModel.template.renderTranscript(
-                    systemPreamble: preamble, tools: [], turns: turns)
-            }
-            return selectedModel.formatTranscript(
-                systemPreamble: preamble, turns: turns)
-        }
-
-        // Floor the budget at 512: the FT sometimes opens a <think> on this
-        // off-distribution grounded prompt, and on a low-budget device
-        // profile (e.g. the Mac CLI) that burns the allowance and truncates
-        // the answer mid-sentence ("Perovskite solar cells can be built…").
-        // 512 leaves room for the answer even after a short reasoning preamble.
-        let params = GenerationParameters(
-            maxTokens: max(effectiveMaxReplyTokens, 512),
-            temperature: 0.3, topP: 0.9,
-            // Bonsai's publisher-tuned sampler is materially better for
-            // natural grounded conversation. Providers without a profile
-            // continue to use the conservative task values above.
-            useModelSamplingProfile: true)
-        var candidateTurns = cache.turns + [makeUserTurn(passages: passagesForTurn)]
-
-        // Preserve exact grounded names and count labels for the few fact
-        // shapes where a sampled paraphrase is actively harmful. Bonsai is
-        // still the conversational engine for every open-ended turn; this
-        // is the same fast/extractive split used by the top-level factoid
-        // router, now applied to follow-ups within a pinned article.
-        if let extractive = ArticleHeuristics.groundedExtractiveAnswer(
-            question: resolvedQuestion,
-            // The extractor does not feed this text to the model, so it can
-            // safely inspect the complete selected sections. Using the
-            // compact model window here dropped an earlier 60–200 killed
-            // estimate from the Alamo casualty section.
-            passages: picked.map { $0.section.text },
-            passageLabels: picked.map {
-                $0.article + " " + ($0.section.title.isEmpty
-                    ? "lead" : $0.section.title)
-            }) {
-            updateAssistant(extractive)
-            cache.turns = candidateTurns
-                + [ChatTurn(role: .assistant, text: extractive)]
-            cache.passageKeys.formUnion(passagesForTurn.map(passageKey))
-            groundedPromptCache = cache
-            if let idx = messages.indices.last,
-               messages[idx].role == .assistant {
-                var seenSources = Set<GroundingSource>()
-                messages[idx].groundingSources = picked.compactMap { p in
-                    let source = GroundingSource(
-                        kind: .wikipedia,
-                        title: p.article,
-                        section: p.section.title.isEmpty ? nil : p.section.title,
-                        library: state.zim)
-                    return seenSources.insert(source).inserted ? source : nil
-                }
-                let sections = state.sources.first?.sections
-                    ?? state.sources.flatMap(\.sections)
-                messages[idx].suggestions = groundedSuggestions(
-                    state: state, sections: sections, after: question)
-                let attribPassages = picked.map {
-                    AnswerAttribution.Passage(
-                        article: $0.article,
-                        section: $0.section.title.isEmpty ? nil : $0.section.title,
-                        text: $0.section.text)
-                }
-                messages[idx].sentenceAttributions = AnswerAttribution.attribute(
-                    answer: extractive, passages: attribPassages)
-                debug(AnswerAttribution.logLine(
-                    messages[idx].sentenceAttributions, passages: attribPassages),
-                      category: "Attrib")
-            }
-            debug("grounded extractive reply: \(extractive)", category: "Chat")
-            debug(extractive, category: "Assistant")
-            return extractive
-        }
-
-        var prompt = renderPrompt(candidateTurns)
-
-        // Keep enough room for the complete answer. Once a long discussion
-        // approaches n_ctx, start a fresh grounded window with the passages
-        // selected for THIS question. That is an intentional cache miss, but
-        // avoids either overflowing the context or silently losing evidence.
-        var promptTokens: Int?
-        if let llama = selectedModel as? LlamaCppProvider {
-            promptTokens = llama.promptTokenCount(prompt)
-            // Pure appends prefill only the new suffix. The verified 16K
-            // allocation supplies overflow headroom, while this 6K rolling
-            // ceiling still reserves reply space and bounds attention/decode
-            // cost before an intentional fresh window.
-            let budget = min(6144,
-                max(256, llama.contextTokens - params.maxTokens - 32))
-            if let count = promptTokens, count > budget, wasWarm {
-                cache.turns.removeAll()
-                cache.passageKeys.removeAll()
-                passagesForTurn = picked
-                candidateTurns = [makeUserTurn(passages: passagesForTurn)]
-                prompt = renderPrompt(candidateTurns)
-                promptTokens = llama.promptTokenCount(prompt)
-                debug("discuss cache: compacted at \(count) tokens (budget \(budget)); rebuilt current evidence",
-                      category: "Chat")
-            }
-        }
-        debug("discuss cache: \(wasWarm && !cache.turns.isEmpty ? "append" : "cold") · prior-turns=\(cache.turns.count) · new-passages=\(passagesForTurn.count) · prompt=\(promptTokens.map(String.init) ?? "?") tok",
-              category: "Chat")
-        if !passagesForTurn.isEmpty {
-            debug("discuss evidence append: " + passagesForTurn.map {
-                let name = $0.section.title.isEmpty ? "lead" : $0.section.title
-                return "\($0.article)§\(name)(\(passageText($0).count)c)"
-            }.joined(separator: " | "), category: "Chat")
-        }
-
-        var buffer = ""
-        var lastUIPush = Date.distantPast
-        do {
-            for try await chunk in selectedModel.generate(prompt: prompt, parameters: params) {
-                buffer += chunk
-                let now = Date()
-                if now.timeIntervalSince(lastUIPush) >= 0.1 {
-                    updateAssistant(buffer); lastUIPush = now
-                }
-            }
-            let final = stripLeakedReasoning(buffer)
-            updateAssistant(final)
-            // Grounded turns bypass runGenerationLoop, so emit the uniform
-            // cross-runtime [Perf] row here too — the Bonsai A/B harness
-            // drives exactly this path.
-            if let stats = selectedModel.lastGenerationStats {
-                debug("grounded · " + stats.summaryLine, category: "Perf")
-            }
-            // Normally store the exact raw emission: re-tokenising that
-            // transcript reproduces the tokens already resident in llama.cpp,
-            // so the next prompt is a strict append. A leaked reasoning marker
-            // is different. Keeping it would contaminate every later turn and
-            // could make the model continue the malformed pattern. Rebuild the
-            // next turn from the scrubbed answer instead; sacrificing one warm
-            // append is preferable to poisoning the whole discussion cache.
-            let cacheAnswer: String
-            if buffer.contains("<think>") || buffer.contains("</think>") {
-                cacheAnswer = final
-                debug("reasoning marker removed from grounded cache; next turn may rebuild KV",
-                      category: "Chat")
-            } else {
-                cacheAnswer = buffer
-            }
-            cache.turns = candidateTurns
-                + [ChatTurn(role: .assistant, text: cacheAnswer)]
-            cache.passageKeys.formUnion(passagesForTurn.map(passageKey))
-            groundedPromptCache = cache
-            if let idx = messages.indices.last,
-               messages[idx].role == .assistant
-            {
-                var seenSources = Set<GroundingSource>()
-                messages[idx].groundingSources = picked.compactMap { p in
-                    guard cache.passageKeys.contains(passageKey(p)) else { return nil }
-                    let source = GroundingSource(
-                        kind: .wikipedia,
-                        title: p.article,
-                        section: p.section.title.isEmpty ? nil : p.section.title,
-                        library: state.zim)
-                    return seenSources.insert(source).inserted ? source : nil
-                }
-                debug("grounding sources: "
-                    + messages[idx].groundingSources.map { source in
-                        [source.title, source.section]
-                            .compactMap { $0 }
-                            .joined(separator: "§")
-                    }.joined(separator: " | "),
-                      category: "Chat")
-                // Per-sentence provenance: align the reply against the exact
-                // prompt passages, deterministically — unsupported sentences
-                // surface in the UI as "not in sources".
-                let attribPassages = picked.map {
-                    AnswerAttribution.Passage(
-                        article: $0.article,
-                        section: $0.section.title.isEmpty ? nil : $0.section.title,
-                        text: $0.section.text)
-                }
-                messages[idx].sentenceAttributions = AnswerAttribution.attribute(
-                    answer: messages[idx].text, passages: attribPassages)
-                debug(AnswerAttribution.logLine(
-                    messages[idx].sentenceAttributions, passages: attribPassages),
-                      category: "Attrib")
-                // Suggestions should stay about the pinned subject. Pulled
-                // support articles improve evidence, but their own generic
-                // headings (for example Domestic policy › History) made chips
-                // drift away from the conversation.
-                let sections = state.sources.first?.sections
-                    ?? state.sources.flatMap(\.sections)
-                messages[idx].suggestions = groundedSuggestions(
-                    state: state, sections: sections, after: question)
-                debug("contextual suggestions: "
-                    + messages[idx].suggestions.map(\.label).joined(separator: " | "),
-                      category: "Chat")
-            }
-            // Mirror the answer into the debug log — the grounded path
-            // didn't, so device logs showed WHICH passages were used but
-            // never WHAT the model said, making bad answers undiagnosable
-            // from a pasted log (2026-07-02).
-            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                debug(trimmed, category: "Assistant")
-            }
-            return final
-        } catch is CancellationError {
-            let partial = stripLeakedReasoning(buffer)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            updateAssistant(partial.isEmpty ? "Stopped." : partial)
-            debug("grounded generation stopped by user", category: "Chat")
-            return partial
-        } catch {
-            debug("discuss generate failed: \(error)", category: "Chat")
-            let msg = "Sorry — I hit an error answering that about \(state.topic)."
-            updateAssistant(msg)
-            return msg
-        }
+        return answer
     }
 
-    /// The FT model occasionally opens a `<think>` reasoning block on the
-    /// off-distribution grounded-discuss prompt and forgets to close it, so
-    /// the template's closed-span scrubber can't strip it. When that happens
-    /// the real answer is the prose AFTER the reasoning — take the last
-    /// paragraph. Closed spans are stripped first with the active template;
-    /// returning the raw closed block here made the reactive fallback inspect
-    /// hidden chain-of-thought and retry otherwise-good answers.
-    private func stripLeakedReasoning(_ s: String) -> String {
-        var scrubbed = selectedModel.template.stripReasoning(s)
-        // Some llama.cpp chat templates evaluate `<think>` as part of the
-        // assistant prefix, so the generated buffer contains only
-        // `draft</think>final`. Template-specific scrubbers normally handle
-        // this, but keep the grounded path safe for every provider family.
-        if let close = scrubbed.range(of: "</think>", options: .backwards) {
-            scrubbed = String(scrubbed[close.upperBound...])
+    /// The sole factual-prose renderer: complete sentences read from ZIM
+    /// results, with exact per-sentence provenance. No draft enters UI, TTS,
+    /// or the next turn's transcript.
+    @discardableResult
+    private func presentSourceBoundAnswer(question: String, topic: String,
+                                          passages: [SourceBoundAnswer.Passage],
+                                          sectionOverview: Bool = false) -> String {
+        let started = Date()
+        let reply = SourceBoundAnswer.answer(question: question, topic: topic,
+            passages: passages, maxSentences: longerReplies ? 6 : 3,
+            maxCharacters: longerReplies ? 2_200 : 1_200,
+            sectionOverview: sectionOverview)
+        let text = reply.hasEvidence ? reply.text : SourceBoundAnswer.missingAnswer(topic: topic)
+        appendAssistant(text)
+        if let idx = messages.indices.last, messages[idx].role == .assistant {
+            messages[idx].rawAssistantText = text
+            messages[idx].usesSourceExcerpts = reply.hasEvidence
+            var seen = Set<GroundingSource>()
+            messages[idx].groundingSources = reply.excerpts.compactMap { excerpt in
+                let passage = passages[excerpt.passageIndex]
+                let source = GroundingSource(kind: .wikipedia, title: passage.article,
+                    section: passage.section == "lead" ? nil : passage.section,
+                    library: passage.library)
+                return seen.insert(source).inserted ? source : nil
+            }
+            let attributionPassages = passages.map {
+                AnswerAttribution.Passage(article: $0.article, section: $0.section, text: $0.text)
+            }
+            messages[idx].sentenceAttributions = reply.hasEvidence
+                ? AnswerAttribution.attribute(answer: reply.text, passages: attributionPassages) : []
+            debug(AnswerAttribution.logLine(messages[idx].sentenceAttributions,
+                passages: attributionPassages), category: "Attrib")
         }
-        guard let open = scrubbed.range(of: "<think>") else { return scrubbed }
-        if scrubbed.range(of: "</think>", range: open.upperBound..<scrubbed.endIndex) != nil {
-            return scrubbed
-        }
-        let after = String(scrubbed[open.upperBound...])
-        if let lastBreak = after.range(of: "\n\n", options: .backwards) {
-            let tail = String(after[lastBreak.upperBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !tail.isEmpty { return tail }
-        }
-        return after.trimmingCharacters(in: .whitespacesAndNewlines)
+        debug("source-bound answer: \(reply.excerpts.count) exact excerpt(s), no generated factual prose",
+              category: "Grounding")
+        debug(String(format: "source excerpts: %.1f ms · %d passage(s) · section choice=%@",
+                     Date().timeIntervalSince(started) * 1_000, passages.count,
+                     sectionOverview ? "yes" : "no"), category: "Perf")
+        debug(text, category: "Assistant")
+        return text
     }
+
+
 
     /// Find an article that covers a follow-up the pinned article(s) don't,
     /// and return its sections. Reuses the `search` (best title) +
@@ -5388,6 +5066,7 @@ public final class ChatSession {
     /// was used successfully and the LLM should be skipped.
     @MainActor
     private func executeDirectIntent(_ intent: DirectIntent) async -> Bool {
+        guard !Task.isCancelled else { updateAssistant("Stopped."); return true }
         guard let adapter else { return false }
         activeQueryTelemetry?.setRoute("fast_path", primaryTool: intent.toolName)
         // Replace "my location" / "here" / "me" / "current location"
@@ -5414,6 +5093,9 @@ public final class ChatSession {
             let fullResult = try await adapter.dispatch(
                 tool: intent.toolName, args: dictArgs
             )
+            try Task.checkCancellation()
+            if intent.toolName == "article_overview",
+               presentArticleAmbiguity(args: dictArgs, result: fullResult) { return true }
             let dispatchDuration = ProcessInfo.processInfo.systemUptime - dispatchStarted
             activeQueryTelemetry?.recordTool(
                 name: intent.toolName,
@@ -5439,6 +5121,38 @@ public final class ChatSession {
                 rawResult: rawStr,
                 error: nil
             ))
+            if intent.toolName == "discover_topics" {
+                let topics = (fullResult["topics"] as? [[String: Any]]) ?? []
+                if topics.isEmpty {
+                    updateAssistant(
+                        (fullResult["error"] as? String)
+                            ?? "There are no more readable topics on this main page. Say “more topics” to return to the beginning.")
+                } else {
+                    let libraryName = (fullResult["kind"] as? String) == "mdwiki"
+                        ? "WikiMed"
+                        : "Wikipedia"
+                    updateAssistant(
+                        "Here are \(topics.count) real paths into your offline \(libraryName). "
+                            + "Pick one to start, or ask for more."
+                            + ((fullResult["cycle_complete"] as? Bool) == true
+                                ? " This reaches the end of the main page; the next batch starts again." : ""))
+                    if let idx = messages.indices.last,
+                       messages[idx].role == .assistant
+                    {
+                        messages[idx].suggestions = focus.openThreads
+                        messages[idx].groundingSources = [GroundingSource(
+                            kind: .wikipedia,
+                            title: "Main page topic sampler",
+                            library: fullResult["zim"] as? String)]
+                    }
+                }
+                debug("topic discovery: "
+                    + topics.compactMap { $0["title"] as? String }
+                        .joined(separator: " | "),
+                      category: "Router")
+                await appendThreadOfferIfUseful()
+                return true
+            }
             if intent.toolName == "narrate_article" {
                 let body = (fullResult["text"] as? String) ?? ""
                 let passThrough = (fullResult["pass_through"] as? Bool) == true
@@ -5589,6 +5303,13 @@ public final class ChatSession {
                 // couldn't find it, offer the closest real titles, and
                 // STOP — don't fall through to the LLM.
                 if intent.toolName == "article_overview" {
+                    if dictArgs["zim"] as? String != nil {
+                        // An explicit archive choice must not silently
+                        // rescue a missing WikiMed article from Wikipedia.
+                        updateAssistant(IntentRouter.synthesizeArticleMissReply(
+                            args: dictArgs, fullResult: fullResult))
+                        return true
+                    }
                     // Voice dictation drops possessive apostrophes
                     // ("putins childhood" — real capture 2026-07-01).
                     // Before dead-ending in a did-you-mean, retry ONCE
@@ -5670,12 +5391,41 @@ public final class ChatSession {
                 return false
             }
             if placesTools.contains(intent.toolName) {
-                let synth = IntentRouter.synthesizePlacesReply(
-                    toolName: intent.toolName,
-                    args: dictArgs,
-                    fullResult: fullResult
-                )
+                let synth: String
+                if intent.toolName == "nearby_stories"
+                    || intent.toolName == "nearby_stories_at_place"
+                {
+                    synth = IntentRouter.synthesizeNearbyStoriesReply(
+                        args: dictArgs, fullResult: fullResult)
+                    if let idx = messages.indices.last,
+                       messages[idx].role == .assistant
+                    {
+                        let stories = (fullResult["stories"] as? [[String: Any]]) ?? []
+                        messages[idx].groundingSources = [
+                            GroundingSource(
+                                kind: .streetZIM,
+                                title: "Offline OpenStreetMap"),
+                        ] + stories.prefix(3).compactMap { story in
+                            guard let title = story["wiki_title"] as? String
+                            else { return nil }
+                            return GroundingSource(
+                                kind: .wikipedia,
+                                title: title,
+                                library: story["zim"] as? String)
+                        }
+                    }
+                } else {
+                    synth = IntentRouter.synthesizePlacesReply(
+                        toolName: intent.toolName,
+                        args: dictArgs,
+                        fullResult: fullResult)
+                }
                 updateAssistant(synth.isEmpty ? "Results below." : synth)
+                if ["near_places", "near_named_place"].contains(intent.toolName),
+                   (fullResult["total_in_radius"] as? NSNumber)?.intValue == 0 {
+                    debug(synth, category: "Assistant")
+                    return true // Keep the wider-search offer free of unrelated topic suggestions.
+                }
             } else if routingTools.contains(intent.toolName) {
                 let synth = Self.synthesizeRoutingReply(from: fullResult)
                 updateAssistant(synth.isEmpty ? "Route below." : synth)
@@ -5715,6 +5465,7 @@ public final class ChatSession {
                     ?? messages.last(where: { $0.role == .user })?.text
                     ?? "Tell me about this."
                 var sources: [(title: String, sections: [ArticleSection])] = []
+                var sourceLibraries: [String: String] = [:]
                 func sections(from dict: [String: Any]) -> [ArticleSection] {
                     ((dict["sections"] as? [[String: Any]]) ?? [])
                         .map(Self.decodedArticleSection)
@@ -5723,7 +5474,10 @@ public final class ChatSession {
                     for a in articles {
                         let t = (a["title"] as? String) ?? ""
                         let secs = sections(from: a)
-                        if !t.isEmpty, !secs.isEmpty { sources.append((t, secs)) }
+                        if !t.isEmpty, !secs.isEmpty {
+                            sources.append((t, secs))
+                            sourceLibraries[t] = a["zim"] as? String
+                        }
                     }
                 } else {
                     let t = (fullResult["title"] as? String)
@@ -5741,12 +5495,13 @@ public final class ChatSession {
                     topic: ArticleHeuristics.topicCore(anchor),
                     zim: fullResult["zim"] as? String,
                     sources: sources,
+                    sourceLibraries: sourceLibraries,
                     linkedArticleTitles: [],
                     sectionEmbeddings: [:],
                     lastQuestion: nil)
                 debug("fast-path \(intent.toolName) → grounded single-shot over \(sources.count) source(s)",
                       category: "Router")
-                await generateGroundedAnswer(state: grounded, question: question)
+                await answerFromZIMEvidence(state: grounded, question: question)
                 // Official ambiguity ("gravity waves" → fluid OR Einstein):
                 // name the alternate meanings and register them as the
                 // selectable list, so "the second one" / "the Einstein one"
@@ -5798,8 +5553,27 @@ public final class ChatSession {
             // above and hand off to the LLM, which offers there instead.
             await appendThreadOfferIfUseful()
             return true
+        } catch is CancellationError {
+            updateAssistant("Stopped.")
+            return true
         } catch {
             debug("fast-path dispatch failed: \(error)", category: "Tool")
+            if case ZimServiceError.outsideMapCoverage = error {
+                focus.recordPlaceSearch(toolName: intent.toolName, args: dictArgs,
+                                        result: ["error": String(describing: error)])
+                let message = String(describing: error)
+                updateAssistant(message)
+                debug(message, category: "Assistant")
+                return true
+            }
+            if case ZimServiceError.placeIndexUnavailable = error {
+                focus.recordPlaceSearch(toolName: intent.toolName, args: dictArgs,
+                                        result: ["error": String(describing: error)])
+                let message = String(describing: error)
+                updateAssistant(message)
+                debug(message, category: "Assistant")
+                return true
+            }
             // Geocoding misses are deterministic — the LLM has no
             // hidden knowledge of which places are in the loaded
             // streetzim. Burning 15–20 s to have the model re-run
@@ -5884,6 +5658,22 @@ public final class ChatSession {
     private func updateFocusAfterTool(
         toolName: String, args: [String: Any], result: [String: Any]
     ) {
+        focus.recordPlaceSearch(toolName: toolName, args: args, result: result)
+        if ["near_places", "near_named_place"].contains(toolName),
+           let search = focus.placeSearchForFollowup, result["error"] == nil {
+            let rows = result["results"] as? [[String: Any]] ?? []
+            let maxDistance = rows.compactMap { row -> Double? in
+                guard let lat = (row["lat"] as? NSNumber)?.doubleValue,
+                      let lon = (row["lon"] as? NSNumber)?.doubleValue else { return nil }
+                return GeoMath.haversineMeters(search.center.lat, search.center.lon, lat, lon)
+            }.max() ?? 0
+            debug(String(format: "place search area: (%.5f, %.5f) · radius=%.2f km · %d results · farthest=%.0f m",
+                         search.center.lat, search.center.lon, search.radiusKm, rows.count, maxDistance),
+                  category: "Chat")
+            debug("place result samples: " + rows.prefix(5).map {
+                "\(($0["name"] as? String) ?? "?") [\(($0["subtype"] as? String) ?? "?")]"
+            }.joined(separator: " | "), category: "Chat")
+        }
         func dbl(_ v: Any?) -> Double? {
             if let d = v as? Double { return d }
             if let i = v as? Int { return Double(i) }
@@ -5920,24 +5710,40 @@ public final class ChatSession {
             "nearby_stories", "nearby_stories_at_place",
         ]
         if placesTools.contains(toolName) {
-            // The named place the user searched in is the discussion anchor;
-            // record it first so the enumerated list head ends up primary.
-            if let place = args["place"] as? String, !place.isEmpty {
+            // The resolved named place is the discussion anchor. Keep its
+            // coordinates: a later "what else is nearby?" must scan around
+            // this place, not fall back to an encyclopedia article merely
+            // because the original arg was a bare string.
+            if let resolved = result["resolved"] as? [String: Any],
+               let name = resolved["name"] as? String,
+               !name.isEmpty
+            {
+                focus.remember(FocusEntity(
+                    name: name,
+                    kind: .place,
+                    lat: dbl(resolved["lat"]),
+                    lon: dbl(resolved["lon"])))
+            } else if let place = args["place"] as? String, !place.isEmpty {
                 focus.remember(FocusEntity(name: place, kind: .place))
             }
             let rows = (result["results"] as? [[String: Any]])
                 ?? (result["stories"] as? [[String: Any]]) ?? []
             let list: [FocusEntity] = rows.compactMap { row in
-                let name = (row["wiki_title"] as? String) ?? (row["label"] as? String)
-                    ?? (row["name"] as? String) ?? (row["title"] as? String)
+                let name = (row["wiki_title"] as? String)
+                    ?? (row["place_name"] as? String)
+                    ?? (row["label"] as? String)
+                    ?? (row["name"] as? String)
+                    ?? (row["title"] as? String)
                 guard let name, !name.isEmpty else { return nil }
                 return FocusEntity(
                     name: name, kind: .place,
-                    zimPath: row["wiki_path"] as? String,
+                    zimPath: (row["wiki_path"] as? String)
+                        ?? (row["path"] as? String),
                     lat: dbl(row["lat"]), lon: dbl(row["lon"]))
             }
             if !list.isEmpty { focus.setLastList(list) }
         }
+
 
         if toolName == "compare_articles", let titles = args["titles"] as? [String] {
             let list = titles.filter { !$0.isEmpty }
@@ -5985,15 +5791,36 @@ public final class ChatSession {
             persistActiveRoute(args: args, result: result)
         }
 
-        let threads = ConversationThreads.rank(
-            ConversationThreads.extract(toolName: toolName, result: result),
-            focus: focus, max: 4)
+        let extractedThreads = ConversationThreads.extract(toolName: toolName, result: result)
+        // The sampler's cards and ordinal list must share the exact result
+        // order, including after cycling back through already seen topics.
+        let threads = toolName == "discover_topics" ? extractedThreads
+            : ConversationThreads.rank(extractedThreads, focus: focus, max: 4)
         // Keep the previous turn's threads when this tool contributed
         // none — a drill-in (`get_article_section` before it carried
         // `related[]`, `route_status`, a thin `search`) used to WIPE the
         // open threads, killing the "where next" offer exactly when the
         // user engaged. Stale-but-grounded beats empty.
         if !threads.isEmpty { focus.setThreads(threads) }
+        if toolName == "discover_topics" {
+            focus.setThreads(threads)
+            if result["error"] == nil,
+               let kind = result["kind"] as? String,
+               let nextOffset = result["next_offset"] as? Int
+            {
+                focus.recordTopicDiscovery(kind: kind, nextOffset: nextOffset)
+            }
+            let rows = (result["topics"] as? [[String: Any]]) ?? []
+            let list = rows.compactMap { row -> FocusEntity? in
+                guard let title = row["title"] as? String, !title.isEmpty
+                else { return nil }
+                return FocusEntity(
+                    name: title,
+                    kind: .topic,
+                    zimPath: row["path"] as? String)
+            }
+            focus.setLastList(list)
+        }
     }
 
     /// Build an `ActiveRoute` from a successful routing tool result and
@@ -6129,52 +5956,87 @@ public final class ChatSession {
         }
     }
 
+    /// Turn visible suggestion cards into a phrase that also works hands-free.
+    /// TTS reads message text, not SwiftUI controls; without this, a voice
+    /// answer ended in silence even though the screen showed several paths.
+    private static func suggestionVoiceCue(
+        _ threads: [DiscoveryThread]
+    ) -> String? {
+        ConversationSuggestionSelection.voiceCue(threads)
+    }
+
     /// Append a short "where to go next" line to the current assistant reply,
     /// drawn from the vetted drift threads. When the touch-index has the
     /// conversation's gist, the threads are first re-ranked by semantic
     /// similarity to that centroid so the offer follows the whole stroll, not
     /// just the last sentence; otherwise the deterministic source order stands.
-    /// Place threads are only offered when wiki-backed (a bare POI like a bar
-    /// isn't something to "hear about"). Skipped when the model already ended
-    /// with its own offer, or the reply is empty.
+    /// StreetZIM-only POIs remain offerable: their thread prompt opens the
+    /// real map pin instead of pretending a Wikipedia story exists. The
+    /// prose offer is skipped when the model already wrote one or replied empty.
     private func appendThreadOfferIfUseful() async {
-        var offerable = focus.openThreads.filter {
-            ConversationThreads.isUserFacing($0)
-                && ($0.kind != .place || $0.zimPath != nil)
-                && !recentlyOfferedThreadKeys.contains($0.matchKey)
-        }
-        guard !offerable.isEmpty else { return }
-        offerable = await rerankBySimilarity(offerable)
-        guard let line = ConversationThreads.offer(offerable) else { return }
         guard let idx = messages.indices.last,
               messages[idx].role == .assistant else { return }
-        let text = messages[idx].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let messageID = messages[idx].id
+        let text = messages[idx].text.trimmingCharacters(
+            in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        // Grounded article answers install question-shaped section chips
-        // directly ("How was it first detected?"). Keep those instead of
-        // replacing them with barely contextual wikilink labels and do not
-        // append a redundant prose "Want to hear about…" line.
-        if !messages[idx].suggestions.isEmpty { return }
-        // Attach the vetted threads as tappable chips regardless of whether we
-        // also append a prose offer below — the chips make any offer (ours or
-        // the model's own phrasing) actionable with a single tap.
-        messages[idx].suggestions = offerable
-        let tail = text.suffix(90).lowercased()
-        if tail.contains("want to") || tail.contains("would you like")
-            || tail.contains("shall i") || tail.contains("tell you about")
-            || tail.contains("i can tell you") {
+        let tail = text.suffix(140).lowercased()
+        let alreadyOffers = tail.contains("want to")
+            || tail.contains("would you like")
+            || tail.contains("shall i")
+            || tail.contains("tell you about")
+            || tail.contains("i can tell you")
+            || tail.contains("you can say")
+
+        // Grounded article answers already installed contextual question
+        // cards. Keep them, but add the missing spoken affordance so a
+        // hands-free listener knows those same paths are available by voice.
+        if !messages[idx].suggestions.isEmpty {
+            guard !alreadyOffers,
+                  let cue = Self.suggestionVoiceCue(
+                    messages[idx].suggestions)
+            else { return }
+            if messages[idx].rawAssistantText == nil {
+                messages[idx].rawAssistantText = messages[idx].text
+            }
+            messages[idx].text = text + "\n\n" + cue
             return
         }
-        // Preserve the model's exact emission for prompt rebuilds BEFORE
-        // mutating the display text — the offer line and the whitespace trim
-        // below were never generated, and re-feeding them diverges the KV
-        // prefix at the last assistant reply (PERFORMANCE_REVIEW.md A2).
+
+        var offerable = focus.openThreads.filter {
+            ConversationThreads.isUserFacing($0)
+                && !recentlyOfferedThreadKeys.contains($0.matchKey)
+        }
+        if !offerable.isEmpty {
+            offerable = await rerankBySimilarity(offerable)
+        } else if let place = focus.mostRecent(kind: .place),
+                  let lat = place.lat,
+                  let lon = place.lon
+        {
+            // A mapped place must never be a dead end. This action is
+            // grounded in that resolved coordinate and asks the composite
+            // story tool for a fresh, exclusion-aware local batch.
+            offerable = [DiscoveryThread(
+                label: "Another nearby lead",
+                kind: .place,
+                source: .nearbyPlace,
+                lat: lat,
+                lon: lon,
+                note: "Continue around \(place.name)",
+                prompt: "Another nearby lead")]
+        }
+        guard !Task.isCancelled, messages.indices.contains(idx),
+              messages.last?.id == messageID, !offerable.isEmpty else { return }
+
+        messages[idx].suggestions = offerable
+        guard !alreadyOffers,
+              let line = Self.suggestionVoiceCue(offerable)
+                ?? ConversationThreads.offer(offerable)
+        else { return }
         if messages[idx].rawAssistantText == nil {
             messages[idx].rawAssistantText = messages[idx].text
         }
         messages[idx].text = text + "\n\n" + line
-        // Remember what we offered so the next turn's line is fresh.
-        // `offer()` phrases the first 3 threads — mark exactly those.
         recentlyOfferedThreadKeys.append(
             contentsOf: offerable.prefix(3).map(\.matchKey))
         if recentlyOfferedThreadKeys.count > 12 {
@@ -6190,10 +6052,7 @@ public final class ChatSession {
     /// `ReferenceResolver` `.thread` binding that already handles the spoken
     /// "yes" / "the war" path.
     public func selectSuggestion(_ thread: DiscoveryThread) {
-        if let idx = messages.indices.last, messages[idx].role == .assistant {
-            messages[idx].suggestions = []
-        }
-        send(thread.prompt ?? "tell me about \(thread.label)")
+        send(ConversationSuggestionSelection.action(thread), suggestion: thread)
     }
 
     /// Order candidate threads by cosine similarity of each thread's label to

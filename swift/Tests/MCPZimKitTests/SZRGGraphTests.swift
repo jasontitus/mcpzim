@@ -35,6 +35,17 @@ final class SZRGGraphTests: XCTestCase {
         XCTAssertEqual(graph.names, ["", "North Rd", "West Rd"])
     }
 
+    func testRouteRejectsInvalidNodesAndCancellation() async throws {
+        let graph = try SZRGGraph.parse(Self.buildGridBlob())
+        XCTAssertNil(aStar(graph: graph, origin: -1, goal: 2))
+        XCTAssertNil(aStar(graph: graph, origin: 0, goal: 4))
+        let cancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return aStar(graph: graph, origin: 0, goal: 2)
+        }.value
+        XCTAssertNil(cancelled)
+    }
+
     func testParseRejectsImpossibleCountsBeforeAllocation() {
         var blob = Data([0x53, 0x5A, 0x52, 0x47])
         func append(_ value: UInt32) {

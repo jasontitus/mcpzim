@@ -1,0 +1,240 @@
+{
+  "runtime": "prism-b9591",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=true \u00b7 append=true \u00b7 edited=true \u00b7 pass=true",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 15.269,
+      "ttft_seconds": 15.275,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 9.67,
+      "total_seconds": 18.481,
+      "footprint_mb": 1108.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.104,
+      "ttft_seconds": 0.21,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.9,
+      "total_seconds": 3.692,
+      "footprint_mb": 1108.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 0.831,
+      "ttft_seconds": 0.834,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.73,
+      "total_seconds": 1.873,
+      "footprint_mb": 1108.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 18.823,
+      "ttft_seconds": 18.827,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.73,
+      "total_seconds": 19.868,
+      "footprint_mb": 1101.0,
+      "stop": "eog"
+    },
+    {
+      "case": "interrupted-retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.157,
+      "ttft_seconds": 0.321,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 5.66,
+      "total_seconds": 5.795,
+      "footprint_mb": 1101.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "edited-answer",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.997,
+      "ttft_seconds": 1.174,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 5.4,
+      "total_seconds": 2.471,
+      "footprint_mb": 1101.0,
+      "stop": "eog"
+    },
+    {
+      "case": "edited-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 23.374,
+      "ttft_seconds": 23.38,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.14,
+      "total_seconds": 24.52,
+      "footprint_mb": 1101.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 8 pieces/23.456s \u00b7 CancellationError()"
+  ],
+  "captures": [
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.187s \u00b7 queued-prefill=2.711s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.010s \u00b7 queued-prefill=0.480s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.132s \u00b7 queued-prefill=3.936s \u00b7 flags=1",
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.127s \u00b7 queued-prefill=4.171s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.010s \u00b7 queued-prefill=0.809s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.146s \u00b7 queued-prefill=4.309s \u00b7 flags=1",
+    "tokens=1223 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.135s \u00b7 queued-prefill=4.006s \u00b7 flags=1"
+  ],
+  "restores": [
+    "tokens=1222 \u00b7 0.102s",
+    "tokens=1222 \u00b7 0.159s",
+    "tokens=1222 \u00b7 0.172s"
+  ],
+  "verification_trials": [
+    {
+      "trial": 0,
+      "width": 1,
+      "seconds": 0.136838,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 2,
+      "seconds": 0.285585,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 4,
+      "seconds": 0.362736,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 8,
+      "seconds": 0.524866,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 1,
+      "width": 8,
+      "seconds": 0.483518,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 4,
+      "seconds": 0.402776,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 2,
+      "seconds": 0.217504,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 1,
+      "seconds": 0.137451,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 1,
+      "seconds": 0.135204,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 2,
+      "seconds": 0.212487,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 4,
+      "seconds": 0.392691,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 8,
+      "seconds": 0.488937,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 8,
+      "seconds": 0.482826,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 4,
+      "seconds": 0.391733,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 2,
+      "seconds": 0.213517,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 1,
+      "seconds": 0.136517,
+      "thermal": "serious",
+      "warmup": false
+    }
+  ],
+  "verification_median_seconds": {
+    "1": 0.136517,
+    "2": 0.213517,
+    "4": 0.392691,
+    "8": 0.483518
+  },
+  "settings": {
+    "checkpoint": true,
+    "storage": "host",
+    "prefill_batch": 512
+  }
+}

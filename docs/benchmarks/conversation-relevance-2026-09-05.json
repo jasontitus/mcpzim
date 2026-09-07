@@ -1,0 +1,299 @@
+{
+  "date": "2026-09-05",
+  "device": "iPhone 17 Pro Max / A19 Pro",
+  "model": "Bonsai 27B Q1_0, loaded but not invoked for these answers",
+  "archive": "wikipedia_en_all_maxi_2025-10.zim",
+  "metric": "User log timestamp to Assistant log timestamp; excludes startup and display refresh",
+  "methodology": "One reported session and one silent deterministic replay; not a statistical inference benchmark",
+  "code_uuid": "41F3B6D3-5E17-30DD-83AA-AEE6A8564502",
+  "code_sha256": "a7695fd3ef499bc46c77e14ccfe768b74be6b6040f14072e233cc93483e99afd",
+  "swift_tests_passed": 588,
+  "baseline": [
+    {
+      "question": "Tell me about Putin",
+      "answers": [
+        {
+          "elapsed_ms": 293,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7lead 1.00 \u00b7 s2\u2192Putin\u00a7lead 1.00 \u00b7 s3\u2192Putin\u00a7lead 1.00"
+      ]
+    },
+    {
+      "question": "What was Putin's early life like?",
+      "answers": [
+        {
+          "elapsed_ms": 1052,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 1073,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": []
+    },
+    {
+      "question": "Where did Putin go to school?",
+      "answers": [
+        {
+          "elapsed_ms": 76,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Education 1.00 \u00b7 s2\u2192Putin\u00a7Education 1.00 \u00b7 s3\u2192Putin\u00a7Education 1.00"
+      ]
+    },
+    {
+      "question": "How did Putin's career develop?",
+      "answers": [
+        {
+          "elapsed_ms": 72,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 89,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": []
+    },
+    {
+      "question": "What about Putin's family?",
+      "answers": [
+        {
+          "elapsed_ms": 67,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 87,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Wealth 1.00"
+      ]
+    },
+    {
+      "question": "How has Putin dealt with the West and NATO?",
+      "answers": [
+        {
+          "elapsed_ms": 90,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 120,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": []
+    }
+  ],
+  "reviewed_phone_replay": [
+    {
+      "question": "Tell me about Putin",
+      "answers": [
+        {
+          "elapsed_ms": 277,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7lead 1.00 \u00b7 s2\u2192Putin\u00a7lead 1.00 \u00b7 s3\u2192Putin\u00a7lead 1.00"
+      ],
+      "selection_ms": 5.9,
+      "section_choice": false
+    },
+    {
+      "question": "What was Putin's early life like?",
+      "answers": [
+        {
+          "elapsed_ms": 26,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Early life and education 1.00 \u00b7 s2\u2192Putin\u00a7Early life and education 1.00 \u00b7 s3\u2192Putin\u00a7Early life and education 1.00"
+      ],
+      "selection_ms": 2.9,
+      "section_choice": true
+    },
+    {
+      "question": "Where did Putin go to school?",
+      "answers": [
+        {
+          "elapsed_ms": 4,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Education 1.00 \u00b7 s2\u2192Putin\u00a7Education 1.00 \u00b7 s3\u2192Putin\u00a7Education 1.00"
+      ],
+      "selection_ms": 2.3,
+      "section_choice": true
+    },
+    {
+      "question": "How did Putin's career develop?",
+      "answers": [
+        {
+          "elapsed_ms": 8,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Intelligence career 1.00 \u00b7 s2\u2192Putin\u00a7Intelligence career 1.00 \u00b7 s3\u2192Putin\u00a7Intelligence career 1.00"
+      ],
+      "selection_ms": 5.6,
+      "section_choice": true
+    },
+    {
+      "question": "What about Putin's family?",
+      "answers": [
+        {
+          "elapsed_ms": 5,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Family 1.00 \u00b7 s2\u2192Putin\u00a7Family 1.00 \u00b7 s3\u2192Putin\u00a7Family 1.00"
+      ],
+      "selection_ms": 2.7,
+      "section_choice": true
+    },
+    {
+      "question": "How has Putin dealt with the West and NATO?",
+      "answers": [
+        {
+          "elapsed_ms": 97,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7United States, Western Europe, and NATO 1.00 \u00b7 s2\u2192Putin\u00a7United States, Western Europe, and NATO 1.00 \u00b7 s3\u2192Putin\u00a7United States, Western Europe, and NATO 1.00"
+      ],
+      "selection_ms": 12.8,
+      "section_choice": false
+    },
+    {
+      "question": "What was Putin's early life secret password?",
+      "answers": [
+        {
+          "elapsed_ms": 64,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 122,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": [],
+      "selection_ms": 4.2,
+      "section_choice": false
+    },
+    {
+      "question": "What about Putin's family lunar expedition in 1921?",
+      "answers": [
+        {
+          "elapsed_ms": 70,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 131,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": [],
+      "selection_ms": 4.1,
+      "section_choice": false
+    },
+    {
+      "question": "What about his early life?",
+      "answers": [
+        {
+          "elapsed_ms": 67,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Early life and education 1.00 \u00b7 s2\u2192Putin\u00a7Early life and education 1.00 \u00b7 s3\u2192Putin\u00a7Early life and education 1.00"
+      ],
+      "selection_ms": 3.3,
+      "section_choice": false
+    },
+    {
+      "question": "How did his career develop?",
+      "answers": [
+        {
+          "elapsed_ms": 66,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Political career 1.00 \u00b7 s2\u2192Putin\u00a7Political career 1.00 \u00b7 s3\u2192Putin\u00a7Intelligence career 1.00"
+      ],
+      "selection_ms": 9.2,
+      "section_choice": false
+    },
+    {
+      "question": "And his family?",
+      "answers": [
+        {
+          "elapsed_ms": 61,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Putin\u00a7Family 1.00 \u00b7 s2\u2192Putin\u00a7Family 1.00 \u00b7 s3\u2192Putin\u00a7Family 1.00"
+      ],
+      "selection_ms": 3.6,
+      "section_choice": false
+    },
+    {
+      "question": "Tell me about Einstein",
+      "answers": [
+        {
+          "elapsed_ms": 176,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Einstein\u00a7lead 1.00 \u00b7 s2\u2192Einstein\u00a7lead 1.00 \u00b7 s3\u2192Einstein\u00a7lead 1.00"
+      ],
+      "selection_ms": 7.8,
+      "section_choice": false
+    },
+    {
+      "question": "Who was his mother?",
+      "answers": [
+        {
+          "elapsed_ms": 1029,
+          "missing_evidence": false
+        }
+      ],
+      "attribution": [
+        "s1\u2192Einstein\u00a7Childhood, youth and education 1.00"
+      ],
+      "selection_ms": 12.3,
+      "section_choice": false
+    },
+    {
+      "question": "What was his secret password?",
+      "answers": [
+        {
+          "elapsed_ms": 34,
+          "missing_evidence": true
+        },
+        {
+          "elapsed_ms": 48,
+          "missing_evidence": true
+        }
+      ],
+      "attribution": [],
+      "selection_ms": 4.1,
+      "section_choice": false
+    }
+  ]
+}

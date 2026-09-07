@@ -62,6 +62,8 @@ public enum ArticleSections {
     /// entry is always the lead (title `""`, level `0`). Empty-body
     /// sections and the known-boilerplate ones are dropped.
     public static func parse(html: String) -> [ArticleSection] {
+        // Widget headings are not article section boundaries.
+        let html = removeProseWidgets(html)
         // Rough-and-ready: find each `<h2 …>…</h2>` / `<h3 …>…</h3>`
         // occurrence, record its heading text and start offset, then
         // slice the body between successive headings.
@@ -105,7 +107,10 @@ public enum ArticleSections {
         var sections: [ArticleSection] = []
         // Lead = everything before the first h2/h3.
         let leadEndIdx = markers.first?.headingStart ?? html.endIndex
-        let leadText = stripHTML(String(html[..<leadEndIdx]))
+        // Browser title and article h1 are metadata, not the first sentence.
+        // Keeping them produced “Duet Duet A duet…” in exact source excerpts.
+        let leadHTML = removeBlock(removeBlock(String(html[..<leadEndIdx]), tag: "head"), tag: "h1")
+        let leadText = stripHTML(leadHTML)
         if !leadText.isEmpty {
             sections.append(ArticleSection(title: "", level: 0, text: leadText))
         }
@@ -171,18 +176,15 @@ public enum ArticleSections {
         // crude non-greedy `removeBlock` can't be used. Kills the IPA glyph
         // cluster, the ⓘ "listen" button, and inline coordinate spans
         // before they reach TTS as symbol-by-symbol gibberish.
-        out = removeSpansByClass(out, ["ipa", "rt-commentedtext", "ext-phonos", "geo", "coordinates"])
+        out = removeElementsByClass(out, tag: "span",
+            classTokens: ["ipa", "rt-commentedtext", "ext-phonos", "geo", "coordinates"])
         // Hatnotes ("This article is about… / Not to be confused with…")
         // and the Wikidata short-description are metadata, not prose — left
         // in, a read-aloud of Cessna opened with three title repeats, a
         // one-line subsidiary blurb, and two hatnote sentences (real
         // capture 2026-08-02). Disambiguation offers read hatnotes from the
         // RAW html separately, so stripping them from prose loses nothing.
-        out = regexReplace(
-            out,
-            #"(?s)<div[^>]*class="[^"]*\b(?:hatnote|shortdescription)\b[^"]*"[^>]*>.*?</div>"#,
-            " ",
-            options: .caseInsensitive)
+        out = removeProseWidgets(out)
         // Drop known-noisy blocks whole, before tag-stripping, so
         // their inner text doesn't pollute prose.
         out = removeBlock(out, tag: "script")
@@ -266,17 +268,29 @@ public enum ArticleSections {
         return out
     }
 
-    /// Remove `<span class="…">…</span>` blocks whose class has any token
-    /// in `classTokens`, honouring nested `<span>`s. Wikipedia renders an
+    /// Old Wikipedia thumbnails (including OSM maps) use nested divs rather
+    /// than figures. Remove the whole widget, including labels, scale bars,
+    /// captions and offline map errors, while keeping surrounding prose.
+    private static func removeProseWidgets(_ html: String) -> String {
+        removeElementsByClass(html, tag: "div", classTokens: [
+            "thumb", "hatnote", "shortdescription", "mw-kartographer-container"
+        ])
+    }
+
+    /// Remove elements whose class has an exact token in `classTokens`,
+    /// honouring nested elements of the same tag. Wikipedia renders an
     /// IPA pronunciation as a per-character span tree wrapped in
     /// `rt-commentedText`, alongside an `ext-phonos` ⓘ button and inline
     /// `geo` coordinate spans — none removable by the non-greedy
     /// `removeBlock`. Token (not substring) match so "geo" doesn't also
     /// eat "geography".
-    private static func removeSpansByClass(_ html: String, _ classTokens: Set<String>) -> String {
+    private static func removeElementsByClass(_ html: String, tag: String, classTokens: Set<String>) -> String {
         let ns = html as NSString
         guard let re = RegexCache.shared.compiled(
-            "<(/?)span\\b([^>]*)>", options: [.caseInsensitive])
+            "<(/?)\(tag)\\b([^>]*)>", options: [.caseInsensitive]),
+              let classRegex = RegexCache.shared.compiled(
+                #"(?:^|\s)class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#,
+                options: [.caseInsensitive])
         else { return html }
         let tags = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
         var removals: [NSRange] = []
@@ -286,10 +300,11 @@ public enum ArticleSections {
             if open.range(at: 1).length > 0 { i += 1; continue }  // a </span>
             let attrs = ns.substring(with: open.range(at: 2)).lowercased()
             var hit = false
-            if let r = attrs.range(of: "class=\""),
-               let q = attrs[r.upperBound...].firstIndex(of: "\"") {
-                for tok in attrs[r.upperBound..<q].split(whereSeparator: { $0 == " " || $0 == "\t" }) {
-                    if classTokens.contains(String(tok)) { hit = true; break }
+            if let match = classRegex.firstMatch(in: attrs, range: NSRange(attrs.startIndex..., in: attrs)) {
+                for group in 1...3 {
+                    guard let range = Range(match.range(at: group), in: attrs) else { continue }
+                    hit = attrs[range].split(whereSeparator: { $0.isWhitespace })
+                        .contains { classTokens.contains(String($0)) }
                 }
             }
             if !hit { i += 1; continue }

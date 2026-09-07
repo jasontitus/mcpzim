@@ -159,6 +159,7 @@ struct OfflineContentSetupView: View {
         case .notLoaded: return "Not loaded"
         case .loading: return "Loading"
         case .downloading(let fraction): return "\(Int(fraction * 100))%"
+        case .waitingForNetwork: return "Waiting for network"
         case .ready: return "Ready"
         case .failed: return "Needs attention"
         }
@@ -169,7 +170,7 @@ struct OfflineContentSetupView: View {
         case .ready: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .notLoaded: return "circle"
-        case .loading, .downloading: return "arrow.down.circle"
+        case .loading, .downloading, .waitingForNetwork: return "arrow.down.circle"
         }
     }
 }

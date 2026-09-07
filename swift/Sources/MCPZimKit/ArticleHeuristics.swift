@@ -687,7 +687,7 @@ public enum ArticleHeuristics {
     /// punctuation and split only when a terminator is followed by whitespace
     /// and an uppercase/digit opener; this avoids most decimal/abbreviation
     /// damage without adding a NaturalLanguage dependency to MCPZimKit.
-    private static func sentenceChunks(_ text: String) -> [String] {
+    static func sentenceChunks(_ text: String) -> [String] {
         let chars = Array(text)
         guard !chars.isEmpty else { return [] }
         var out: [String] = []
@@ -708,7 +708,8 @@ public enum ArticleHeuristics {
                 ]
                 let decimal = i > 0 && chars[i - 1].isNumber
                     && next < chars.count && chars[next].isNumber
-                let boundary = !decimal && !abbreviations.contains(priorWord)
+                let initial = priorWord.count == 1 && chars[wordStart].isUppercase
+                let boundary = !decimal && !initial && !abbreviations.contains(priorWord)
                     && (next >= chars.count
                         || chars[next].isUppercase || chars[next].isNumber)
                 if boundary {

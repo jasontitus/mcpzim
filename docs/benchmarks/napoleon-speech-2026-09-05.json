@@ -1,0 +1,209 @@
+{
+  "date": "2026-09-05",
+  "device": "iPhone 17 Pro Max (iPhone18,2)",
+  "playback": false,
+  "microphone": false,
+  "original_session": "2026-09-05_10-08-37.log",
+  "original": {
+    "answer_ms": 318,
+    "tts_preparation_seconds": 10.06,
+    "first_chunk_characters": 664,
+    "first_chunk_synthesis_seconds": 38.8,
+    "first_audio_ready_seconds": 48.81,
+    "backend": "Supertonic 3 ANE-bucketed INT8",
+    "system_fallback_logged": false
+  },
+  "repaired_article_reply_ms": 196,
+  "early_life_reply_ms": 81,
+  "observed_user_legacy_reply_ms": 10,
+  "swift_tests": 600,
+  "runs": [
+    {
+      "scenario": "first_run_after_install",
+      "backend": "Supertonic 3 ANE-bucketed INT8",
+      "voice": "F1",
+      "preparation_seconds": 3.419,
+      "first_pcm_seconds": 15.405,
+      "total_synthesis_seconds": 23.689,
+      "chunks": [
+        {
+          "number": 1,
+          "characters": 66,
+          "synthesis_seconds": 11.986,
+          "audio_seconds": 6.67,
+          "since_start_seconds": 15.405,
+          "samples": 294164
+        },
+        {
+          "number": 2,
+          "characters": 91,
+          "synthesis_seconds": 0.068,
+          "audio_seconds": 8.08,
+          "since_start_seconds": 15.473,
+          "samples": 356343
+        },
+        {
+          "number": 3,
+          "characters": 91,
+          "synthesis_seconds": 0.063,
+          "audio_seconds": 6.313,
+          "since_start_seconds": 15.536,
+          "samples": 278414
+        },
+        {
+          "number": 4,
+          "characters": 84,
+          "synthesis_seconds": 0.061,
+          "audio_seconds": 8.17,
+          "since_start_seconds": 15.597,
+          "samples": 360281
+        },
+        {
+          "number": 5,
+          "characters": 61,
+          "synthesis_seconds": 0.056,
+          "audio_seconds": 6.302,
+          "since_start_seconds": 15.653,
+          "samples": 277921
+        },
+        {
+          "number": 6,
+          "characters": 72,
+          "synthesis_seconds": 0.057,
+          "audio_seconds": 6.849,
+          "since_start_seconds": 15.711,
+          "samples": 302039
+        },
+        {
+          "number": 7,
+          "characters": 26,
+          "synthesis_seconds": 0.045,
+          "audio_seconds": 2.736,
+          "since_start_seconds": 15.756,
+          "samples": 120667
+        },
+        {
+          "number": 8,
+          "characters": 94,
+          "synthesis_seconds": 7.805,
+          "audio_seconds": 9.174,
+          "since_start_seconds": 23.561,
+          "samples": 404578
+        },
+        {
+          "number": 9,
+          "characters": 67,
+          "synthesis_seconds": 0.067,
+          "audio_seconds": 7.589,
+          "since_start_seconds": 23.628,
+          "samples": 334687
+        },
+        {
+          "number": 10,
+          "characters": 93,
+          "synthesis_seconds": 0.061,
+          "audio_seconds": 6.458,
+          "since_start_seconds": 23.689,
+          "samples": 284812
+        }
+      ]
+    },
+    {
+      "scenario": "fresh_process_cached_models",
+      "backend": "Supertonic 3 ANE-bucketed INT8",
+      "voice": "F1",
+      "preparation_seconds": 0.203,
+      "first_pcm_seconds": 0.43,
+      "total_synthesis_seconds": 1.206,
+      "chunks": [
+        {
+          "number": 1,
+          "characters": 66,
+          "synthesis_seconds": 0.227,
+          "audio_seconds": 6.67,
+          "since_start_seconds": 0.43,
+          "samples": 294164
+        },
+        {
+          "number": 2,
+          "characters": 91,
+          "synthesis_seconds": 0.078,
+          "audio_seconds": 8.08,
+          "since_start_seconds": 0.508,
+          "samples": 356343
+        },
+        {
+          "number": 3,
+          "characters": 91,
+          "synthesis_seconds": 0.077,
+          "audio_seconds": 6.313,
+          "since_start_seconds": 0.586,
+          "samples": 278414
+        },
+        {
+          "number": 4,
+          "characters": 84,
+          "synthesis_seconds": 0.066,
+          "audio_seconds": 8.17,
+          "since_start_seconds": 0.652,
+          "samples": 360281
+        },
+        {
+          "number": 5,
+          "characters": 61,
+          "synthesis_seconds": 0.06,
+          "audio_seconds": 6.302,
+          "since_start_seconds": 0.712,
+          "samples": 277921
+        },
+        {
+          "number": 6,
+          "characters": 72,
+          "synthesis_seconds": 0.072,
+          "audio_seconds": 6.849,
+          "since_start_seconds": 0.784,
+          "samples": 302039
+        },
+        {
+          "number": 7,
+          "characters": 26,
+          "synthesis_seconds": 0.057,
+          "audio_seconds": 2.736,
+          "since_start_seconds": 0.841,
+          "samples": 120667
+        },
+        {
+          "number": 8,
+          "characters": 94,
+          "synthesis_seconds": 0.205,
+          "audio_seconds": 9.174,
+          "since_start_seconds": 1.047,
+          "samples": 404578
+        },
+        {
+          "number": 9,
+          "characters": 67,
+          "synthesis_seconds": 0.08,
+          "audio_seconds": 7.589,
+          "since_start_seconds": 1.127,
+          "samples": 334687
+        },
+        {
+          "number": 10,
+          "characters": 93,
+          "synthesis_seconds": 0.079,
+          "audio_seconds": 6.458,
+          "since_start_seconds": 1.206,
+          "samples": 284812
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "PCM was discarded, so playback latency and listening quality were not measured.",
+    "Warm-cache timings exclude first-install Core ML compilation.",
+    "Whole-app sampled memory is not an isolated TTS incremental peak."
+  ],
+  "final_debug_library_uuid": "5A9F2BC6-5978-33A9-B492-AAF75B60BCE5",
+  "final_debug_library_sha256": "2ef95d77843d95551dbe4358b0b73a7131dd035b99d0543c7fc000d00efd3a2c"
+}

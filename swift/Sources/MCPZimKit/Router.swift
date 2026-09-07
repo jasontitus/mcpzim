@@ -43,6 +43,8 @@ public struct Route: Sendable {
 ///   max edge speed (capped at the JS viewer's 100 km/h), giving
 ///   `haversine / (ceiling/3.6)`.
 public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
+    guard !Task.isCancelled, origin >= 0, goal >= 0,
+          origin < graph.numNodes, goal < graph.numNodes else { return nil }
     if origin == goal {
         return Route(
             origin: (graph.lat[origin], graph.lon[origin]),
@@ -83,6 +85,7 @@ public func aStar(graph: SZRGGraph, origin: Int, goal: Int) -> Route? {
     counter += 1
 
     while let current = open.pop() {
+        if Task.isCancelled { return nil }
         if current.node == goal {
             return reconstructRoute(
                 graph: graph, origin: origin, goal: goal,
@@ -237,6 +240,7 @@ func aStarSpatial(
     origin: Int, goal: Int,
     greedyWeight: Double, popLimit: Int
 ) async -> Route? {
+    guard !Task.isCancelled else { return nil }
     @inline(__always) func coord(_ node: Int) -> (lat: Double, lon: Double) {
         (Double(index.nodesScaled[node * 2]) / 1e7,
          Double(index.nodesScaled[node * 2 + 1]) / 1e7)
@@ -269,6 +273,7 @@ func aStarSpatial(
     var cachedCell: SZRCCell?
 
     while let item = open.pop() {
+        if Task.isCancelled { return nil }
         let current = item.node
         pops += 1
         if pops > popLimit { return nil }
@@ -365,6 +370,7 @@ func aStarSpatial(
 /// back to a greedy search on bail/skip so long routes still return.
 func routeSpatial(graph: SpatialGraph, index: SZCIIndex,
                   origin: Int, goal: Int) async -> Route? {
+    guard !Task.isCancelled else { return nil }
     func coord(_ n: Int) -> (Double, Double) {
         (Double(index.nodesScaled[n * 2]) / 1e7, Double(index.nodesScaled[n * 2 + 1]) / 1e7)
     }

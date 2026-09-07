@@ -1,0 +1,230 @@
+{
+  "runtime": "llama.cpp b10816 / 427291b5b3",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=true \u00b7 append=true \u00b7 edited=true \u00b7 pass=true",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 16.169,
+      "ttft_seconds": 16.176,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.91,
+      "total_seconds": 19.653,
+      "footprint_mb": 972.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 20.488,
+      "ttft_seconds": 20.492,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 6.58,
+      "total_seconds": 25.203,
+      "footprint_mb": 972.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 2.102,
+      "ttft_seconds": 2.106,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.29,
+      "total_seconds": 3.219,
+      "footprint_mb": 972.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 24.217,
+      "ttft_seconds": 24.22,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.03,
+      "total_seconds": 25.38,
+      "footprint_mb": 972.0,
+      "stop": "eog"
+    },
+    {
+      "case": "interrupted-retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 23.381,
+      "ttft_seconds": 23.385,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 6.41,
+      "total_seconds": 28.221,
+      "footprint_mb": 972.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "edited-answer",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 23.748,
+      "ttft_seconds": 23.75,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.1,
+      "total_seconds": 24.897,
+      "footprint_mb": 972.0,
+      "stop": "eog"
+    },
+    {
+      "case": "edited-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 25.039,
+      "ttft_seconds": 25.043,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 5.5,
+      "total_seconds": 26.316,
+      "footprint_mb": 972.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 8 pieces/24.625s \u00b7 CancellationError()"
+  ],
+  "captures": [
+    "tokens=1223 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 4.477s"
+  ],
+  "restores": [],
+  "verification_trials": [
+    {
+      "trial": 0,
+      "width": 1,
+      "seconds": 0.144537,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 2,
+      "seconds": 0.51449,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 4,
+      "seconds": 0.723344,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 0,
+      "width": 8,
+      "seconds": 1.427809,
+      "thermal": "serious",
+      "warmup": true
+    },
+    {
+      "trial": 1,
+      "width": 8,
+      "seconds": 1.363166,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 4,
+      "seconds": 0.671193,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 2,
+      "seconds": 0.478409,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 1,
+      "width": 1,
+      "seconds": 0.136352,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 1,
+      "seconds": 0.131258,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 2,
+      "seconds": 0.472143,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 4,
+      "seconds": 0.68138,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 2,
+      "width": 8,
+      "seconds": 1.391601,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 8,
+      "seconds": 1.343055,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 4,
+      "seconds": 0.662048,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 2,
+      "seconds": 0.471265,
+      "thermal": "serious",
+      "warmup": false
+    },
+    {
+      "trial": 3,
+      "width": 1,
+      "seconds": 0.133351,
+      "thermal": "serious",
+      "warmup": false
+    }
+  ],
+  "verification_median_seconds": {
+    "1": 0.133351,
+    "2": 0.472143,
+    "4": 0.671193,
+    "8": 1.363166
+  },
+  "settings": {
+    "checkpoint": false,
+    "storage": "device",
+    "prefill_batch": 512
+  }
+}

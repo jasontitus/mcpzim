@@ -696,7 +696,7 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                     self.debug(String(format:
                         "sampler · temp=%.2f · top-p=%.2f · top-k=%d · presence=%.2f",
                         temperature, topP, topK, presencePenalty))
-                    var genParams = GenerateParameters(
+                    var configuredParams = GenerateParameters(
                         maxTokens: parameters.maxTokens,
                         kvBits: useQuant ? 4 : nil,
                         kvGroupSize: 64,
@@ -705,10 +705,12 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
                         topP: Float(topP),
                         prefillStepSize: 128
                     )
-                    genParams.topK = topK
+                    configuredParams.topK = topK
                     if presencePenalty != 0 {
-                        genParams.presencePenalty = Float(presencePenalty)
+                        configuredParams.presencePenalty = Float(presencePenalty)
                     }
+
+                    let genParams = configuredParams
 
                     // Cheapest place to honour a Stop: nothing has been
                     // prefilled or published yet, so throwing here leaves

@@ -337,19 +337,29 @@ headless builds.
   Partial downloads never appear in the library because the Documents scan
   is top-level-only. The controller rebuilds Bonjour browsers/listeners on
   every return to the foreground (iOS tears them down during suspension).
-- **The AI model rides along** (`ChatSession+ModelSharing.swift`): the share
-  includes the selected model's byte-validated GGUF (toggleable, on by
-  default), so the recipient can chat with zero internet — the model
-  download is otherwise the one online step a friend-bootstrap can't skip.
-  On receive, a `.gguf` is offered to every registered `LlamaCppProvider`;
-  `adoptSharedGGUF` claims it only when the filename matches the provider's
-  pinned file *and* the pinned byte count validates (transport integrity is
-  the swarm's per-chunk SHA-256), then moves it into the exact
-  `<caches>/huggingface/hub/...` slot `ensureGGUFDownloaded()` uses — the
-  provider's own cache/validation logic takes over from there. If the
-  device has no working model (`.notLoaded`/`.failed`), the adopted model
-  is auto-selected and loaded. MLX safetensors models are multi-file HF
+- **The AI models ride along** (`ChatSession+ModelSharing.swift`): the share
+  includes **every** byte-validated GGUF the device has downloaded (toggleable,
+  on by default), not just the currently selected one — so the friend gets the
+  whole working set, like the ZIM library, and can chat with zero internet
+  (the model download is otherwise the one online step a friend-bootstrap
+  can't skip). On receive, each `.gguf` is offered to every registered
+  `LlamaCppProvider`; `adoptSharedGGUF` claims it only when the filename
+  matches the provider's pinned file *and* the pinned byte count validates
+  (transport integrity is the swarm's per-chunk SHA-256), then moves it into
+  the exact `<caches>/huggingface/hub/...` slot `ensureGGUFDownloaded()`
+  uses — the provider's own cache/validation logic takes over from there. If
+  the device has no working model (`.notLoaded`/`.failed`), the first adopted
+  model is auto-selected and loaded. MLX safetensors models are multi-file HF
   snapshots and stay download-only for now. Pinned by `ModelSharingTests`.
+- **Default model is capacity-aware**: on a fresh install the app picks the
+  model by device RAM — a snug (≈6 GB) phone defaults to the smaller Gemma 3
+  4B FT (≈3.2 GB peak) because the LFM2.5-8B default (≈3.7 GB peak) OOMs at
+  context init right after the download finishes (the "crashed at 100% model
+  download" bug); balanced and above keep LFM2.5. `modelFitsDevice` guards
+  `LlamaCppProvider.load()` so a manually-picked too-big model fails with a
+  clear message instead of aborting. The model picker lists every model with
+  its download size, resident footprint, a "Recommended" marker, and a "Too
+  large for this device" flag.
 - **Voice models ride along too**: the share seeds
   `Application Support/models/kokoro_mlx/` (Kokoro weights + voices) and
   `models/supertonic_3/` (Supertonic Core ML bundles) as *directory shares*
@@ -364,10 +374,33 @@ headless builds.
   to FluidAudio's normal re-download.
 - **`ZimDownloadManager`** is a background-`URLSession` downloader
   (`sessionSendsLaunchEvents`, resume-data persisted under Application
-  Support) for the catalog: transfers survive suspension and termination;
-  `ZimfoAppDelegate` handles the background relaunch hand-back. Finished
-  files move into Documents and are opened immediately via a
-  foreground notification, or by the next launch's scan otherwise.
+  Support) for the catalog **and the on-device GGUF model weights**: both
+  kinds of transfer survive suspension and termination; `ZimfoAppDelegate`
+  handles the background relaunch hand-back. ZIM archives land in Documents
+  and are opened immediately via a foreground notification, or by the next
+  launch's scan otherwise. Model weights are downloaded through the same
+  session — a `LlamaCppProvider` hands its GGUF to `downloadModel(spec:)`
+  and awaits the finished cache slot — with extra safeguards on top:
+  * **storage gate** — the required size (+ a 256 MB safety margin) is
+    checked against the cache volume before a transfer starts, and the
+    error names the shortfall so a full disk never orphans a half-written
+    model;
+  * **staged, verified install** — the weights are written to a
+    `.partial` file and only moved into the
+    `<caches>/huggingface/hub/...` slot after the expected size **and**
+    the pinned SHA-256 (when set) validate, so llama.cpp never loads a
+    truncated or corrupt GGUF;
+  * **explicit states** — a row shows bytes / total / progress plus
+    Pause, Resume, Retry, and a real "Waiting for network…" state (the
+    OS parks the task on connectivity); the provider mirrors it as
+    `ModelLoadState.waitingForNetwork` so the launch setup doesn't mistake
+    it for a stall;
+  * **reconnect on launch** — in-flight transfers are re-adopted and
+    paused ones resurfaced from resume data; a failed, non-resumable pull
+    restarts automatically with a clear message. Force-quitting can still
+    cancel background transfers (an iOS limitation); reopening the app
+    recovers from the cache slot instead of promising uninterrupted
+    downloading. Pinned by `ModelDownloadTests`.
 - **`ZimCatalog`** resolves the *latest* archives at runtime — Wikipedia
   (`nopic` + `maxi` flavors) from the Kiwix directory index, StreetZIM
   regions (with tier/size/description) from streetzim.web.app — with baked

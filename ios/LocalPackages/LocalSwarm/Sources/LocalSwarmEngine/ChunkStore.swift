@@ -92,17 +92,20 @@ public final class ChunkStore {
         // The caller must have validated the manifest (safe relative paths), but
         // re-check that every resolved destination stays inside `directory` so a
         // path can never escape via "..", a symlink, or a future regression.
-        let root = directory.standardizedFileURL.path
+        let root = canonicalPath(directory)
+        func requireContained(_ url: URL) throws {
+            guard canonicalPath(url).hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+                throw StoreError.unsafePath(url.lastPathComponent)
+            }
+        }
         var urls: [URL] = []
         for file in manifest.files {
             let url = directory.appendingPathComponent(file.path)
-            let resolved = url.standardizedFileURL.path
-            guard resolved == root || resolved.hasPrefix(root + "/") else {
-                throw StoreError.unsafePath(file.path)
-            }
+            try requireContained(url)
             urls.append(url)
             guard selectedPaths == nil || selectedPaths!.contains(file.path) else { continue }
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try requireContained(url)
             if !fm.fileExists(atPath: url.path) {
                 fm.createFile(atPath: url.path, contents: nil)
                 if file.sizeBytes > 0 {
@@ -114,11 +117,13 @@ public final class ChunkStore {
         }
 
         let bitfieldURL = directory.appendingPathComponent(".localswarm-bitfield")
+        try requireContained(bitfieldURL)
         let bitfield = loadBitfield(at: bitfieldURL, count: manifest.chunkCount)
 
         // Persist the manifest alongside the data so a resumed session can
         // reconstruct without the network.
         let manifestURL = directory.appendingPathComponent(".localswarm-manifest.json")
+        try requireContained(manifestURL)
         if let data = try? JSONEncoder().encode(manifest) {
             try? data.write(to: manifestURL)
         }
@@ -128,6 +133,27 @@ public final class ChunkStore {
                           bitfield: bitfield,
                           bitfieldURL: bitfieldURL,
                           readOnly: false)
+    }
+
+    /// Foundation may resolve /var aliases for an existing root but leave a
+    /// not-yet-created child unresolved. Resolve the existing ancestor first,
+    /// then append missing components without re-standardizing only one side.
+    /// This also catches an existing parent/file symlink escaping the store.
+    private static func canonicalPath(_ url: URL) -> String {
+        var cursor = url.standardizedFileURL
+        var missing: [String] = []
+        while cursor.path != "/", !FileManager.default.fileExists(atPath: cursor.path) {
+            // A dangling symlink must not be treated as an ordinary missing
+            // component (its eventual target could be outside the store).
+            if (try? FileManager.default.destinationOfSymbolicLink(atPath: cursor.path)) != nil {
+                return ""
+            }
+            missing.append(cursor.lastPathComponent)
+            cursor.deleteLastPathComponent()
+        }
+        cursor = cursor.resolvingSymlinksInPath()
+        for component in missing.reversed() { cursor.appendPathComponent(component) }
+        return cursor.path
     }
 
     /// Bytes already present on disk for `indices`, read from the persisted

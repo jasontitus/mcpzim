@@ -2,6 +2,7 @@
 
 import Combine
 import Foundation
+import MCPZimKit
 import LocalSwarmEngine
 #if canImport(UIKit)
 import UIKit
@@ -251,14 +252,8 @@ final class ZimSwarmController: ObservableObject {
                 .flatMap { $0 } ?? 0
             var destination = docs.appendingPathComponent(source.lastPathComponent)
             if fm.fileExists(atPath: destination.path) {
-                let existingSize = (try? fm.attributesOfItem(atPath: destination.path)[.size] as? Int64)
-                    .flatMap { $0 } ?? -1
-                if existingSize == sourceSize {
-                    // Same published archive already in the library — drop the
-                    // duplicate copy rather than storing it twice.
-                    try? fm.removeItem(at: source)
-                    continue
-                }
+                // Equal byte counts do not establish equal contents. Preserve
+                // a colliding transfer instead of silently discarding it.
                 destination = uniqueDestination(for: source.lastPathComponent, in: docs)
             }
             do {
@@ -320,6 +315,7 @@ final class ZimSwarmController: ObservableObject {
     /// Go-conformant form) — recognized by Kokoro's two known filenames or
     /// Supertonic's "supertonic-3-coreml/" bundle root.
     nonisolated static func voiceModelDestination(forRelativePath relative: String) -> URL? {
+        guard ArchiveFilePolicy.isSafeRelativePath(relative) else { return nil }
         let components = relative.split(separator: "/").map(String.init)
         guard let first = components.first else { return nil }
 
@@ -357,10 +353,7 @@ final class ZimSwarmController: ObservableObject {
         do {
             try fm.createDirectory(at: destination.deletingLastPathComponent(),
                                    withIntermediateDirectories: true)
-            if fm.fileExists(atPath: destination.path) {
-                try fm.removeItem(at: destination)
-            }
-            try fm.moveItem(at: source, to: destination)
+            try ArchiveFilePolicy.commit(staged: source, to: destination)
             return true
         } catch {
             return false

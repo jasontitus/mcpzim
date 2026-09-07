@@ -13,7 +13,7 @@ import Foundation
 /// INT8 buckets keep the large repeated stage approximately 94% ANE-resident.
 public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Sendable {
     public let displayName = "Supertonic 3 (ANE-bucketed INT8)"
-    public let approximateMemoryMB = 32
+    public let approximateMemoryMB = 48
     public let peakSynthesisMemoryMB = 96
     /// MCPZim's validated FluidAudio variant caps Latin input at 96 characters
     /// and otherwise synthesizes multiple independent utterances internally.
@@ -29,11 +29,7 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     private let runtime: Supertonic3Runtime
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
-    private let format = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 44_100,
-        channels: 1,
-        interleaved: false)!
+    private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 1, interleaved: false)!
     private let stateLock = NSLock()
     private var speaking = false
     private var stopRequested = false
@@ -59,8 +55,19 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     }
 
     public func prepareForConversation() async throws {
-        try await runtime.prepareAndWarmInferenceBuckets()
+        // Load assets, but let the first real chunk compile only the bucket
+        // it needs. Synthesizing three dummy utterances delayed that chunk.
+        try await runtime.prepare()
     }
+
+    #if DEBUG
+    /// Exercise the production synthesizer without starting an audio engine
+    /// or scheduling any buffer. Used by the opt-in silent device probe.
+    func synthesizeWithoutPlayback(_ text: String) async throws -> (sampleCount: Int, audioSeconds: Double) {
+        let result = try await runtime.synthesize(text: text)
+        return (result.samples.count, Double(result.samples.count) / format.sampleRate)
+    }
+    #endif
 
     public func speak(_ text: String) async throws {
         try await speakChunk(text, boundary: .final)
@@ -76,15 +83,18 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         guard !raw.isEmpty else { return }
 
         stateLock.withLock { stopRequested = false }
+        try Task.checkCancellation()
         let result = try await runtime.synthesize(text: raw)
+        try Task.checkCancellation()
         let joiningQueuedAudio = stateLock.withLock { hasQueuedAudio }
         let trimmedSamples = Self.trimGeneratedSilence(
             result.samples,
             boundary: boundary,
-            joiningQueuedAudio: joiningQueuedAudio)
+            joiningQueuedAudio: joiningQueuedAudio,
+            sampleRate: Int(format.sampleRate))
         let samples = trimmedSamples
         guard !samples.isEmpty else {
-            throw TTSError.synthesisFailed("Supertonic produced no audio.")
+            throw TTSError.synthesisFailed("\(displayName) produced no audio.")
         }
         // Allocation-free level API (DS4 pass): fold the gain into the
         // single PCM-buffer copy below instead of a normalized copy here.
@@ -95,7 +105,7 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(samples.count))
         else {
-            throw TTSError.synthesisFailed("Could not allocate Supertonic PCM buffer.")
+            throw TTSError.synthesisFailed("Could not allocate speech PCM buffer.")
         }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         if let destination = buffer.floatChannelData?[0] {
@@ -151,9 +161,9 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     private static func trimGeneratedSilence(
         _ samples: [Float],
         boundary: TTSChunkBoundary,
-        joiningQueuedAudio: Bool
+        joiningQueuedAudio: Bool,
+        sampleRate: Int
     ) -> [Float] {
-        let sampleRate = 44_100
         let window = sampleRate / 100 // 10 ms
         guard samples.count > window * 4 else { return samples }
 
@@ -220,7 +230,10 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         marker.frameLength = 1
         marker.floatChannelData?[0][0] = 0
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            player.scheduleBuffer(marker, at: nil, options: []) {
+            // The default callback means consumed, which can precede audible
+            // output. Wait through device latency before rearming capture.
+            player.scheduleBuffer(marker, at: nil, options: [],
+                                  completionCallbackType: .dataPlayedBack) { _ in
                 continuation.resume()
             }
             if !player.isPlaying { player.play() }
@@ -249,7 +262,6 @@ private actor Supertonic3Runtime {
     private let voice: Supertonic3Voice
     private let manager: Supertonic3Manager
     private var style: Supertonic3VoiceStyle?
-    private var didWarmInferenceBuckets = false
 
     init(directory: URL, voice: Supertonic3Voice) {
         self.directory = directory
@@ -266,34 +278,6 @@ private actor Supertonic3Runtime {
                 voice,
                 directory: directory)
         }
-    }
-
-    /// Core ML lazily compiles each fixed VectorEstimator length on its first
-    /// prediction. Exercise representative short, medium, and long utterances
-    /// with one denoising step while the user is speaking. The real answer
-    /// still uses FluidAudio's full eight-step quality setting.
-    func prepareAndWarmInferenceBuckets() async throws {
-        try await prepare()
-        guard !didWarmInferenceBuckets, let style else { return }
-
-        let probes = [
-            "Ready to speak.",
-            "Preparing a natural voice for a clear conversational answer.",
-            "Preparing a natural voice for longer conversational answers about history and notable people.",
-        ]
-        for probe in probes {
-            let result = try await manager.synthesize(
-                text: probe,
-                language: "en",
-                style: style,
-                totalSteps: 1,
-                silenceDuration: 0)
-            guard !result.samples.isEmpty else {
-                throw TTSError.synthesisFailed(
-                    "Supertonic inference preparation produced no audio.")
-            }
-        }
-        didWarmInferenceBuckets = true
     }
 
     func synthesize(text: String) async throws -> (samples: [Float], duration: Float) {
@@ -320,7 +304,7 @@ public enum SupertonicVoicePreference {
 }
 
 public enum Supertonic3Assets {
-    /// Root passed to FluidAudio; it creates `supertonic-3-coreml/` below it.
+    /// Root passed to FluidAudio; its downloader creates `supertonic-3/` below it.
     public static var modelDirectory: URL {
         let fileManager = FileManager.default
         let base = (try? fileManager.url(

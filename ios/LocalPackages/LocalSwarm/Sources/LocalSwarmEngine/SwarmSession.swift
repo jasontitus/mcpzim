@@ -53,6 +53,7 @@ final class SwarmSession: @unchecked Sendable {
 
     private let netQueue: DispatchQueue
     private let ioQueue: DispatchQueue
+    private let diskWork = DispatchGroup()
 
     private var peers: [String: PeerSession] = [:]
     private var neededOrder: [Int] = []
@@ -82,6 +83,7 @@ final class SwarmSession: @unchecked Sendable {
     private var pendingAdvertisePeerID: String?
     private var snapshotTimer: DispatchSourceTimer?
     private var completed = false
+    private var stopped = false
 
     private let downloadRate = RateMeter()
     private let uploadRate = RateMeter()
@@ -153,6 +155,7 @@ final class SwarmSession: @unchecked Sendable {
 
     func start() {
         dispatchPrecondition(condition: .onQueue(netQueue))
+        guard !stopped else { return }
         startedAt = Date()
         let timer = DispatchSource.makeTimerSource(queue: netQueue)
         timer.schedule(deadline: .now() + 0.4, repeating: 0.4)
@@ -165,6 +168,7 @@ final class SwarmSession: @unchecked Sendable {
 
     func startAdvertising(peerID: String) {
         dispatchPrecondition(condition: .onQueue(netQueue))
+        guard !stopped else { return }
         pendingAdvertisePeerID = peerID
         // Suspended (this node is leeching) or already advertising: do nothing.
         guard !advertisingSuspended, advertisers.isEmpty else { return }
@@ -228,6 +232,7 @@ final class SwarmSession: @unchecked Sendable {
 
     func startDownload(from sources: [DiscoveredPeer]) {
         dispatchPrecondition(condition: .onQueue(netQueue))
+        guard !stopped else { return }
         swarmDiag("download start: \(sources.count) source(s) × \(Self.streamsPerSource) streams, need \(neededSet.count)/\(manifest.chunkCount) chunks over \(transport.rawValue)")
         if sources.isEmpty { swarmDiag("download has NO sources — nothing to connect to") }
         for source in sources {
@@ -268,13 +273,18 @@ final class SwarmSession: @unchecked Sendable {
 
     func stop() {
         dispatchPrecondition(condition: .onQueue(netQueue))
+        stopped = true
         onSnapshot = nil
+        onComplete = nil
         snapshotTimer?.cancel()
         snapshotTimer = nil
         advertisers.forEach { $0.stop() }
         advertisers.removeAll()
         for peer in peers.values { peer.connection.cancel() }
         peers.removeAll()
+        // Drain this session's disk jobs before checkpoint/removal. A barrier
+        // on the shared ioQueue would also wait for unrelated large-file hashing.
+        diskWork.wait()
         // The bitfield persists on a checkpoint cadence; flush the tail so an
         // interrupted download resumes from exactly what's on disk.
         store.flush()
@@ -283,7 +293,7 @@ final class SwarmSession: @unchecked Sendable {
     // MARK: - Peer wiring
 
     private func attach(_ connection: PeerConnection, id: String) {
-        guard peers[id] == nil else { connection.cancel(); return }
+        guard !stopped, peers[id] == nil else { connection.cancel(); return }
         let peer = PeerSession(id: id, connection: connection, chunkCount: manifest.chunkCount)
         peers[id] = peer
 
@@ -322,6 +332,7 @@ final class SwarmSession: @unchecked Sendable {
     // MARK: - Message handling
 
     private func handle(_ message: Message, from peer: PeerSession) {
+        guard !stopped else { return }
         // Every swarm-scoped message must name THIS swarm; a peer that sends a
         // different swarmID is confused or hostile, so drop the connection.
         if let mid = message.swarmID, mid != manifest.swarmID {
@@ -411,6 +422,7 @@ final class SwarmSession: @unchecked Sendable {
     /// accepted by Network.framework (itself gated by the connection's flow
     /// control), so at most `serveWindow` chunks are ever buffered per peer.
     private func drainServeQueue(_ peer: PeerSession) {
+        guard !stopped else { return }
         while peer.servesInFlight < peer.serveWindow, !peer.serveQueue.isEmpty {
             let index = peer.serveQueue.removeFirst()
             guard store.hasChunk(index) else {
@@ -418,7 +430,9 @@ final class SwarmSession: @unchecked Sendable {
                 continue
             }
             peer.servesInFlight += 1
-            ioQueue.async { [weak self, weak peer] in
+            diskWork.enter()
+            ioQueue.async { [weak self, weak peer, diskWork] in
+                defer { diskWork.leave() }
                 guard let self = self else { return }
                 do {
                     if index < 3 { swarmDiag("serveChunk \(index): reading…") }
@@ -463,8 +477,10 @@ final class SwarmSession: @unchecked Sendable {
     // MARK: - Receiving (leecher side)
 
     private func receiveChunk(_ index: Int, data: Data, from peer: PeerSession) {
-        guard isDownloading else { return }
-        ioQueue.async { [weak self] in
+        guard !stopped, isDownloading else { return }
+        diskWork.enter()
+        ioQueue.async { [weak self, diskWork] in
+            defer { diskWork.leave() }
             guard let self = self else { return }
             var stored = false
             do {
@@ -475,6 +491,7 @@ final class SwarmSession: @unchecked Sendable {
                 swarmDiag("writeChunk \(index) from \(peer.id) failed: \(error)")
             }
             self.netQueue.async {
+                guard !self.stopped else { return }
                 peer.inFlight.remove(index)
                 self.untrackInFlight(index)
                 if stored {
@@ -531,6 +548,7 @@ final class SwarmSession: @unchecked Sendable {
     }
 
     private func pump() {
+        guard !stopped else { return }
         guard isDownloading, !completed else { return }
         // Advance the cursor past the completed front once per pump (amortized
         // O(1) per finished chunk — pump used to rescan the whole consumed
@@ -578,7 +596,7 @@ final class SwarmSession: @unchecked Sendable {
     }
 
     private func finishDownload() {
-        guard !completed else { return }
+        guard !stopped, !completed else { return }
         completed = true
         store.flush()
         // Only now start advertising/seeding. Running an AWDL listener while a

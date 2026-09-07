@@ -177,6 +177,11 @@ public enum TTSFactory {
             return kokoro
         }
         #endif
+        #if canImport(FluidAudio)
+        if TTSBackendPreference.current != .system {
+            return Supertonic3TTSService(voice: SupertonicVoicePreference.current)
+        }
+        #endif
         return SystemTTSService()
     }
 }
@@ -191,7 +196,7 @@ public enum TTSBackendPreference: String, CaseIterable, Sendable {
     public var displayName: String {
         switch self {
         case .supertonic: return "Supertonic 3 (ANE INT8)"
-        case .kokoro: return "Kokoro v1.0 (MLX)"
+        case .kokoro: return "Kokoro (MLX)"
         case .system: return "System voice"
         }
     }
@@ -367,7 +372,8 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
                 return
             }
             playbackWaiters[id] = continuation
-            player.scheduleBuffer(buffer, at: nil, options: []) { [self] in
+            player.scheduleBuffer(buffer, at: nil, options: [],
+                                  completionCallbackType: .dataPlayedBack) { [self] _ in
                 stateLock.lock()
                 let waiter = playbackWaiters.removeValue(forKey: id)
                 stateLock.unlock()
@@ -451,6 +457,13 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         }
         isPrepared = true
     }
+
+    #if DEBUG
+    func synthesizeWithoutPlayback(_ text: String) async throws -> (sampleCount: Int, audioSeconds: Double) {
+        let samples = try await synthesizeOffMain(Self.prepForTTS(text))
+        return (samples.count, Double(samples.count) / 24_000)
+    }
+    #endif
 
     /// Render through the same normalization, G2P, voice, and chunking path
     /// used by `speakChunk`, but return PCM instead of scheduling playback.

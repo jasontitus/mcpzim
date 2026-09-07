@@ -204,7 +204,7 @@ struct ChatView: View {
     private var canLoad: Bool {
         switch session.modelState {
         case .notLoaded, .failed: return true
-        case .downloading, .loading, .ready: return false
+        case .downloading, .waitingForNetwork, .loading, .ready: return false
         }
     }
 
@@ -218,7 +218,7 @@ struct ChatView: View {
     private var indicatorColor: Color {
         switch session.modelState {
         case .ready: return .green
-        case .loading, .downloading: return .yellow
+        case .loading, .downloading, .waitingForNetwork: return .yellow
         case .failed: return .red
         case .notLoaded: return .gray
         }
@@ -234,7 +234,7 @@ struct ChatView: View {
     private var showThinkingIndicator: Bool {
         guard let last = session.messages.last else { return true }
         if last.role != .assistant { return true }
-        return MessageRow.displayText(last.text, role: .assistant).isEmpty
+        return last.usesSourceExcerpts ? last.text.isEmpty : MessageRow.displayText(last.text, role: .assistant).isEmpty
     }
 
     private var stateLabel: String {
@@ -242,28 +242,110 @@ struct ChatView: View {
         case .notLoaded: return "not loaded"
         case .loading: return "loading…"
         case .downloading(let p): return "downloading \(Int(p * 100))%"
+        case .waitingForNetwork: return "waiting for network…"
         case .ready: return "ready"
         case .failed(let msg): return "error: \(msg)"
         }
     }
 
+    /// The first screen is a trailhead, not a syntax cheat sheet. Every card
+    /// is an action backed by a deterministic fast path, so discovery starts
+    /// in one tap without asking the model to invent a topic or choose a tool.
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Try asking:").font(.headline)
-            Group {
-                // Previously "What's in my library?" — the model read
-                // "library" as a nearby POI and routed to `near_places`,
-                // returning nearby library buildings. Phrase unambiguously
-                // as an archive/ZIM inventory so `list_libraries` fires.
-                Text("• What offline archives do I have?")
-                Text("• Route from Boston Common to Fenway Park")
-                Text("• What is aspirin used for?")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("OFFLINE FIELD GUIDE")
+                .font(.caption.monospaced().weight(.semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Where should we start?")
+                    .font(.title2.weight(.bold))
+                Text("Choose a trailhead. Explore your offline articles and maps, then follow what interests you.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            .font(.subheadline)
+
+            if session.library.contains(where: {
+                $0.isEnabled && ($0.kind == .wikipedia || $0.kind == .mdwiki)
+            }) {
+                starterCard(
+                    title: "Find me a topic",
+                    detail: "Sample real articles from your offline encyclopedia.",
+                    icon: "books.vertical.fill",
+                    tint: .indigo,
+                    prompt: "Show me a few Wikipedia topics to explore")
+            }
+            if session.library.contains(where: {
+                $0.isEnabled && $0.kind == .streetzim
+            }) {
+                starterCard(
+                    title: "Explore around me",
+                    detail: "Open a nearby story, then follow its local connections.",
+                    icon: "map.fill",
+                    tint: .teal,
+                    prompt: "Tell me something interesting around here")
+            }
+            Button {
+                inputFocused = true
+            } label: {
+                Label("Ask about something specific", systemImage: "text.cursor")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 20)
+    }
+
+    private func starterCard(
+        title: String,
+        detail: String,
+        icon: String,
+        tint: Color,
+        prompt: String
+    ) -> some View {
+        Button {
+            session.send(prompt)
+        } label: {
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(tint)
+                    .frame(width: 4)
+                Image(systemName: icon)
+                    .font(.title3)
+                    .foregroundStyle(tint)
+                    .frame(width: 48)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 12)
+                Image(systemName: "arrow.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                    .padding(.trailing, 14)
+            }
+            .frame(minHeight: 66)
+            .background(
+                tint.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tint.opacity(0.22))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(session.isGenerating || session.setupState != .ready)
+        .accessibilityHint(detail)
     }
 
     private var composer: some View {
@@ -501,7 +583,7 @@ private struct MessageRow: View {
                 // that `displayText` removes — which would leave us
                 // drawing a full-padding gray capsule around an empty
                 // Text, stacked above the ThinkingIndicator.
-                let displayed = Self.displayText(message.text, role: .assistant)
+                let displayed = message.usesSourceExcerpts ? message.text : Self.displayText(message.text, role: .assistant)
                 if !displayed.isEmpty {
                     ZStack(alignment: .topTrailing) {
                         bubble(fill: Color.gray.opacity(0.15), displayed: displayed)
@@ -544,35 +626,80 @@ private struct MessageRow: View {
         }
     }
 
-    /// Horizontal row of tappable drift-thread chips under the latest reply.
-    /// Each chip dispatches `ChatSession.selectSuggestion`, which re-opens the
-    /// topic exactly as typing it would. Disabled mid-generation so a tap
-    /// can't race an in-flight turn.
+    /// Visible, contextual next questions. The old one-line horizontal chips
+    /// hid most options off-screen and discarded `DiscoveryThread.note`
+    /// (distance, source heading, or article preview). A compact vertical
+    /// field-guide list makes every grounded branch legible and tappable.
     @ViewBuilder
     private func suggestionChips(_ threads: [DiscoveryThread]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(threads, id: \.self) { thread in
-                    Button {
-                        session.selectSuggestion(thread)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.turn.down.right").font(.caption2)
-                            Text(thread.label).lineLimit(1)
-                        }
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
-                        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35)))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 2)
+        let isTopicSampler = message.toolCalls.contains {
+            $0.name == "discover_topics"
         }
+        let isLocal = threads.allSatisfy { $0.source == .nearbyPlace }
+        VStack(alignment: .leading, spacing: 7) {
+            Text(isTopicSampler
+                ? "CHOOSE A TOPIC"
+                : (isLocal ? "KEEP EXPLORING NEARBY" : "EXPLORE NEXT"))
+                .font(.caption2.monospaced().weight(.semibold))
+                .tracking(0.8)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 2)
+
+            ForEach(threads, id: \.self) { thread in
+                let tint: Color = thread.source == .nearbyPlace
+                    ? .teal
+                    : .indigo
+                Button {
+                    session.selectSuggestion(thread)
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: thread.source == .nearbyPlace
+                            ? "mappin.circle.fill"
+                            : (thread.source == .section
+                                ? "text.book.closed.fill"
+                                : "book.closed.fill"))
+                            .font(.subheadline)
+                            .foregroundStyle(tint)
+                            .frame(width: 18, height: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(thread.label)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                            if let note = thread.note, !note.isEmpty {
+                                Text(note)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(isTopicSampler ? 2 : 1)
+                                    .multilineTextAlignment(.leading)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "arrow.turn.down.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(tint)
+                            .padding(.top, 3)
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        tint.opacity(0.07),
+                        in: RoundedRectangle(
+                            cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(
+                            cornerRadius: 10, style: .continuous)
+                            .strokeBorder(tint.opacity(0.18))
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(
+                    thread.note ?? "Continue the conversation with this question")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 3)
         .disabled(session.isGenerating)
     }
 
@@ -611,7 +738,9 @@ private struct MessageRow: View {
                     let unsupported = attribs.filter { !$0.isSupported && $0.support < 1.0 }
                     if unsupported.isEmpty {
                         chip(icon: "checkmark.seal.fill",
-                             label: "All \(claims.count) statement\(claims.count == 1 ? "" : "s") matched sources",
+                             label: message.usesSourceExcerpts
+                                ? "ZIM source excerpts"
+                                : "\(claims.count) exact source match\(claims.count == 1 ? "" : "es")",
                              tint: .green)
                     } else {
                         ForEach(Array(unsupported.prefix(2).enumerated()), id: \.offset) { _, a in
@@ -671,7 +800,9 @@ private struct MessageRow: View {
     private func bubble(fill: Color, displayed: String? = nil) -> some View {
         let displayed = displayed ?? Self.displayText(message.text, role: message.role)
         Group {
-            if message.role == .assistant {
+            if message.usesSourceExcerpts {
+                Text(verbatim: displayed).padding(.trailing, 24)
+            } else if message.role == .assistant {
                 MarkdownMessageText(source: displayed)
                     // Leave the copy affordance clear of a heading or the
                     // first line of prose in the top-right corner.

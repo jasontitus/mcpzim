@@ -99,7 +99,7 @@ struct MCPZimChatApp: App {
     private var isTernaryModelBusy: Bool {
         guard ternaryIsSelected else { return false }
         switch session.modelState {
-        case .downloading, .loading: return true
+        case .downloading, .waitingForNetwork, .loading: return true
         default: return false
         }
     }
@@ -109,6 +109,8 @@ struct MCPZimChatApp: App {
             switch session.modelState {
             case .downloading(let fraction):
                 return "Downloading Ternary Bonsai 27B… \(Int(fraction * 100))%"
+            case .waitingForNetwork:
+                return "Waiting for network to download Ternary Bonsai 27B…"
             case .loading:
                 return "Loading Ternary Bonsai 27B…"
             case .ready:
@@ -120,10 +122,11 @@ struct MCPZimChatApp: App {
                     ? "Load Ternary Bonsai 27B (Downloaded)"
                     : "Download Ternary Bonsai 27B (7.17 GB)…"
             }
+        } else {
+            return session.isTernaryBonsai27BCached
+                ? "Use Ternary Bonsai 27B (Downloaded)"
+                : "Download & Use Ternary Bonsai 27B (7.17 GB)…"
         }
-        return session.isTernaryBonsai27BCached
-            ? "Use Ternary Bonsai 27B (Downloaded)"
-            : "Download & Use Ternary Bonsai 27B (7.17 GB)…"
     }
 
     private var ternaryModelActionIcon: String {

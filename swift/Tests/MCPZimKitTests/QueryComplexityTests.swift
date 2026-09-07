@@ -19,6 +19,12 @@ final class QueryComplexityTests: XCTestCase {
         assertClassifies("How do I get to Georgetown?", as: .navigational)
         assertClassifies("directions from here to the monument", as: .navigational)
         assertClassifies("what's the nearest post office", as: .navigational)
+        assertClassifies(
+            "Tell me something interesting around here",
+            as: .navigational)
+        assertClassifies(
+            "Tell me a local story about Palo Alto",
+            as: .navigational)
     }
 
     func testExplanatory() {

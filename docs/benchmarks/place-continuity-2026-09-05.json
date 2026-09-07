@@ -1,0 +1,138 @@
+{
+  "date": "2026-09-05",
+  "device": "iPhone 17 Pro Max / A19 Pro",
+  "source": "osm-california-2026-05-29.zim",
+  "metric": "User log timestamp to completed fast-path tool result; excludes startup and display refresh",
+  "code_uuid": "E301BC00-F031-32C8-AAD0-2B19391BCDFF",
+  "code_sha256": "c6d74843cafedc314f99bfe0d150628aa9217557f3adfa1bca532e03fae34b8a",
+  "baseline_museum_user_to_tool_result_ms": 5639,
+  "tests_passed": 596,
+  "model_generation_calls": 0,
+  "checks": [
+    "11 turns completed",
+    "all 9 place-result sets stay within their search radius",
+    "5 category transitions preserve the exact search center and radius",
+    "explicit San Francisco and near-me overrides work",
+    "museum definition title is Museum"
+  ],
+  "turns": [
+    {
+      "question": "Tell me about Einstein",
+      "tool": "article_overview",
+      "result_ms": 220
+    },
+    {
+      "question": "Where is a good coffee shop near me?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 25,
+      "farthest_m": 758.0,
+      "result_ms": 136,
+      "center": "local GPS search area",
+      "kinds": [
+        "coffee shop"
+      ]
+    },
+    {
+      "question": "Museum?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 14,
+      "farthest_m": 4988.0,
+      "result_ms": 45,
+      "center": "local GPS search area",
+      "kinds": [
+        "museum"
+      ]
+    },
+    {
+      "question": "Parks?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 2,
+      "farthest_m": 4754.0,
+      "result_ms": 45,
+      "center": "local GPS search area",
+      "kinds": [
+        "park"
+      ]
+    },
+    {
+      "question": "Cafes in San Francisco",
+      "tool": "near_named_place",
+      "radius_km": 5.0,
+      "results": 25,
+      "farthest_m": 426.0,
+      "result_ms": 99,
+      "center": "San Francisco",
+      "kinds": [
+        "cafe"
+      ]
+    },
+    {
+      "question": "Museum?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 25,
+      "farthest_m": 2714.0,
+      "result_ms": 110,
+      "center": "San Francisco",
+      "kinds": [
+        "museum"
+      ]
+    },
+    {
+      "question": "Museums near me",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 14,
+      "farthest_m": 4988.0,
+      "result_ms": 18,
+      "center": "local GPS search area",
+      "kinds": [
+        "museum"
+      ]
+    },
+    {
+      "question": "Any good museums?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 14,
+      "farthest_m": 4988.0,
+      "result_ms": 18,
+      "center": "local GPS search area",
+      "kinds": [
+        "museum"
+      ]
+    },
+    {
+      "question": "What is a museum?",
+      "tool": "article_overview",
+      "result_ms": 159
+    },
+    {
+      "question": "Where is a good coffee shop near me?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 25,
+      "farthest_m": 758.0,
+      "result_ms": 26,
+      "center": "local GPS search area",
+      "kinds": [
+        "coffee shop"
+      ]
+    },
+    {
+      "question": "What about museums?",
+      "tool": "near_places",
+      "radius_km": 5.0,
+      "results": 14,
+      "farthest_m": 4988.0,
+      "result_ms": 12,
+      "center": "local GPS search area",
+      "kinds": [
+        "museum"
+      ]
+    }
+  ]
+}

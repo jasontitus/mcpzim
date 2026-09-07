@@ -1,0 +1,1582 @@
+{
+  "files": [
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "324406d83f9685577c6665f231fdfa02518b8addceb54a780feaa968a04c33df"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill.mlmodelc/coremldata.bin",
+      "bytes": 1151,
+      "sha256": "12714da8d2ebae282e353e6785d4472ff5b87f656661d60eff769c584969f415"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill.mlmodelc/model.mil",
+      "bytes": 228662,
+      "sha256": "7a93a23c94ec90b583531b6f9edf32aa34edb1de7564bcbef9354b8069f2d140"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill.mlmodelc/weights/weight.bin",
+      "bytes": 133237248,
+      "sha256": "3a40a5ef3158ef91bfbf932be1c6ee44daca10a856fbb30b9a6720ad9424df8c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill_ane.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "1c9d0f384e454921a66cdd1a9fb8fa59fa0c5cd3703ca32a9792a97e67e8a1c2"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill_ane.mlmodelc/coremldata.bin",
+      "bytes": 1388,
+      "sha256": "39d79bbbf366dca5fb7339c461952d79484e12da2b3642e45881afd4ddf82e7b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill_ane.mlmodelc/model.mil",
+      "bytes": 136093,
+      "sha256": "6013f10e803c50b3819610edc218662b9ad768d3f1c86a20ec37230c3c49a553"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/cond_prefill_ane.mlmodelc/weights/weight.bin",
+      "bytes": 132187392,
+      "sha256": "b8bbefa5799ee581561d7a28a21a42f9ea9b7e73ca7bc1339330ea4cff24806d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/alba.safetensors",
+      "bytes": 6194424,
+      "sha256": "69c32db63ca56843d994f81f343f62e0bf2d73f7e4c9bc73e44bb1110b1d8845"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/anna.safetensors",
+      "bytes": 7816440,
+      "sha256": "5ea82f78db006c9fd34e32ddd5aae82674b5b32646097977436458d00af80dfa"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/azelma.safetensors",
+      "bytes": 7963896,
+      "sha256": "9f3e69f29075f991fd47774566865ef0e0e637cb5a35992c9919761b5b84b1de"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/bill_boerst.safetensors",
+      "bytes": 6735096,
+      "sha256": "75610127d44e0b05b442154f80f89f993df235aecc6cad7070f11000d006c188"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/bos_before_voice.bin",
+      "bytes": 4096,
+      "sha256": "6ac530a104e3f3d2b2ff15f3fad63540f2619b31db78b159c0595a108f142caf"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/bos_emb.bin",
+      "bytes": 128,
+      "sha256": "52f1a157fa35fc100213e6e0fafa74703be99db8faa42de3e99feda607ac7b63"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/caro_davy.safetensors",
+      "bytes": 5260536,
+      "sha256": "a5961b63a2e7a5cfd7edc383aa9042fb70fd14a9dee6310cdc633881a7f2449a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/charles.safetensors",
+      "bytes": 6194424,
+      "sha256": "299edc20182eeccfbf94e308626f259da4fbf339daa8d5905218f2b1774639b8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/cosette.safetensors",
+      "bytes": 6194424,
+      "sha256": "c4fdc15f5a3a20c44dd0064a37e87d15d25562936e8dbad7e07b9832015a545d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/eponine.safetensors",
+      "bytes": 6931704,
+      "sha256": "bda3b76a384ff355fe0350736387765946304ae8ca16e59f60ea3296a1c99cc6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/estelle.safetensors",
+      "bytes": 8258808,
+      "sha256": "ccebef7f51762c7fc08870f5ecf268e8713551ae2c9f7984ddaec0c1e1c77153"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/eve.safetensors",
+      "bytes": 6538488,
+      "sha256": "ea9c2faf862a6c9d2cb61910fdf02842ae56940382cc8c1000fdb1b43269692b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/fantine.safetensors",
+      "bytes": 6538488,
+      "sha256": "51a8a4355d7f912d4959e4b1918314fda85ad47eba0a33a1d78a4a505d3465f5"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/george.safetensors",
+      "bytes": 6243576,
+      "sha256": "0c1c6c57c55a98d81254b33728150c7776f40647fe95258d1a6c1a02780b5d02"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/giovanni.safetensors",
+      "bytes": 4621552,
+      "sha256": "a5ee718157ec1c6fd9c1e66a7733c7e6337d474a74a7da756455d27717885c59"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/jane.safetensors",
+      "bytes": 7374072,
+      "sha256": "37386227ca8ec5bf1b8e516c13d132ce5ff5437a304fe90129a1c62f41d9a008"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/javert.safetensors",
+      "bytes": 6194424,
+      "sha256": "0ae88e03ca4e76a0e16cbf321a807428febda9d9e9bc0358c02e7f9c9e2c263b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/jean.safetensors",
+      "bytes": 6194424,
+      "sha256": "90be4b8f50bb4d2dbe27e3fb4e31417cf6a57928931f0a60426a1748821a3d12"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/juergen.safetensors",
+      "bytes": 6243576,
+      "sha256": "e74d67b38339fc01118e3bbe2c90d6d40e601b161dbf7be906421956ba80a532"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/lola.safetensors",
+      "bytes": 5948664,
+      "sha256": "34972e86b07b17272a8061460054a08119399cace9454979052b9e2d96664e8c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/marius.safetensors",
+      "bytes": 6194424,
+      "sha256": "04f84efcb77a0547ba582c058db496f7ff4920891d49d37b9950d128422582a8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/mary.safetensors",
+      "bytes": 6194424,
+      "sha256": "a8f2adf260cab966fe0a113d6b549d6efdeaa79de544ae0ff34b5b6a41445a59"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/michael.safetensors",
+      "bytes": 7275768,
+      "sha256": "8937f724ac4719b9aa51ea0ba1f18f9de0af7a663ad6263558266c1a53c9722d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/paul.safetensors",
+      "bytes": 6980856,
+      "sha256": "ed7a019168f94dfe77009f1b0de59387abc6fbb0db954d38ce722ecb77da61aa"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/peter_yearsley.safetensors",
+      "bytes": 3736816,
+      "sha256": "dd977a6e15591e347c9a23fa7cc09e35a65b462917f5eeb162baff6dc9e3f685"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/rafael.safetensors",
+      "bytes": 6194424,
+      "sha256": "ac19f099f6cd839875a629c3e2e91e0dfc2c197acf2875db168d0ae244fb58bd"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/stuart_bell.safetensors",
+      "bytes": 5260536,
+      "sha256": "5a49da7ca5df05d02587ec4a0981c0d318e045f68e24423c4203ce474d9b33dc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/text_embed_table.bin",
+      "bytes": 16388096,
+      "sha256": "2512f9edd82ab0c68bb42a5fcd329a371eaf63ee6fb5275dfb1bc9536592bb0e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/tokenizer.model",
+      "bytes": 59339,
+      "sha256": "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/constants_bin/vera.safetensors",
+      "bytes": 6735096,
+      "sha256": "4bf50ddd957b5d218b264fdcf18efbbc7384d12da3eca98ca19b9e8dd6976acc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flow_decoder_fused.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "17cf344fd2be66e934982944a7a252da17087efbc9daac0d3dfb4e8e95797264"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flow_decoder_fused.mlmodelc/coremldata.bin",
+      "bytes": 413,
+      "sha256": "69ff9affa07e38b1a511ac8d71c594eeeb236389ddbe74f4fabdfa45db4edf7a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flow_decoder_fused.mlmodelc/model.mil",
+      "bytes": 333331,
+      "sha256": "0257898b9a6ce06c961959aae993bb27c558f509fbea7407d094b879f872ec3f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flow_decoder_fused.mlmodelc/weights/weight.bin",
+      "bytes": 19012608,
+      "sha256": "f28a1bd0af940a195802e9d702c9e050f3e69d265e582f3d0fdf4001709eb30c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flowlm_step_ane.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "5718b06291735fe6e648b6980fb07209b5bbda339ecc8fb2c8a0dfa87fbaf54f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flowlm_step_ane.mlmodelc/coremldata.bin",
+      "bytes": 1414,
+      "sha256": "18e49a8e73db70da25caddcaac36bc77245d6bea30754a23df3b10c27fa4de73"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flowlm_step_ane.mlmodelc/model.mil",
+      "bytes": 156945,
+      "sha256": "6880224e71de99e394323ec706fbbe28af9fb2b5eb8d8698d43ecaec33a6ff38"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/flowlm_step_ane.mlmodelc/weights/weight.bin",
+      "bytes": 151136960,
+      "sha256": "fdd40be8edecea51035dfa91beada8e74de2634eab266b85f329bf85b344d271"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/manifest.json",
+      "bytes": 739,
+      "sha256": "f8ee44b3d8bfbb1a56698e9a313944dabda530f9c5d809f0a0135ad64ffad3a8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/mimi_decoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "be4199b44838e2fb199bb44b7649531d28fe847a1a6633fd9f8ca89576c5a7f8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/mimi_decoder.mlmodelc/coremldata.bin",
+      "bytes": 1777,
+      "sha256": "9d8644e2caad1513153ac28f1ba8090fcd2facdbd5d2621bf8016186fa932bf8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/mimi_decoder.mlmodelc/metadata.json",
+      "bytes": 16844,
+      "sha256": "aaca1b55b078095e72ee4826a94297fc070526d9f4cd3507464e7f2afaa73376"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/mimi_decoder.mlmodelc/model.mil",
+      "bytes": 107403,
+      "sha256": "f7176b3b3d800de308ac01cb83d1f3e9b555e70b44d299efd4a21c9c27eecc16"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/mimi_decoder.mlmodelc/weights/weight.bin",
+      "bytes": 41768256,
+      "sha256": "c93d182f9ad8c1042ec8302093aabb4e310d76616932dd12720e03b5d07f7c64"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/pocket_state.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "fea3fbfd716f9449dee70320d2e1ebde5cc82e191f47476a97fe89a3a33ed7f6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/pocket_state.mlmodelc/coremldata.bin",
+      "bytes": 1803,
+      "sha256": "1456d4527ccaf2580fc7000b4af83429e9fb370f9ee3d092a3b7362474817f52"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/pocket_state.mlmodelc/model.mil",
+      "bytes": 595399,
+      "sha256": "9fa5f3fad83889f36f1ee59f45fe59074f07bbb27cd799b79ca9708f3c432644"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "Models/pocket-tts/v2.1/english/pocket_state.mlmodelc/weights/weight.bin",
+      "bytes": 170151872,
+      "sha256": "27fe642c07023fcbe471ddf21ae1a139418deccc5323360a003d253546877061"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/encoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "e7d0e9a973f74102c0444dc579754e44b9047d4f648e25fbc1724a221eede83a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/encoder.mlmodelc/coremldata.bin",
+      "bytes": 441,
+      "sha256": "c252d6cac963d85ab0c608906db46ea1ca0dcb84297addf764d599be6ba4c3c9"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/encoder.mlmodelc/model.mil",
+      "bytes": 96099,
+      "sha256": "b88139731004b88f31f06359b4dc832909ec6fb526e94081ff5f811205112963"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/encoder.mlmodelc/weights/weight.bin",
+      "bytes": 4131840,
+      "sha256": "fb58e350102274ec50f4027e3a8488075a5af0bf14ce43b7f0af7f2cfeab2c19"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f1024.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "2398cb0b3e176844c8252236a21d2c8bd4ab4e198772307482561875898025b6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f1024.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "4c5a3333442c6d3829eb5c6a9f325747e546a4125b17b52ab1d413c824e7fd4b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f1024.mlmodelc/model.mil",
+      "bytes": 278391,
+      "sha256": "50622c601e8988eab310fe273943b70f85b5d2aaa5b44b2ed7e40c99b6eed265"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f1024.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f2048.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "13ae54fbfb2cd6bc01c517c5314b8693c73c9f2bea7284be5d14fb19935cc2fd"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f2048.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "eafe87cd9324f524f476ba6b812b5f607c1c86d99269d03fef9be567084967fa"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f2048.mlmodelc/model.mil",
+      "bytes": 278489,
+      "sha256": "99e260665ded92176364ecc760c0add166ca19dce82de725444e723b88cebce7"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f2048.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f256.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "0f36dea7ffb50b4708463af039d3fce7083976950722fa8ba3eddf630382d72d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f256.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "5a2ff8a284923d269b31836a2f4f956daba11912919de8dcec3ce0c2cd757b2c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f256.mlmodelc/model.mil",
+      "bytes": 278012,
+      "sha256": "24629291318fb9d610499866a290f8ce00959e3e32e84d45b0c64014adcc59d8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f256.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f384.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "2ee5401829791359a1ca258ba03fcc13a2a13f09da2442b0b25c0e949aeff7ae"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f384.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "a1b5248bae13edaf5722bebc91a543c27afd7869cfc702e14b935aeccb66683c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f384.mlmodelc/model.mil",
+      "bytes": 278359,
+      "sha256": "c530b26c1be10a66f4c1af918d140e5d5e13a459e0943f4064770aea5cf81c33"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f384.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f512.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "65dce49ac32cf8a603543b10a66b2a64a48918c668e08fe0ea47181426818283"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f512.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "18dad0e2894bf159ac2ebd33b314da19697c8a61299f309d2d37621341247159"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f512.mlmodelc/model.mil",
+      "bytes": 278063,
+      "sha256": "69f6aaa64b520e004bd48cd5e8e5eeeb655066fcdd12568302a642ae4985510e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f512.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f640.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "2fefa6e0150a4ab71e88c896821b1fecd8bdbb1dd780af90eb84fb82763a09b6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f640.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "77033d1f8fde4047f2c3417bbee99238630d0c4708f2051ae5d95d3f93d0dd1d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f640.mlmodelc/model.mil",
+      "bytes": 278411,
+      "sha256": "6f14fddfc7cf6c6d28c9ead54c5697e88df757bcbbce3158057b5f2ea1432cc7"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f640.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f768.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "f3be2ba4bb69d57065c1a0dec5e46889d86586d4ec1214476ecb8c98e135bc7a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f768.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "bbffaf432931b5bd47f1d0947455574b7770e4d9d44c84a1cd31d50dca6065df"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f768.mlmodelc/model.mil",
+      "bytes": 278411,
+      "sha256": "b2286be8336c03270ea59751c745ba73b407e8cf7f68c6d764c31cd1b13b3bdc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f768.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f896.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "50a294626581a728be43d6f816d4356ded256ed8d89b06864a384b56051a000b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f896.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "06095f1eb658cc17e95a8d20b56808976a45555a5c917a7115831dec24261b05"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f896.mlmodelc/model.mil",
+      "bytes": 278460,
+      "sha256": "f184c4e5304994aea33e61a7d6fddb6547ef21561a9a7d6407706eb3b0c332c7"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/synthesizer_f896.mlmodelc/weights/weight.bin",
+      "bytes": 15163864,
+      "sha256": "f7ef4ad0f9258746904f9e69e88fd2f1f13b32b81fe5db0dae9c4c1477a6d0c0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/micro/upstream_config.json",
+      "bytes": 1210,
+      "sha256": "91ba9652f743f65e6be48eaa1aacea1db3d2941f5138ce309f359d4ce14f34e4"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/encoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "2731126c4650b522d8dc49dc272934d0ff6ea9f7fc6efb2ce79610097ec56886"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/encoder.mlmodelc/coremldata.bin",
+      "bytes": 441,
+      "sha256": "b9c6438518e62ad28e63e3d151dbdc0e7b3d8486ba54877268bb0ef5de80cb0c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/encoder.mlmodelc/model.mil",
+      "bytes": 96081,
+      "sha256": "fdeb6ccc17750cfca7e7880cf4fd7f90fe3dc36c6abc7564e7f8e3f61cb53d7f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/encoder.mlmodelc/weights/weight.bin",
+      "bytes": 2143936,
+      "sha256": "a8572614b46a917a8f55400b15d4af3a446c16adf58cb6a566d8774f1b2c6186"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f1024.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "bb9182e63111107f7e7ce46806913779c8f17eff1e19b92518f1b2cc4fbafb9b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f1024.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "f27f47e2e632995f0bf11d246f56b40d66a1ef41ec127927b5777b45797bdb53"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f1024.mlmodelc/model.mil",
+      "bytes": 278088,
+      "sha256": "cdde7780848168f3cde41cf57d431ce1b7cc2aa0d32b9863d0f9b2a07992fe8d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f1024.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f2048.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "be75d519f3b6067761987f240341416d55bf8b510d9c4c39b63d1b53e5b868cf"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f2048.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "34df5481d6d1beae7a32e933d945836940398cd28c9a7e871fec05c1d386d36e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f2048.mlmodelc/model.mil",
+      "bytes": 278186,
+      "sha256": "22dfc391e94b2015e08c163aafa61423320dba30e4434fd08d1e5ee5d204c1fa"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f2048.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f256.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "25713b1a7dc541f98bb14dd3957f7485a34d11ff032158e6c495076da8488af6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f256.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "2a21b0b9b879c54800fbbae6d7beeceae801eead63067ee786e4f230d7243716"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f256.mlmodelc/model.mil",
+      "bytes": 277709,
+      "sha256": "1eabfc494e6d308feaea540f8d22b335a0d1005e1c9ce1e1bdd50fc6c9eb8be1"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f256.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f384.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "ddde95048540b5e27dcbffad6e8c4b40377e6045b7ba14232d33171682e84514"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f384.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "90bd6bccf7a75414b93c7ea28a189c676500e401235251debf35227babdd59de"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f384.mlmodelc/model.mil",
+      "bytes": 278056,
+      "sha256": "0350a6fb61334c55d669d0c8da53fdc5816f4d942488f855c0472b9dff412009"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f384.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f512.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "30629797eed564af75c17a7b2b7a9e8853161b4a6acf43e0f8572b968b8ca39d"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f512.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "b2df356907df7422fe66e08f0c847490aa4133fe9219a8890e6edd44f23964c5"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f512.mlmodelc/model.mil",
+      "bytes": 277760,
+      "sha256": "f9ca532746b6bd90e49737b57d936f3276adb23ba699f677114b46a71915e9e3"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f512.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f640.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "3afa93cc9fbbbf5933d0d30a8070911a203618d52b11870462dec1b2aa36b355"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f640.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "08f3dcc8875bb8ba89a1d9d07ffc84328a2b20018e3d027cea9dbce96d4d5239"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f640.mlmodelc/model.mil",
+      "bytes": 278108,
+      "sha256": "86c66e02976684b7304381352c52d029ba05958a1a9ff4e52795e7d58224558a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f640.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f768.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "18bdace0623d438bc8039f346595767aed9d428f98e8f977d72665cf1f140f21"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f768.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "b72ba2e7bddabd113c00e0297460fa616d1949d1a97958ce748dc218adffc77b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f768.mlmodelc/model.mil",
+      "bytes": 278108,
+      "sha256": "7991eedb20a15415047a1c6eac0e05e2a5ac03ea9eddd01b7af545f81a71c52a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f768.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f896.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "c198495ab77e401e5d85dc874aeb5751263882b249bb41e5312e44fde65d4da6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f896.mlmodelc/coremldata.bin",
+      "bytes": 395,
+      "sha256": "207039a8d7ba7f44c531cbf820e833bbc54044a457a1be3d997176bd1765b867"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f896.mlmodelc/model.mil",
+      "bytes": 278157,
+      "sha256": "83fae266d620ba3cb54f5aee49418e2627dcada354c4499b62344098f06d2002"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/synthesizer_f896.mlmodelc/weights/weight.bin",
+      "bytes": 6236008,
+      "sha256": "d0e8562d311cd98c3fed52c113f2f7d37afa3209e14d74c332a7ead3fe8c9d72"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "inflect-v2-coreml/nano/upstream_config.json",
+      "bytes": 1210,
+      "sha256": "8669007c29a215dfc6c4cbb4962c01440f4d806022584699404aee58e5249f03"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PDecoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "dbf1767747fdc188222d467a45b04608b396c76c71db3abb18a5fb3680ef9827"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PDecoder.mlmodelc/coremldata.bin",
+      "bytes": 545,
+      "sha256": "607e960f19b4d9a30317a5a11869fcce84b300a909fcab2cc756c0d98e2dacd9"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PDecoder.mlmodelc/metadata.json",
+      "bytes": 3064,
+      "sha256": "e54e98484fd60d26f22fd3c4e7fe87b0d92a5d2de1f958cc3c4bb36d4ae06a44"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PDecoder.mlmodelc/model.mil",
+      "bytes": 19737,
+      "sha256": "fe647c598e0d9454d360b8ee49a59ae57ca147fc5330863ba84ccb90dce482ad"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PDecoder.mlmodelc/weights/weight.bin",
+      "bytes": 828030,
+      "sha256": "cbaeb4e743359f607ab161af0c6d8a817462fdaec622ee788ef8ef952c5f8214"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PEncoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "cf7fbd7e7a65529b2d2bf3941e458a0ab6dff7a298bf48e205a1727c81c26a99"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PEncoder.mlmodelc/coremldata.bin",
+      "bytes": 398,
+      "sha256": "0f14d46ca9fd06c68b4717294575b2b99449e67d40b7a2c56f926bf05cd90b11"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PEncoder.mlmodelc/metadata.json",
+      "bytes": 2034,
+      "sha256": "c8e0cfd7f494ac1b3662ff8f1914b2b45f79ffb2791724cdc0576981996732e1"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PEncoder.mlmodelc/model.mil",
+      "bytes": 20392,
+      "sha256": "8c617e569f37286b056dad800d862dc145be9a95fa9ed43857bb646ba199d7da"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/G2PEncoder.mlmodelc/weights/weight.bin",
+      "bytes": 694592,
+      "sha256": "6926bcd2827d21fec82839487b987e06f85fd8a6a5bb896bc4f6062461d014ec"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/config.json",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/g2p_vocab.json",
+      "bytes": 1665,
+      "sha256": "295ed64b86c2820cd665b0602ae50c6947c0e82ac643082873e0be87dca282ce"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/gb_gold.json",
+      "bytes": 2838552,
+      "sha256": "29e62f4b60261c88f7f3c2c7811ca3825978948090b72d2b27d565b729282f71"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/gb_silver.json",
+      "bytes": 3663898,
+      "sha256": "48131e2d92ccc41655f4543e87e0f938e71463eb5a54be7f0693bb712ebb6bce"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/us_gold.json",
+      "bytes": 3001196,
+      "sha256": "8507f89840f0813b10cf584740942f58e9cc9ad3660e24088b442ab0a6b126be"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/us_lexicon_cache.json",
+      "bytes": 10444631,
+      "sha256": "6b36ba313202227d6914ad32cd684a0304bd2757e9ec4158ea7bc36ec40e224e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/us_silver.json",
+      "bytes": 3105352,
+      "sha256": "ea0e1abca0c9b18fb0d3402034633a337154a3153e9a9f49f97d668c908e140c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro/vocab_index.json",
+      "bytes": 2034,
+      "sha256": "433690ab1da1256639c00179e7961a9e9f50ec91077a9c0877107c14e04fb989"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlbert.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "14a61873d8759a38b79c93f9021ae865f408f56301209a0168dbfc2283265ccd"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlbert.mlmodelc/coremldata.bin",
+      "bytes": 433,
+      "sha256": "70b6d2f8429229f6800dda9480341669f7ac0eabf05a82934d8632ab2b4b63a6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlbert.mlmodelc/metadata.json",
+      "bytes": 2480,
+      "sha256": "fe1d005481f646707a948267ac089dfb2cd2ccea7d5827a14c28587eb4c89930"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlbert.mlmodelc/model.mil",
+      "bytes": 101485,
+      "sha256": "2038154d06a20e399a8ae35ec5c9242702cb23db8dd24dde7679cd53708e4eae"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlbert.mlmodelc/weights/weight.bin",
+      "bytes": 5718848,
+      "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlignment.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "f6074d1039a9151d0f97dc6ec9ee0cd9c7b865f1af646d718ab38b659fa84f3f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlignment.mlmodelc/coremldata.bin",
+      "bytes": 484,
+      "sha256": "9a0fb4a536f665a052914d7f17b0e6ac80a3614f702e4be87ac0302c1143a4ea"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlignment.mlmodelc/metadata.json",
+      "bytes": 3021,
+      "sha256": "6f610d23b9f93c7f1a968d6a861efa99725a191de696bf1c3be334ead39b7f00"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlignment.mlmodelc/model.mil",
+      "bytes": 8194,
+      "sha256": "eb3a618bda0cdf95cdffab586ef5c76333d0d0a1dcb881190b3ef414f3421b3e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroAlignment.mlmodelc/weights/weight.bin",
+      "bytes": 4128,
+      "sha256": "2e7d69128b59d615fc3d3cf85637a687235fc086b1eb136359adb11a61615f6b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroNoise_v2.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "53af6bf61482f6002bdb6e3a62f30774cde6e96411aebd888222a34b369f3d04"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroNoise_v2.mlmodelc/coremldata.bin",
+      "bytes": 440,
+      "sha256": "9911047f924b41f8b92811c32c50b7c718bd7b0c14842b3bc1b66b9ffe341a19"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroNoise_v2.mlmodelc/metadata.json",
+      "bytes": 3020,
+      "sha256": "eb3102217532d952479c6f1b04d26d7ac4cdbc59875b6a23e8aae86e5e02c2bc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroNoise_v2.mlmodelc/model.mil",
+      "bytes": 93152,
+      "sha256": "60233949d896f15ef38aea19afda558935d7569fa77a3ca4babddd3ffe845a36"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroNoise_v2.mlmodelc/weights/weight.bin",
+      "bytes": 4580160,
+      "sha256": "1102fc2d31dfcfe3de3978a4c78b65202ff8b0a4d55a9304213bd4e8bda66bc2"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroPostAlbert.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "6640044c875505382edbc361cdd56f3f1c30f082953e0f9473a31ae3f71e6c43"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroPostAlbert.mlmodelc/coremldata.bin",
+      "bytes": 556,
+      "sha256": "86de3ab0c1e8c6f8842b57bc24695a5099590c49b864e3fa2737b1fb5b15ba3b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroPostAlbert.mlmodelc/metadata.json",
+      "bytes": 4171,
+      "sha256": "2e3be1af412a76e340120a01cd04a502666371ada86b1fdaf5a622896e0bf979"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroPostAlbert.mlmodelc/model.mil",
+      "bytes": 60047,
+      "sha256": "450b73a3b179e1702e7b2210bad008eac20d58b2d6076e3c2de76290a66e5fef"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroPostAlbert.mlmodelc/weights/weight.bin",
+      "bytes": 13806464,
+      "sha256": "e4f300a23cc2e05d38680d9fc94681cc722d445076d1d248f83255122ba091c8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroProsody.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "7708aab83deabd72539512acd850447fa955187608d9710a828943aa8498c6b8"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroProsody.mlmodelc/coremldata.bin",
+      "bytes": 421,
+      "sha256": "d65d87f246a6546c0fb7af6efe020106c38604e5c2b9ca00a78561c115dda33e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroProsody.mlmodelc/metadata.json",
+      "bytes": 2721,
+      "sha256": "a780887a790fe54e2ad14d26b2d936eca4fc6ab9f727e60f7e01f0c208163eef"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroProsody.mlmodelc/model.mil",
+      "bytes": 79705,
+      "sha256": "e6b332f1ed1b22178a406a16c9767c0eed2d64b7f0c17c86ccb2b6abf863b1ed"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroProsody.mlmodelc/weights/weight.bin",
+      "bytes": 8454272,
+      "sha256": "d3c2670eb0c528802f0815d917dcb77bf17faf063bd2bc09cfd0970e2bc1444c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroTail_v2.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "a06e4b91c2b8a8be3ff701558a5f1f6484921f948202663fe6df78f248d42222"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroTail_v2.mlmodelc/coremldata.bin",
+      "bytes": 392,
+      "sha256": "527271f6df56cc308a5f89374c92108aef7b837ab15f0ba4900d555588dbd905"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroTail_v2.mlmodelc/metadata.json",
+      "bytes": 1872,
+      "sha256": "7708ecc145eecf8e3ef5ef8979ea7a4f77d04c8da787454c6d9190e5300fc50b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroTail_v2.mlmodelc/model.mil",
+      "bytes": 7014,
+      "sha256": "b0b8fd573bac76ba7eb85730eeb25538fc7f1c666ecbf939fd4b3a4ad4495ad7"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroTail_v2.mlmodelc/weights/weight.bin",
+      "bytes": 81088,
+      "sha256": "8ede31ec20df7d86a124287ac12d13507651e2a693e9d4f35f0e7f92cba422c7"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroVocoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "1cc4f1e6436597c6d458a845570d9d0ace458813ff90f225d08e0e713496b463"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroVocoder.mlmodelc/coremldata.bin",
+      "bytes": 626,
+      "sha256": "71bac80d2f2f077fefc0d66cdc39c0faaa96540b3a6149093ef29de01b1f8764"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroVocoder.mlmodelc/metadata.json",
+      "bytes": 4331,
+      "sha256": "a8e768f151225a52476d35f6ab90805ae00f1f78b83be4ca21327029c800c183"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroVocoder.mlmodelc/model.mil",
+      "bytes": 309000,
+      "sha256": "52f2febec45094e78a5948a3a47f023be8fc57cfd48cc99e8d4c358a13674ef2"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/KokoroVocoder.mlmodelc/weights/weight.bin",
+      "bytes": 48889920,
+      "sha256": "6d1f96eb50218ab687b12d6d862d2ae854c12b7165c3cd9b6b5cef261ef02ff1"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/af_heart.bin",
+      "bytes": 522240,
+      "sha256": "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "kokoro-82m-coreml/ANE/vocab.json",
+      "bytes": 1416,
+      "sha256": "8d65b0188b77eafc60751dac42bbac7ab5f5685074af44db91d1877b42dc1d7c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/Config.json",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/DurationPredictor.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "b836b72b388c2bc009a13bcc495cd08278a1742b1a866cdaf7faab7d80786bcb"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/DurationPredictor.mlmodelc/coremldata.bin",
+      "bytes": 425,
+      "sha256": "3ee71b864377bd54479f6b07d141ed37c9fc49718aba6dba21c56cc5cb975be0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/DurationPredictor.mlmodelc/model.mil",
+      "bytes": 97795,
+      "sha256": "e87f25d43a28b967628e6c0089535390687203e54520e7e3223c771b26fbc0bd"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/DurationPredictor.mlmodelc/weights/weight.bin",
+      "bytes": 1797952,
+      "sha256": "7f709c544087966d6b2538ac50b7a4014d6e1049e21d713cf3bc71c4c5b9307c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/TextEncoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "b39c208b46f180dcbf4cfcd3b4437eeb93371fb77d6d636b99ca3ddff5327253"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/TextEncoder.mlmodelc/coremldata.bin",
+      "bytes": 431,
+      "sha256": "4349aa84bb4a4731e3be09eb235e1816a3d0c88500b151479e08fe15662a446c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/TextEncoder.mlmodelc/model.mil",
+      "bytes": 150952,
+      "sha256": "6ef23a27a343f540bee78f5b2e85bbd83443c960c151d0e3bd57ffe5c6082ed1"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/TextEncoder.mlmodelc/weights/weight.bin",
+      "bytes": 18022016,
+      "sha256": "7c7afa5d02426a8a363c9cef0e27ce64a5c57a67d1a59f60aac0ac58ffb9877f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int4.mlmodelc/.DS_Store",
+      "bytes": 6148,
+      "sha256": "6d7989a4b617ebcf225fea5e219e23780d2504aa3e42a725eb31aa3a2fbc7e00"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int4.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "7bc35092cc1cf49dd0d636872b834a8af7163cff04f2d4971d694da59cdf1e0c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int4.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "f2ef040d1fa25f7a4bffcb7e1932fed6c3a216c28809fb6f60c24174aa5176d0"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int4.mlmodelc/model.mil",
+      "bytes": 343398,
+      "sha256": "a78dffeaa0f087d574789f4b42c10a35862d6cc59cb09fce187108a11c612d7a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int4.mlmodelc/weights/weight.bin",
+      "bytes": 32166112,
+      "sha256": "1ef6a7d8fefe4b785cbb96532ce2c1bf479471bbeabcec04c2e893550ea8e2a3"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int8.mlmodelc/.DS_Store",
+      "bytes": 6148,
+      "sha256": "998f7afba721a8e83584d7160aabd021505e52cc829b7acbf2c62f0d4f5f85bc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int8.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "e52f658a0d34b0db5bf4f4ac83f3a2e5a52d68c53d2592975b26545df086c97e"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int8.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "5da45c263cb8a04fcd2e9194173f3eedfb8a1c1e9ad399b7d7b217edbda59cbe"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int8.mlmodelc/model.mil",
+      "bytes": 343245,
+      "sha256": "ddd9add4cbbe7e9a6b3d7729016c93c2c45038a8a4828bce4ae78ae60fc45984"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L128_int8.mlmodelc/weights/weight.bin",
+      "bytes": 64214944,
+      "sha256": "fedb6be05958c6319d614d908ef5cb429444667a7158763c9944173c0966a943"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int4.mlmodelc/.DS_Store",
+      "bytes": 6148,
+      "sha256": "763080c72193506a1bb3abcdb794862196a08463092ae5f517c0b6ee24f8adcc"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int4.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "5e154dc53fb21bc33d0ac10a9a5ce9ca2d45172d87c258dd6772a2cc8bfd7536"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int4.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "f9629c8cc85e15853f2edde4ec36e7abc4eae5b6707dd95eedbeb19fb2c9382a"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int4.mlmodelc/model.mil",
+      "bytes": 343617,
+      "sha256": "35ddb3cd2ba5de724cd30e7465bc4eae9b7bf2bbbc030b312203c7e76a88142f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int4.mlmodelc/weights/weight.bin",
+      "bytes": 32167200,
+      "sha256": "71ca80054430e290efa804aa88a3c862d6edb901367af8dd7db5a70f49ae623c"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int8.mlmodelc/.DS_Store",
+      "bytes": 6148,
+      "sha256": "9c5270aae79de24a37984c77cb3ecfdb9333f9c721ebceea2aacb9c839a8af81"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int8.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "6b6d6e841403cc595e53526d880b5f8b4a880ae8f572ae60fde6a2cb6bb7d569"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int8.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "0924682809182fbf3d3c94d3822d8dd18d09e6016ff6ff7e438c560d86e83d20"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int8.mlmodelc/model.mil",
+      "bytes": 343465,
+      "sha256": "246ef1174928a67023cfbf00fb96b3c21cf526fd39a4944fb1a64d9b78276be6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L256_int8.mlmodelc/weights/weight.bin",
+      "bytes": 64216032,
+      "sha256": "fc2b363c0260c90154c36dce2e307e14b8a97acbe2f7bc99a6aa3106f0bfa0d3"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int4.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "981debe92ec0b3a942dc275155da876272a9137ada8e78dcc60d8c25f3248776"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int4.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "6abedfe4ae4d4cffb5ad29f20bb1fd5516113ce275e3556c9a711fdc4215ef84"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int4.mlmodelc/model.mil",
+      "bytes": 343617,
+      "sha256": "f3813c0220c72bb7b039decdcaaa89dac8cab188a2d3e5847b8fb17f09dca2df"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int4.mlmodelc/weights/weight.bin",
+      "bytes": 32168224,
+      "sha256": "fd60d308e99c5be4796981f54bff2e0fe6983706bd31b48f331ddcd3239524a9"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int8.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "e220c58e6865c027f8d748de4e8d6e5ca79ba78e7e9bbffb40ed547bb58bdb88"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int8.mlmodelc/coremldata.bin",
+      "bytes": 553,
+      "sha256": "7847393e6acc9b909327c10a2522ec39dc3cbea20d4482a7813f8c2d8926ba66"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int8.mlmodelc/model.mil",
+      "bytes": 343465,
+      "sha256": "4ee4255e0f91a95c7a81434dd8f29cdcbf9773ef5cdcf5c243e40316ad56b159"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/VectorEstimatorVariants/VectorEstimator_L512_int8.mlmodelc/weights/weight.bin",
+      "bytes": 64217056,
+      "sha256": "ee48991c50aa1e7169c2a5ed02f46c5abb136449ff1f9470d27164daee93a9d6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/Vocoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "4fe1b825137629a96dc58a1339bc4ece32041b755f99d638f21a153f2e7faed6"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/Vocoder.mlmodelc/coremldata.bin",
+      "bytes": 388,
+      "sha256": "dbf54fc98879ee1c9a213452e16d09367f3c34ad489b175bcae7ef5f74f8d121"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/Vocoder.mlmodelc/model.mil",
+      "bytes": 75626,
+      "sha256": "5f57d6b16a4ee7237e046a423c265aa2c487857eb0003bba1c89fa66e577353f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/Vocoder.mlmodelc/weights/weight.bin",
+      "bytes": 50672512,
+      "sha256": "b45e4c17a45cc4de30dcedae9f662548aa35f8f9763632c342b8bbef3089fcee"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/manifest.json",
+      "bytes": 36486,
+      "sha256": "719170fcb59ae4c5616aff9e9d33f22459e9cc7a7bad7073c004b031d2c4bd60"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/requirements.txt",
+      "bytes": 45,
+      "sha256": "6ab02522a838e95add22c2c1873aba58926b4a2720b00100bb107979ceaddfb1"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/tts.json",
+      "bytes": 8253,
+      "sha256": "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/unicode_indexer.json",
+      "bytes": 277676,
+      "sha256": "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f"
+    },
+    {
+      "root": "zimfo-tts-models",
+      "path": "supertonic-3/voice_styles/F1.json",
+      "bytes": 292046,
+      "sha256": "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_har_post_7s.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 343189,
+      "sha256": "76bdb21faa36286934aae9e3ad9ddb1e78f43051cfb9986924f21a95c7cd66be"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_har_post_7s.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 39353848,
+      "sha256": "e4ada8b28c56a4acda6a88e7c6d076aa65a39051841597bc0c4c07a60afe5ac2"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_har_post_7s.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "2209b06682d17218aa75c20a31a82cfa02a8e62646085fc9057a9c5caf80cc62"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_pre_7s.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 74522,
+      "sha256": "f0238e53ab2c6196e2f4899def1b1f475bbe64e4901c67dd2b83a0396da224c5"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_pre_7s.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 67190976,
+      "sha256": "9932a592f367dc61f3912430dbb79a7149c88c09b46e1ee2b57122aac1e05271"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_decoder_pre_7s.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "181d66a4e4b7b63ca3ec33a5c44ee41a56f8726a2aa93532ec2a516e3a8ce57a"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_duration_t128.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 5540359,
+      "sha256": "ca9a8bca2ba4e3af108351792b9240d590c26b8871afd50578983975885d8c26"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_duration_t128.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 38918912,
+      "sha256": "25db30a2ec864db6b048ce149e980a42dbc9ee2b29fdb8ca956b5a0e8289f1ee"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_duration_t128.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "51be9ffd007a5c27210ff8e5a6158d44ed66f66ea9647684d9661781f737970f"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_f0ntrain_t280.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 84755,
+      "sha256": "378ed8776331a2a3a2e9fd6d76ff23156da0e2e06e3ec0e3e63bd6a0eed3b6d4"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_f0ntrain_t280.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 20497408,
+      "sha256": "5dd6617aba20d23aff99e40667ab008389668defe3813496b8bf45b434bf512f"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "coreml/kokoro_f0ntrain_t280.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "06ec0b3545675e8de0fba2f45303a6034a5e731dcba87edb3f2b8e3fef794fef"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "hnsf_weights.json",
+      "bytes": 336,
+      "sha256": "de73b717732da77b31736f67a108d35c478ab116b0a188e9787019b0408c0226"
+    },
+    {
+      "root": "kokoro-alt-assets",
+      "path": "revision.json",
+      "bytes": 1041,
+      "sha256": "a52a772c1a19733b4136474804a36be9986d013dd3857ef53186577edeb4fc0e"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PDecoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "dbf1767747fdc188222d467a45b04608b396c76c71db3abb18a5fb3680ef9827"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PDecoder.mlmodelc/coremldata.bin",
+      "bytes": 545,
+      "sha256": "607e960f19b4d9a30317a5a11869fcce84b300a909fcab2cc756c0d98e2dacd9"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PDecoder.mlmodelc/metadata.json",
+      "bytes": 3064,
+      "sha256": "e54e98484fd60d26f22fd3c4e7fe87b0d92a5d2de1f958cc3c4bb36d4ae06a44"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PDecoder.mlmodelc/model.mil",
+      "bytes": 19737,
+      "sha256": "fe647c598e0d9454d360b8ee49a59ae57ca147fc5330863ba84ccb90dce482ad"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PDecoder.mlmodelc/weights/weight.bin",
+      "bytes": 828030,
+      "sha256": "cbaeb4e743359f607ab161af0c6d8a817462fdaec622ee788ef8ef952c5f8214"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PEncoder.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "sha256": "cf7fbd7e7a65529b2d2bf3941e458a0ab6dff7a298bf48e205a1727c81c26a99"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PEncoder.mlmodelc/coremldata.bin",
+      "bytes": 398,
+      "sha256": "0f14d46ca9fd06c68b4717294575b2b99449e67d40b7a2c56f926bf05cd90b11"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PEncoder.mlmodelc/metadata.json",
+      "bytes": 2034,
+      "sha256": "c8e0cfd7f494ac1b3662ff8f1914b2b45f79ffb2791724cdc0576981996732e1"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PEncoder.mlmodelc/model.mil",
+      "bytes": 20392,
+      "sha256": "8c617e569f37286b056dad800d862dc145be9a95fa9ed43857bb646ba199d7da"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/G2PEncoder.mlmodelc/weights/weight.bin",
+      "bytes": 694592,
+      "sha256": "6926bcd2827d21fec82839487b987e06f85fd8a6a5bb896bc4f6062461d014ec"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/config.json",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/g2p_vocab.json",
+      "bytes": 1665,
+      "sha256": "295ed64b86c2820cd665b0602ae50c6947c0e82ac643082873e0be87dca282ce"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/gb_gold.json",
+      "bytes": 2838552,
+      "sha256": "29e62f4b60261c88f7f3c2c7811ca3825978948090b72d2b27d565b729282f71"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/gb_silver.json",
+      "bytes": 3663898,
+      "sha256": "48131e2d92ccc41655f4543e87e0f938e71463eb5a54be7f0693bb712ebb6bce"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/us_gold.json",
+      "bytes": 3001196,
+      "sha256": "8507f89840f0813b10cf584740942f58e9cc9ad3660e24088b442ab0a6b126be"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/us_lexicon_cache.json",
+      "bytes": 10444631,
+      "sha256": "6b36ba313202227d6914ad32cd684a0304bd2757e9ec4158ea7bc36ec40e224e"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/us_silver.json",
+      "bytes": 3105352,
+      "sha256": "ea0e1abca0c9b18fb0d3402034633a337154a3153e9a9f49f97d668c908e140c"
+    },
+    {
+      "root": "shared-fluidaudio-cache",
+      "path": "Models/kokoro/vocab_index.json",
+      "bytes": 2034,
+      "sha256": "433690ab1da1256639c00179e7961a9e9f50ec91077a9c0877107c14e04fb989"
+    }
+  ]
+}

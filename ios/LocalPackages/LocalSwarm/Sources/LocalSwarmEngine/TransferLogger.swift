@@ -48,15 +48,18 @@ public final class TransferLogger: @unchecked Sendable {
         peers=\(status.connectedPeers, privacy: .public) t=\(String(format: "%.1f", elapsed), privacy: .public)s
         """)
 
-        let line = "\(Self.iso())," +
-            "\(Self.csv(event)),\(transport.rawValue),\(status.role.rawValue)," +
-            "\(Self.csv(status.swarmID)),\(Self.csv(status.name))," +
-            "\(status.completedBytes),\(status.totalBytes)," +
-            "\(Int(status.bytesPerSecond)),\(String(format: "%.2f", mbps))," +
-            "\(status.connectedPeers),\(String(format: "%.2f", elapsed))\n"
-        let data = Data(line.utf8)
+        let recordedAt = Date()
         queue.async { [weak self] in
             guard let self = self else { return }
+            // Reuse the formatter only on this serial queue; record() may be
+            // called concurrently by multiple managers or sessions.
+            let line = "\(Self.isoFormatter.string(from: recordedAt))," +
+                "\(Self.csv(event)),\(transport.rawValue),\(status.role.rawValue)," +
+                "\(Self.csv(status.swarmID)),\(Self.csv(status.name))," +
+                "\(status.completedBytes),\(status.totalBytes)," +
+                "\(Int(status.bytesPerSecond)),\(String(format: "%.2f", mbps))," +
+                "\(status.connectedPeers),\(String(format: "%.2f", elapsed))\n"
+            let data = Data(line.utf8)
             self.openIfNeeded()
             _ = try? self.handle?.write(contentsOf: data)
         }
@@ -82,9 +85,5 @@ public final class TransferLogger: @unchecked Sendable {
             return field
         }
         return "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-    }
-
-    private static func iso() -> String {
-        isoFormatter.string(from: Date())
     }
 }

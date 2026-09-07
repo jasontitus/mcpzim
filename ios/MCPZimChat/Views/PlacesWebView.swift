@@ -513,21 +513,8 @@ final class ArticleWebCoordinator: NSObject, WKNavigationDelegate {
             decisionHandler(.allow)
             return
         }
-        guard navigationAction.navigationType == .linkActivated,
-              let url,
-              zimExternalOpenSchemes.contains(scheme)
-        else {
-            decisionHandler(.cancel)
-            return
-        }
+        // External links are opened only by ZimUserActionBridge after a trusted click.
         decisionHandler(.cancel)
-        MainActor.assumeIsolated {
-            #if canImport(UIKit)
-            UIApplication.shared.open(url)
-            #elseif canImport(AppKit)
-            NSWorkspace.shared.open(url)
-            #endif
-        }
     }
 }
 
@@ -550,6 +537,7 @@ private func makeArticleWebView(
     if #available(macOS 13.3, iOS 16.4, *) {
         config.preferences.isElementFullscreenEnabled = true
     }
+    ZimUserActionBridge.install(on: config)
     let webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = delegate
     // Debug-only: an inspectable webview lets anyone who can attach
@@ -800,20 +788,8 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
             decisionHandler(.allow)
             return
         }
-        guard navigationAction.navigationType == .linkActivated,
-              let url,
-              zimExternalOpenSchemes.contains(scheme)
-        else {
-            log?("blocked navigation: \(url?.absoluteString ?? "?")")
-            decisionHandler(.cancel)
-            return
-        }
+        // External links are opened only by ZimUserActionBridge after a trusted click.
         decisionHandler(.cancel)
-        #if canImport(UIKit)
-        UIApplication.shared.open(url)
-        #elseif canImport(AppKit)
-        NSWorkspace.shared.open(url)
-        #endif
     }
 
     /// The page on the other end of this bridge is untrusted (see the
@@ -842,16 +818,13 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
         // Popup action dispatch — the pin popup's Directions/Share
         // icons post `{action: "directions" | "share", ...}` messages
         // back here so we can hand them off to native system handlers.
-        if let action = payload["action"] as? String {
-            handlePopupAction(action, payload: payload)
-            return
-        }
+        guard payload["action"] == nil else { return }
         let level = (payload["level"] as? String) ?? "log"
         let args = (payload["args"] as? [String]) ?? []
         log?("js.\(level) \(args.joined(separator: " "))")
     }
 
-    private func handlePopupAction(_ action: String, payload: [String: Any]) {
+    fileprivate func handlePopupAction(_ action: String, payload: [String: Any]) {
         let name = (payload["name"] as? String) ?? ""
         let lat = (payload["lat"] as? NSNumber)?.doubleValue
         let lon = (payload["lon"] as? NSNumber)?.doubleValue
@@ -897,50 +870,9 @@ private final class PlacesWebCoordinator: NSObject, WKNavigationDelegate, WKScri
             #if canImport(UIKit)
             presentShareSheet(items: items)
             #endif
-        case "website", "call":
-            let value = (payload["value"] as? String) ?? ""
-            openExternalURL(value, isPhone: action == "call")
         default:
             log?("popup action: unknown \(action)")
         }
-    }
-
-    /// Open a popup's Website / Call link through the system. A WKWebView
-    /// won't follow `target="_blank"` or `tel:` on its own, so the popup
-    /// posts the value here and we hand it to UIApplication / NSWorkspace.
-    private func openExternalURL(_ raw: String, isPhone: Bool) {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return }
-        if isPhone {
-            if !s.lowercased().hasPrefix("tel:") {
-                s = "tel:" + s.filter { !$0.isWhitespace }
-            }
-        } else if !s.contains("://"), !s.lowercased().hasPrefix("mailto:") {
-            // Bare "example.com" → assume https so the URL is openable.
-            s = "https://" + s
-        }
-        guard let url = URL(string: s), let scheme = url.scheme?.lowercased() else {
-            log?("popup link: bad URL \(raw)")
-            return
-        }
-        // `raw` is whatever the page passed to `mcpzimPopupLink`, i.e.
-        // attacker-chosen on a nearby-shared ZIM, and this is the one
-        // call that hands it to the system opener. Constrain it to the
-        // kind of link the button claims to be — Call dials, Website
-        // opens a page or a mail composer — so neither can be turned
-        // into a launch-any-app-by-URL-scheme primitive.
-        let allowed: Set<String> = isPhone ? ["tel"] : ["http", "https", "mailto"]
-        guard allowed.contains(scheme) else {
-            log?("popup link: blocked scheme \(scheme)")
-            return
-        }
-        #if canImport(UIKit)
-        UIApplication.shared.open(url, options: [:]) { [weak self] ok in
-            if !ok { self?.log?("popup link: open failed \(url.absoluteString)") }
-        }
-        #elseif canImport(AppKit)
-        NSWorkspace.shared.open(url)
-        #endif
     }
 
     #if canImport(UIKit)
@@ -1054,6 +986,10 @@ private func makePlacesWebView(
     let script = WKUserScript(source: captureJS, injectionTime: .atDocumentStart, forMainFrameOnly: false)
     userContent.addUserScript(script)
     config.userContentController = userContent
+    ZimUserActionBridge.install(on: config) { [weak coordinator] payload in
+        guard let action = payload["action"] as? String else { return }
+        coordinator?.handlePopupAction(action, payload: payload)
+    }
     if #available(macOS 13.3, iOS 16.4, *) {
         config.preferences.isElementFullscreenEnabled = true
     }
@@ -1223,42 +1159,16 @@ private func loadPlacesSpec(
     let injectJS = """
     (function() {
       var placesData = \(placesJSON);
-      // Popup action helpers — routed through the iOS `mcpzim`
-      // message handler so Directions opens Apple Maps + Share
-      // launches the native UIActivityViewController. Exposed on
-      // window so the popup's inline `onclick` can call them.
-      window.mcpzimPopupAction = function(action, name, lat, lon) {
-        try {
-          window.webkit.messageHandlers.mcpzim.postMessage({
-            action: action, name: name, lat: lat, lon: lon
-          });
-        } catch (e) {}
-        return false;
-      };
-      // External-link helper — Website / Call go through the native
-      // bridge (→ UIApplication.open) because a WKWebView drops
-      // target="_blank" and `tel:` link clicks on its own, so a plain
-      // <a href> did nothing.
-      window.mcpzimPopupLink = function(kind, value) {
-        try {
-          window.webkit.messageHandlers.mcpzim.postMessage({
-            action: kind, value: value
-          });
-        } catch (e) {}
-        return false;
-      };
       // Popup HTML builder — small label + description row plus the
       // two icon buttons (➤ Directions, ⤴ Share). `esc` escapes
       // angle brackets so the label/description can't close the div
       // prematurely.
       window.buildMcpzimPopupHTML = function(label, description, coords, wikiPath, extras) {
-        function esc(s) { return String(s || "").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
-        function escAttr(s) { return String(s || "").replace(/"/g, "&quot;"); }
+        function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+        function actionAttr(payload) { return ' data-zimfo-action="' + esc(JSON.stringify(payload)) + '"'; }
         var lon = coords[0], lat = coords[1];
         var safeLabel = esc(label);
         var safeDesc = esc(description);
-        var jsLabel = String(label || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
-        var jsPath = String(wikiPath || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
         var website = (extras && extras.website) || "";
         var phone   = (extras && extras.phone)   || "";
         var brand   = (extras && extras.brand)   || "";
@@ -1273,7 +1183,7 @@ private func loadPlacesSpec(
             + safeDesc + '</div>';
         }
         html += '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">';
-        html += '<button type="button" onclick="return window.mcpzimPopupAction(\\'directions\\', \\'' + jsLabel + '\\', ' + lat + ', ' + lon + ');"'
+        html += '<button type="button"' + actionAttr({action:'directions',name:label,lat:lat,lon:lon})
           + ' style="background:#2563eb;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
           + '↪ Directions</button>';
         // Website button — opens the external URL in the default
@@ -1282,16 +1192,14 @@ private func loadPlacesSpec(
         // Wikipedia tag); plumbed through PlacesPayload.Place.website
         // to here.
         if (website) {
-          var jsWeb = String(website).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
-          html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'website\\', \\'' + jsWeb + '\\');"'
+          html += '<button type="button"' + actionAttr({action:'website',value:website})
             + ' style="background:#0ea5e9;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
             + '🌐 Website</button>';
         }
         // Phone button — posts to the native bridge, which opens the
         // `tel:` URL via UIApplication (a WKWebView won't dial on its own).
         if (phone) {
-          var jsPhone = String(phone).replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
-          html += '<button type="button" onclick="return window.mcpzimPopupLink(\\'call\\', \\'' + jsPhone + '\\');"'
+          html += '<button type="button"' + actionAttr({action:'call',value:phone})
             + ' style="background:#22c55e;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
             + '📞 Call</button>';
         }
@@ -1299,23 +1207,15 @@ private func loadPlacesSpec(
           // "Read article" dispatches `get_article_section(lead)`
           // via the native bridge — new chat turn with the article's
           // hero image + lead prose.
-          html += '<button type="button" onclick="return window.mcpzimPopupArticle(\\'' + jsLabel + '\\', \\'' + jsPath + '\\');"'
+          html += '<button type="button"' + actionAttr({action:'article',name:label,path:wikiPath})
             + ' style="background:#16a34a;color:#fff;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
             + '📖 Wikipedia</button>';
         }
-        html += '<button type="button" onclick="return window.mcpzimPopupAction(\\'share\\', \\'' + jsLabel + '\\', ' + lat + ', ' + lon + ');"'
+        html += '<button type="button"' + actionAttr({action:'share',name:label,lat:lat,lon:lon})
           + ' style="background:#e5e7eb;color:#111;padding:6px 10px;border-radius:6px;border:0;font-size:12px;font-weight:600;cursor:pointer;">'
           + '⤴ Share</button>';
         html += '</div></div>';
         return html;
-      };
-      window.mcpzimPopupArticle = function(title, path) {
-        try {
-          window.webkit.messageHandlers.mcpzim.postMessage({
-            action: 'article', name: title, path: path
-          });
-        } catch (e) {}
-        return false;
       };
       function waitForMap(cb, tries) {
         tries = tries || 0;

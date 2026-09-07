@@ -1,0 +1,67 @@
+{
+  "runtime": "llama.cpp b10816 / 427291b5b3",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=false \u00b7 append=false \u00b7 edited=false \u00b7 pass=false",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 16.249,
+      "ttft_seconds": 16.253,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 5.12,
+      "total_seconds": 22.307,
+      "footprint_mb": 1121.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.225,
+      "ttft_seconds": 0.445,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 4.26,
+      "total_seconds": 7.716,
+      "footprint_mb": 1121.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 3.136,
+      "ttft_seconds": 3.138,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 4.01,
+      "total_seconds": 4.886,
+      "footprint_mb": 1121.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "append-reference \u00b7 stopped after 0 pieces/11.742s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 512..<1024 of 1276\")",
+    "interrupted \u00b7 stopped after 0 pieces/0.008s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1223\")",
+    "interrupted-retry \u00b7 stopped after 0 pieces/0.002s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1223\")",
+    "edited-answer \u00b7 stopped after 0 pieces/0.002s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1250\")",
+    "edited-reference \u00b7 stopped after 0 pieces/0.002s \u00b7 custom(\"llama_decode prefill rc=-3 at batch 0..<512 of 1250\")"
+  ],
+  "captures": [
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 3.686s",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 metadata=1180 bytes \u00b7 2.693s"
+  ],
+  "restores": [
+    "tokens=1222 \u00b7 0.214s"
+  ],
+  "verification_trials": [],
+  "verification_median_seconds": {},
+  "settings": {
+    "checkpoint": true,
+    "storage": "device",
+    "prefill_batch": 512
+  }
+}

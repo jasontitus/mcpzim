@@ -66,6 +66,7 @@ final class ZimfoRunner {
         if let blobs = UserDefaults.standard.array(forKey: "library.externalBookmarks") as? [Data] {
             for b in blobs { parts.append("bm:\(b.hashValue)") }
         }
+        parts += (UserDefaults.standard.stringArray(forKey: ArchiveFilePolicy.disabledArchivesKey) ?? []).sorted()
         return parts.joined(separator: "|")
     }
 
@@ -102,12 +103,15 @@ final class ZimfoRunner {
         var readers: [(name: String, reader: any ZimReader)] = []
         // 1) Anything in the app's sandbox Documents folder (auto-scan).
         let fm = FileManager.default
+        let disabled = Set(UserDefaults.standard.stringArray(forKey: ArchiveFilePolicy.disabledArchivesKey) ?? [])
+        let documents = try? fm.url(for: .documentDirectory, in: .userDomainMask,
+                                   appropriateFor: nil, create: false)
         if let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask,
                                   appropriateFor: nil, create: false) {
             let urls = (try? fm.contentsOfDirectory(at: docs,
                                                     includingPropertiesForKeys: nil))?
                 .filter { $0.pathExtension.lowercased() == "zim" } ?? []
-            for url in urls {
+            for url in urls where !disabled.contains(ArchiveFilePolicy.identity(url, documents: documents)) {
                 if let r = try? LibzimReader(url: url) {
                     readers.append((url.lastPathComponent, r))
                 }
@@ -129,17 +133,11 @@ final class ZimfoRunner {
                                    relativeTo: nil,
                                    bookmarkDataIsStale: &stale)
                 #endif
-                guard let url, url.startAccessingSecurityScopedResource() else { continue }
-                if let r = try? LibzimReader(url: url) {
-                    // Scope stays open on purpose: the reader mmaps the file
-                    // for as long as the runner lives.
+                guard let url,
+                      !disabled.contains(ArchiveFilePolicy.identity(url, documents: documents)),
+                      !readers.contains(where: { $0.name == url.lastPathComponent }) else { continue }
+                if let r = try? LibzimReader(url: url, accessSecurityScope: true) {
                     readers.append((url.lastPathComponent, r))
-                } else {
-                    // …but a failed open leaves nothing to read through it, so
-                    // balance the start here instead of leaking the scope for
-                    // the process lifetime (review 2026-08-13, bugs
-                    // ZimfoRunner:90).
-                    url.stopAccessingSecurityScopedResource()
                 }
             }
         }

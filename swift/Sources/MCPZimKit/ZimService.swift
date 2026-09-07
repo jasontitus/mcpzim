@@ -81,6 +81,8 @@ public struct NearPlacesResult: Sendable {
 public enum ZimServiceError: Error, CustomStringConvertible {
     case unknownZim(String)
     case noStreetzim
+    case outsideMapCoverage(String)
+    case placeIndexUnavailable(String)
     case noMatch(String)
     case notFound(String)
     case noRoute
@@ -89,6 +91,10 @@ public enum ZimServiceError: Error, CustomStringConvertible {
         switch self {
         case .unknownZim(let n): return "unknown zim \(n)"
         case .noStreetzim: return "no streetzim ZIM with routing data is loaded"
+        case .outsideMapCoverage(let name):
+            return "The search location is outside the coverage of the loaded map \(name). Load a map covering that area to search for nearby places."
+        case .placeIndexUnavailable(let name):
+            return "I couldn't read the nearby-place index in \(name). Check that the offline map is fully downloaded, then reload it and try again."
         case .noMatch(let q): return "could not resolve \(q)"
         case .notFound(let p): return "not found: \(p)"
         case .noRoute: return "no route found"
@@ -993,10 +999,10 @@ public actor DefaultZimService: ZimService {
         // Bbox guard: if the zim advertises coverage and the query point
         // falls outside, bail out before loading any chunk. This is the
         // difference between a 4-second / 1 GB no-op scan of a country-
-        // scale ZIM and a clean empty answer.
+        // scale ZIM and an explicit coverage error.
         if let bbox = loadBBox(pair: pair), !bboxContains(bbox, lat: lat, lon: lon) {
-            log("nearPlaces: (\(lat), \(lon)) is outside \(pair.name) bbox — returning empty")
-            return NearPlacesResult(totalInRadius: 0, breakdown: [:], results: [])
+            log("nearPlaces: (\(lat), \(lon)) is outside \(pair.name) bbox — coverage unavailable")
+            throw ZimServiceError.outsideMapCoverage(pair.name)
         }
         // Default filter: `poi` + `place` when the caller didn't pin a
         // specific set. "What's around X" almost never means "addresses"
@@ -1090,7 +1096,10 @@ public actor DefaultZimService: ZimService {
                 let joined = plan.map { $0.slug }.sorted().joined(separator: ",")
                 log("nearPlaces via category-index: \(joined) in \(pair.name)")
                 for item in plan {
-                    guard let recs = loadCategoryChunk(pair: pair, slug: item.slug) else { continue }
+                    guard let recs = loadCategoryChunk(pair: pair, slug: item.slug) else {
+                        log("nearPlaces: advertised category-index/\(item.slug) could not be read in \(pair.name)")
+                        throw ZimServiceError.placeIndexUnavailable(pair.name)
+                    }
                     scanRecords(recs, filter: effectiveKinds, applyKindFilter: item.filter,
                                 centerLat: lat, centerLon: lon,
                                 radiusMeters: radiusM,
@@ -1317,6 +1326,11 @@ public actor DefaultZimService: ZimService {
             }
         }
         let needKeywordFallback = !nameKeywords.isEmpty
+        // A museum/gallery name can refine a coarse tourism record, but
+        // cannot turn an explicitly tagged cafe/shop into a museum.
+        let keywordParents: Set<String> = !filter.isEmpty && filter.isSubset(of: ["museum", "gallery"])
+            ? ["amenity", "tourism", "attraction", "historic", "poi"]
+            : Self.genericParentSubtypes
         // Computed once per scan, not per record — see RadiusBoundingBox.
         let bbox = RadiusBoundingBox(centerLat: centerLat, centerLon: centerLon,
                                      radiusMeters: radiusMeters)
@@ -1383,7 +1397,7 @@ public actor DefaultZimService: ZimService {
                     //   (b) the record's NAME contains at least one
                     //       keyword from the synonym's nameKeywords.
                     if needKeywordFallback,
-                       Self.genericParentSubtypes.contains(subtype)
+                       keywordParents.contains(subtype)
                     {
                         let name = ((rec["n"] as? String) ?? (rec["name"] as? String) ?? "").lowercased()
                         var kw = false
@@ -1504,10 +1518,8 @@ public actor DefaultZimService: ZimService {
         // fallback otherwise sweeps in false positives — e.g., a
         // keyword of "heritage" matched "Heritage Park Dental" (a
         // dentist's office) and surfaced it as the #1 museum.
-        "museum":       (subtypes: ["museum", "tourism", "gallery"],
-                         nameKeywords: ["museum", "gallery"]),
-        "gallery":      (subtypes: ["gallery", "tourism"],
-                         nameKeywords: ["gallery", "museum"]),
+        "museum":       (subtypes: ["museum"], nameKeywords: ["museum"]),
+        "gallery":      (subtypes: ["gallery"], nameKeywords: ["gallery"]),
         "attraction":   (subtypes: ["tourism", "museum", "gallery", "viewpoint",
                                      "attraction", "zoo", "theme_park"],
                          nameKeywords: ["museum", "gallery", "zoo"]),
@@ -1702,6 +1714,9 @@ public actor DefaultZimService: ZimService {
         // and the caption read "Found 211 hospitals".
         "hospital", "pharmacy", "clinic", "doctor", "doctors", "dentist",
         "veterinary", "vet",
+        // The museums chip includes landmarks and other tourism records.
+        // Keep subtype/name evidence instead of labeling the entire chip.
+        "museum", "gallery",
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for

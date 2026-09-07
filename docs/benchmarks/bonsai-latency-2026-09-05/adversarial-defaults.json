@@ -1,0 +1,144 @@
+{
+  "runtime": "prism-b9591",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=true \u00b7 append=true \u00b7 edited=true \u00b7 changed-evidence=true \u00b7 references-cold=true \u00b7 pass=true",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 13.783,
+      "ttft_seconds": 13.792,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 9.86,
+      "total_seconds": 16.936,
+      "footprint_mb": 1091.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.094,
+      "ttft_seconds": 0.206,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 9.11,
+      "total_seconds": 3.61,
+      "footprint_mb": 1091.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "fair",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 0.692,
+      "ttft_seconds": 0.694,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 8.07,
+      "total_seconds": 1.561,
+      "footprint_mb": 1092.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "fair",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 16.254,
+      "ttft_seconds": 16.26,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.4,
+      "total_seconds": 17.354,
+      "footprint_mb": 1086.0,
+      "stop": "eog"
+    },
+    {
+      "case": "interrupted-retry",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.162,
+      "ttft_seconds": 0.335,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 6.15,
+      "total_seconds": 5.373,
+      "footprint_mb": 1086.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "edited-answer",
+      "thermal_start": "fair",
+      "prompt_tokens": 1250,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.766,
+      "ttft_seconds": 0.902,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.92,
+      "total_seconds": 1.913,
+      "footprint_mb": 1086.0,
+      "stop": "eog"
+    },
+    {
+      "case": "edited-reference",
+      "thermal_start": "fair",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 17.746,
+      "ttft_seconds": 17.748,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 7.61,
+      "total_seconds": 18.667,
+      "footprint_mb": 1085.0,
+      "stop": "eog"
+    },
+    {
+      "case": "changed-evidence",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 18.533,
+      "ttft_seconds": 18.537,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 7.51,
+      "total_seconds": 22.666,
+      "footprint_mb": 1085.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "changed-reference",
+      "thermal_start": "fair",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 19.151,
+      "ttft_seconds": 19.153,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 7.35,
+      "total_seconds": 23.371,
+      "footprint_mb": 1085.0,
+      "stop": "max_tokens"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 8 pieces/17.133s \u00b7 CancellationError()"
+  ],
+  "captures": [
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.186s \u00b7 queued-prefill=1.165s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.011s \u00b7 queued-prefill=0.477s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.145s \u00b7 queued-prefill=1.613s \u00b7 flags=1",
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.215s \u00b7 queued-prefill=1.323s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.011s \u00b7 queued-prefill=0.618s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.155s \u00b7 queued-prefill=1.629s \u00b7 flags=1",
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.137s \u00b7 queued-prefill=1.594s \u00b7 flags=1",
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.130s \u00b7 queued-prefill=1.611s \u00b7 flags=1"
+  ],
+  "restores": [
+    "tokens=1222 \u00b7 0.108s",
+    "tokens=1222 \u00b7 0.168s",
+    "tokens=1222 \u00b7 0.133s"
+  ],
+  "verification_trials": [],
+  "verification_median_seconds": {}
+}

@@ -1,0 +1,122 @@
+{
+  "runtime": "prism-b9591 / 62061f9",
+  "completed": true,
+  "correctness": "retry=true \u00b7 interrupted=true \u00b7 append=true \u00b7 edited=true \u00b7 pass=true",
+  "cases": [
+    {
+      "case": "cold",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 0,
+      "prefill_seconds": 13.719,
+      "ttft_seconds": 13.721,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 9.97,
+      "total_seconds": 16.829,
+      "footprint_mb": 1091.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.151,
+      "ttft_seconds": 0.265,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 8.74,
+      "total_seconds": 3.811,
+      "footprint_mb": 1091.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "append",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 1255,
+      "prefill_seconds": 0.678,
+      "ttft_seconds": 0.681,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 8.19,
+      "total_seconds": 1.536,
+      "footprint_mb": 1091.0,
+      "stop": "eog"
+    },
+    {
+      "case": "append-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1276,
+      "reused_tokens": 0,
+      "prefill_seconds": 16.895,
+      "ttft_seconds": 16.901,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.21,
+      "total_seconds": 18.027,
+      "footprint_mb": 1085.0,
+      "stop": "eog"
+    },
+    {
+      "case": "interrupted-retry",
+      "thermal_start": "serious",
+      "prompt_tokens": 1223,
+      "reused_tokens": 1222,
+      "prefill_seconds": 0.152,
+      "ttft_seconds": 0.316,
+      "output_tokens": 32,
+      "decode_tokens_per_second": 5.71,
+      "total_seconds": 5.748,
+      "footprint_mb": 1085.0,
+      "stop": "max_tokens"
+    },
+    {
+      "case": "edited-answer",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 1222,
+      "prefill_seconds": 1.025,
+      "ttft_seconds": 1.207,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 5.29,
+      "total_seconds": 2.529,
+      "footprint_mb": 1085.0,
+      "stop": "eog"
+    },
+    {
+      "case": "edited-reference",
+      "thermal_start": "serious",
+      "prompt_tokens": 1250,
+      "reused_tokens": 0,
+      "prefill_seconds": 22.043,
+      "ttft_seconds": 22.049,
+      "output_tokens": 8,
+      "decode_tokens_per_second": 6.11,
+      "total_seconds": 23.194,
+      "footprint_mb": 1085.0,
+      "stop": "eog"
+    }
+  ],
+  "stopped_cases": [
+    "interrupted \u00b7 stopped after 8 pieces/22.773s \u00b7 CancellationError()"
+  ],
+  "captures": [
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.165s \u00b7 queued-prefill=1.168s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.008s \u00b7 queued-prefill=0.464s \u00b7 flags=1",
+    "tokens=1275 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.150s \u00b7 queued-prefill=1.977s \u00b7 flags=1",
+    "tokens=1222 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.123s \u00b7 queued-prefill=1.913s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.009s \u00b7 queued-prefill=0.843s \u00b7 flags=1",
+    "tokens=1249 \u00b7 tensors=149.6 MB \u00b7 data=156894364 bytes \u00b7 0.139s \u00b7 queued-prefill=1.998s \u00b7 flags=1"
+  ],
+  "restores": [
+    "tokens=1222 \u00b7 0.111s",
+    "tokens=1222 \u00b7 0.161s",
+    "tokens=1222 \u00b7 0.179s"
+  ],
+  "verification_trials": [],
+  "verification_median_seconds": {},
+  "settings": {
+    "checkpoint": true,
+    "storage": "host",
+    "prefill_batch": 128,
+    "provider_defaults": true
+  }
+}

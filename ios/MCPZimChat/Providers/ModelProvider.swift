@@ -115,6 +115,7 @@ public struct GenerationStats: Sendable, Equatable {
 public enum ModelLoadState: Equatable, Sendable {
     case notLoaded
     case downloading(Double)        // progress 0...1
+    case waitingForNetwork          // transfer parked on connectivity
     case loading
     case ready
     case failed(String)

@@ -120,8 +120,8 @@ private struct NearbyShareContent: View {
                     get: { controller.includeModelInShare },
                     set: { controller.setIncludeModel($0) })) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Include chat model (\(modelSize))")
-                        Text("Lets your friend chat entirely offline — no model download needed.")
+                        Text("Include chat models (\(modelSize))")
+                        Text("Lets your friend chat entirely offline — every model you've downloaded copies over, no download needed.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -194,12 +194,14 @@ private struct NearbyShareContent: View {
         // Only the two main-actor reads stay here; the stat + directory walks
         // (`shareableVoiceBytes` is `nonisolated`) run off the main actor.
         let hasFiles = controller.hasShareableFiles
-        let modelURL = controller.shareableModelFiles().first
+        let modelURLs = controller.shareableModelFiles()
         let sizes = await Task.detached(priority: .utility) { () -> (model: Int64?, voice: Int64) in
-            let model = modelURL.flatMap {
-                (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.size] as? Int64
+            // Sum every downloaded model's size — the share carries the whole
+            // working set, like the ZIM library.
+            let model = modelURLs.reduce(0) { acc, url in
+                acc + (((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int64) ?? 0)
             }
-            return (model, ZimSwarmController.shareableVoiceBytes)
+            return (model > 0 ? model : nil, ZimSwarmController.shareableVoiceBytes)
         }.value
         shareFacts = ShareFacts(
             hasShareableFiles: hasFiles,

@@ -150,11 +150,21 @@ public extension SwarmManifest {
             try Self.validatePath(file.path)
             guard seen.insert(file.path.lowercased()).inserted else { throw ValidationError.duplicatePath(file.path) }
             guard file.sizeBytes >= 0 else { throw ValidationError.badFileRange(file.path) }
-            total += file.sizeBytes
+            let (newTotal, overflow) = total.addingReportingOverflow(file.sizeBytes)
+            guard !overflow else { throw ValidationError.totalBytesMismatch }
+            total = newTotal
             if file.isEmpty { continue }
-            let expected = Int((file.sizeBytes + Int64(chunkSizeBytes) - 1) / Int64(chunkSizeBytes))
+            // Quotient/remainder avoids overflowing size + chunkSize - 1.
+            // Bound the result by the actual hash list before converting or
+            // adding any peer-controlled range endpoints.
+            let chunkSize = Int64(chunkSizeBytes)
+            let expected64 = file.sizeBytes / chunkSize + (file.sizeBytes % chunkSize == 0 ? 0 : 1)
+            guard expected64 <= Int64(chunkHashes.count - nextChunk) else {
+                throw ValidationError.badFileRange(file.path)
+            }
+            let expected = Int(expected64)
             guard file.startChunkIndex == nextChunk,
-                  file.endChunkIndex == file.startChunkIndex + expected - 1,
+                  file.endChunkIndex == nextChunk + expected - 1,
                   file.endChunkIndex < chunkHashes.count else {
                 throw ValidationError.badFileRange(file.path)
             }

@@ -137,6 +137,58 @@ public enum IntentRouter {
         let lower = text.lowercased()
         let defaultRadiusKm: Double = 5
 
+        // Discovery openers have no named entity for the ordinary article
+        // router to bind. Sending them through the full model loop is both
+        // slow and low quality: "Help me explore a Wikipedia topic" took
+        // 32.4 s on the Mac and searched literally for "Wikipedia topic",
+        // landing on "Wiki rabbit hole". Route them to a deterministic
+        // main-page sampler instead. The adapter's candidate cursor advances
+        // only after successful discovery, independently of ordinary turns.
+        if isTopicDiscoveryRequest(lower) {
+            let kind = lower.contains("medical") || lower.contains("medicine")
+                || lower.contains("health")
+                ? "mdwiki"
+                : lower.contains("wikipedia") ? "wikipedia"
+                : (focus?.lastTopicDiscoveryKind ?? "wikipedia")
+            let offset = focus?.topicDiscoveryOffsets[kind] ?? 0
+            return DirectIntent(toolName: "discover_topics", args: [
+                "kind": .string(kind),
+                "limit": .int(6),
+                "offset": .int(offset),
+            ])
+        }
+
+        // "Tell me something interesting around here" is the core
+        // StreetZIM discovery shape. It used to pay for a generic model
+        // prefill merely to choose the existing composite `nearby_stories`
+        // tool. Resolve location-scoped versions directly; the host injects
+        // GPS for here/me, while named-place variants let the tool geocode.
+        if let story = nearbyStoryIntent(
+            lower, mode: mode, currentLocation: currentLocation)
+        {
+            return story
+        }
+
+        let localDiscoveryContinuations: Set<String> = [
+            "another nearby lead", "another local lead",
+            "something else nearby", "keep exploring nearby",
+        ]
+        if localDiscoveryContinuations.contains(lower),
+           let focus,
+           let place = focus.mostRecent(kind: .place),
+           let lat = place.lat,
+           let lon = place.lon
+        {
+            let excluded = [place.name] + focus.openThreads.map(\.label)
+            return DirectIntent(toolName: "nearby_stories", args: [
+                "lat": .double(lat),
+                "lon": .double(lon),
+                "radius_km": .double(5),
+                "max_stories": .int(4),
+                "exclude_names": .array(excluded.map { .string($0) }),
+            ])
+        }
+
         // Reading requests are semantic actions, not questions about an
         // article. Resolve them before ordinary continuation routing so a
         // pinned discussion cannot swallow "read the whole article" and
@@ -211,6 +263,42 @@ public enum IntentRouter {
             ])
         }
 
+        if ["search wider", "look farther", "look further", "widen the search"].contains(lower),
+           let search = focus?.placeSearchForFollowup, search.radiusKm < 100 {
+            var args: [String: AnyJSONValue] = [
+                "lat": .double(search.center.lat), "lon": .double(search.center.lon),
+                "radius_km": .double(min(100, search.radiusKm * 2)),
+                "kinds": .array(search.kinds.map { .string($0) }),
+            ]
+            if let name = search.centerName { args["center_name"] = .string(name) }
+            if let zim = search.zim { args["zim"] = .string(zim) }
+            return DirectIntent(toolName: "near_places", args: args)
+        }
+
+        // Category-only follow-ups keep the prior search area. Run before
+        // pronoun resolution: a result POI is not the search center, and a
+        // model must not invent a city for "Museum?" after a cafe search.
+        if let search = focus?.placeSearchForFollowup,
+           let kind = placeCategoryFollowup(lower) {
+            var args: [String: AnyJSONValue] = [
+                "lat": .double(search.center.lat), "lon": .double(search.center.lon),
+                "radius_km": .double(search.radiusKm), "kinds": .array([.string(kind)]),
+            ]
+            if let name = search.centerName { args["center_name"] = .string(name) }
+            if let zim = search.zim { args["zim"] = .string(zim) }
+            return DirectIntent(toolName: "near_places", args: args)
+        }
+
+        // Definitions use the category noun, not an indefinite article as
+        // part of a proper name ("What is a museum?" opened the rapper
+        // "A Museum"). Explicit "Tell me about A Museum" stays untouched.
+        if let m = match(lower, pattern: #"^what(?:'s|\s+is)\s+(?:a|an)\s+(.+)$"#),
+           placeCategoryFollowup(m[0]) != nil {
+            return DirectIntent(toolName: "article_overview", args: [
+                "title": .string(singularize(m[0])),
+            ])
+        }
+
         // Context-aware fast path. When the host supplies a conversation
         // focus and this turn reads as a follow-up that BINDS to a known
         // entity ("who built it", "the second one", "tell me more"), resolve
@@ -235,6 +323,23 @@ public enum IntentRouter {
             return DirectIntent(toolName: "what_is_here", args: [:])
         }
 
+        // Explicit map requests retain their category after a polite wrapper.
+        // Restrict the new shape to concrete POI kinds; "show me changes in
+        // physics" remains a knowledge request.
+        if let m = match(lower, pattern:
+            #"^(?:please\s+)?(?:show\s+me|find(?:\s+me)?|list(?:\s+some)?)\s+(cafes|cafés|coffee shops|restaurants|bars|pubs|museums|parks|hotels|pharmacies|hospitals|libraries)\s+(?:in|near|around|at)\s+(.+)$"#) {
+            let kind = m[0] == "cafés" ? "cafe" : m[0] == "coffee shops" ? "coffee shop" : singularize(m[0])
+            if ["me", "here"].contains(m[1]) {
+                guard let here = currentLocation else { return nil }
+                return DirectIntent(toolName: "near_places", args: [
+                    "lat": .double(here.lat), "lon": .double(here.lon),
+                    "kinds": .array([.string(kind)]), "radius_km": .double(defaultRadiusKm)])
+            }
+            return DirectIntent(toolName: "near_named_place", args: [
+                "place": .string(m[1]), "kinds": .array([.string(kind)]),
+                "radius_km": .double(defaultRadiusKm)])
+        }
+
         // "<category> near me" / "<category> around here" — use GPS.
         // We match FIRST, then require the location. If the pattern
         // matched but we don't have a location, we must NOT fall
@@ -242,7 +347,7 @@ public enum IntentRouter {
         // — it would gladly classify "me" as a place.
         if let m = match(lower, pattern: #"^(.+?)\s+(?:near|around)\s+(me|here)$"#) {
             guard let here = currentLocation else { return nil }
-            let kind = singularize(m[0])
+            let kind = placeCategoryFollowup(m[0]) ?? singularize(m[0])
             return DirectIntent(toolName: "near_places", args: [
                 "lat":       .double(here.lat),
                 "lon":       .double(here.lon),
@@ -675,6 +780,69 @@ public enum IntentRouter {
             }
         }
 
+        return nil
+    }
+
+    private static func isTopicDiscoveryRequest(_ lower: String) -> Bool {
+        let exact: Set<String> = [
+            "surprise me",
+            "another topic", "different topic", "more topics",
+            "find me a topic", "find me another topic",
+            "pick another topic", "show me another topic",
+            "what can i learn about",
+            "what should i learn about",
+            "show me something to learn about",
+            "help me find something to learn about",
+        ]
+        if exact.contains(lower) { return true }
+        let pattern = #"^(?:help me\s+)?(?:discover|explore|browse|find|pick|suggest|show me|give me)\s+(?:more\s+|a\s+few\s+|some\s+|an?\s+)?(?:interesting\s+|new\s+|random\s+)?(?:offline\s+|wikipedia\s+|medical\s+|medicine\s+|health\s+)?(?:topics?|articles?|subjects?)(?:\s+(?:to\s+(?:explore|learn\s+about)|i\s+might\s+enjoy|for\s+me))?$"#
+        return matches(lower, pattern: pattern)
+    }
+
+    private static func nearbyStoryIntent(
+        _ lower: String,
+        mode: ConversationMode,
+        currentLocation: (lat: Double, lon: Double)?
+    ) -> DirectIntent? {
+        let herePattern = #"^(?:(?:tell|show|give)\s+me\s+)?(?:(?:something|a\s+story|some\s+stories)\s+)?(?:interesting|notable|worth\s+knowing|local\s+stories?)\s+(?:about|around|near)\s+(?:here|me|where\s+i\s+am|my\s+(?:location|area)|this\s+neighbou?rhood)$"#
+        let exploreHerePattern = #"^(?:explore|discover|show\s+me)\s+(?:what(?:'s|\s+is)\s+)?(?:around|near)\s+(?:here|me)$"#
+        if matches(lower, pattern: herePattern)
+            || matches(lower, pattern: exploreHerePattern)
+        {
+            var args: [String: AnyJSONValue] = [
+                "radius_km": .double(5),
+                "max_stories": .int(4),
+            ]
+            if let currentLocation {
+                args["lat"] = .double(currentLocation.lat)
+                args["lon"] = .double(currentLocation.lon)
+            }
+            return DirectIntent(toolName: "nearby_stories", args: args)
+        }
+
+        let namedPatterns = [
+            #"^(?:tell|show|give)\s+me\s+(?:a\s+|some\s+)?(?:local\s+)?stor(?:y|ies)\s+(?:about|around|near)\s+(.+)$"#,
+            #"^what(?:'s|\s+is)\s+(?:interesting|notable|worth\s+knowing)\s+(?:around|near|about)\s+(.+)$"#,
+            #"^tell\s+me\s+something\s+interesting\s+about\s+(.+)$"#,
+        ]
+        for pattern in namedPatterns {
+            guard let match = match(lower, pattern: pattern) else { continue }
+            let place = match[0].trimmingCharacters(in: .whitespaces)
+            guard !place.isEmpty else { return nil }
+            if mode == .encyclopedia {
+                return DirectIntent(toolName: "article_overview", args: [
+                    "title": .string(place),
+                ])
+            }
+            return DirectIntent(
+                toolName: "nearby_stories",
+                args: [
+                    "place": .string(place),
+                    "radius_km": .double(5),
+                    "max_stories": .int(4),
+                ],
+                articleFallbackTitle: mode == .auto ? place : nil)
+        }
         return nil
     }
 
@@ -1264,10 +1432,31 @@ public enum IntentRouter {
                     ])
                 }
                 if let lat = place.lat, let lon = place.lon {
+                    let discoveryWords = [
+                        "connect", "interesting", "notable",
+                        "story", "stories", "history",
+                    ]
+                    if discoveryWords.contains(where: {
+                        lower.contains($0)
+                    }) {
+                        let excluded = [place.name]
+                            + focus.openThreads.map(\.label)
+                        return DirectIntent(
+                            toolName: "nearby_stories",
+                            args: [
+                                "lat": .double(lat),
+                                "lon": .double(lon),
+                                "radius_km": .double(5),
+                                "max_stories": .int(4),
+                                "exclude_names": .array(
+                                    excluded.map { .string($0) }),
+                            ])
+                    }
                     return DirectIntent(toolName: "near_places", args: [
-                        "lat":       .double(lat),
-                        "lon":       .double(lon),
+                        "lat": .double(lat),
+                        "lon": .double(lon),
                         "radius_km": .double(1),
+                        "center_name": .string(place.name),
                     ])
                 }
             }
@@ -1282,6 +1471,37 @@ public enum IntentRouter {
         return DirectIntent(toolName: "article_overview", args: [
             "title": .string(entity.name),
         ])
+    }
+
+    /// Bounded category grammar. Explicit locations, named venues, ordinals,
+    /// "the museum", and encyclopedia questions stay with their normal
+    /// routes. "Good" is a request wrapper, not a rating in the ZIM.
+    static func placeCategoryFollowup(_ text: String) -> String? {
+        var category = text.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?.!"))
+        for pattern in [
+            #"^(?:and|also|so|then)\s+"#,
+            #"^(?:what\s+about|how\s+about|where(?:'s|\s+is|\s+are)|(?:find|show)\s+me)\s+"#,
+            #"^(?:a|an|any|some)\s+"#,
+            #"^(?:good|nice|best)\s+"#,
+        ] {
+            category = category.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        let kinds: [String: String] = [
+            "coffee": "coffee shop", "coffee shop": "coffee shop", "coffee shops": "coffee shop",
+            "cafe": "cafe", "cafes": "cafe", "café": "cafe", "cafés": "cafe",
+            "museum": "museum", "museums": "museum", "park": "park", "parks": "park",
+            "restaurant": "restaurant", "restaurants": "restaurant", "bar": "bar", "bars": "bar",
+            "pub": "pub", "pubs": "pub", "hotel": "hotel", "hotels": "hotel",
+            "library": "library", "libraries": "library", "pharmacy": "pharmacy", "pharmacies": "pharmacy",
+            "hospital": "hospital", "hospitals": "hospital", "bakery": "bakery", "bakeries": "bakery",
+            "supermarket": "supermarket", "supermarkets": "supermarket",
+            "grocery store": "grocery store", "grocery stores": "grocery store",
+            "gas station": "gas station", "gas stations": "gas station",
+            "bookstore": "bookstore", "bookstores": "bookstore",
+        ]
+        return kinds[category]
     }
 
     /// Explicit "we're done with this article" phrases that end a "let's
@@ -1670,6 +1890,9 @@ public enum IntentRouter {
         args: [String: Any],
         fullResult: [String: Any]
     ) -> String {
+        if let error = fullResult["error"] as? String, !error.isEmpty {
+            return error
+        }
         // `locate` resolves a single named place to a pin; the map bubble
         // below is the real answer, so the caption just names what resolved
         // (which may differ from what was asked — e.g. "Stanford Hospital"
@@ -1688,6 +1911,8 @@ public enum IntentRouter {
         }()
         let where_: String = {
             if let p = args["place"] as? String, !p.isEmpty { return p }
+            if let center = args["center_name"] as? String,
+               !center.isEmpty { return center }
             if (args["lat"] as? NSNumber) != nil
                && (args["lon"] as? NSNumber) != nil { return "you" }
             if let o = args["origin"] as? String, !o.isEmpty { return o }
@@ -1740,8 +1965,58 @@ public enum IntentRouter {
             line = nearest + "Results for \(kindPlural) near \(where_)"
         }
         if let r = radiusKm { line += " (within \(formatKm(r)))" }
+        if count == 0 {
+            if let radiusKm, radiusKm > 0, radiusKm < 100 {
+                return line + " in the loaded offline maps. Say “search wider” to look within "
+                    + formatKm(min(100, radiusKm * 2)) + " of the same location."
+            }
+            return line + " in the loaded offline maps. Try a different location or category."
+        }
         line += " — they're on the map below."
         return line
+    }
+
+    /// A grounded, useful answer for the StreetZIM story fast path. A resolved
+    /// Wikipedia lead is the preferred hook; when no article matches, a real
+    /// StreetZIM landmark becomes an honest map-based lead. No model pass.
+    public static func synthesizeNearbyStoriesReply(
+        args: [String: Any],
+        fullResult: [String: Any]
+    ) -> String {
+        let stories = (fullResult["stories"] as? [[String: Any]]) ?? []
+        guard let first = stories.first else {
+            let where_: String
+            if let place = args["place"] as? String, !place.isEmpty {
+                where_ = " around \(place)"
+            } else {
+                where_ = " nearby"
+            }
+            return "I couldn't find a Wikipedia-linked local story\(where_) in the loaded archives. Try a wider area or a different place."
+        }
+
+        let title = (first["wiki_title"] as? String)
+            ?? (first["place_name"] as? String)
+            ?? "This place"
+        let excerpt = ArticleHeuristics.trimToSentence(
+            (first["excerpt"] as? String) ?? "",
+            maxChars: 420)
+        var location = ""
+        if let meters = (first["distance_m"] as? NSNumber)?.doubleValue {
+            location = meters < 1_000
+                ? " (\(Int(meters.rounded())) m away)"
+                : String(format: " (%.1f km away)", meters / 1_000)
+        }
+        var reply = "**\(title)**\(location)"
+        if !excerpt.isEmpty { reply += "\n\n\(excerpt)" }
+        if (fullResult["story_source"] as? String) == "streetzim" {
+            reply += "\n\nNo matching Wikipedia article was available, so "
+                + "these are grounded map leads rather than encyclopedia stories."
+        }
+        if stories.count > 1 {
+            reply += "\n\nI found \(stories.count - 1) more local "
+                + (stories.count == 2 ? "thread" : "threads") + " to explore below."
+        }
+        return reply
     }
 
     private static func formatKm(_ km: Double) -> String {
@@ -2084,6 +2359,11 @@ public enum IntentRouter {
         let title = (fullResult["requested_title"] as? String)
             ?? (args["title"] as? String) ?? "that"
         let suggestions = (fullResult["suggestions"] as? [String]) ?? []
+        if (fullResult["ambiguous"] as? Bool) == true {
+            if suggestions.isEmpty { return "“\(title)” has more than one meaning in the offline Wikipedia. Please specify the place or topic you mean." }
+            return "“\(title)” can refer to more than one place or topic in the offline Wikipedia. Which did you mean: "
+                + suggestions.prefix(6).joined(separator: ", ") + "?"
+        }
         let base = "I couldn't find an article for “\(title)” in the offline Wikipedia."
         if suggestions.isEmpty {
             return base + " Try saying the name a different way."

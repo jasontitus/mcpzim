@@ -15,6 +15,44 @@ import XCTest
 @testable import MCPZimKit
 
 final class ArticleSpeechCleanupTests: XCTestCase {
+    func testNestedMapThumbnailIsNotArticleProse() {
+        let prose = "Napoleon Bonaparte was a French general and statesman."
+        let html = """
+        <div class="mw-parser-output"><div class="thumb tright">
+        <div class="thumbinner"><div><b>Battles of Napoleon</b></div>
+        <div><div>800km 497miles</div><span>19 Saint Helena 17 Waterloo</span></div>
+        <div class="thumbcaption">&lt;maplink&gt;: Couldn't parse JSON: Syntax error
+        Rescale the fullscreen map to see Saint Helena</div></div></div>
+        <p>\(prose)</p><h2>Early life</h2><p>He was born in Corsica.</p></div>
+        """
+        let sections = ArticleSections.parse(html: html)
+        XCTAssertEqual(sections.first?.text, prose)
+        XCTAssertEqual(sections.last?.text, "He was born in Corsica.")
+        let passages = SourceBoundAnswer.passages(toolName: "get_article", result: [
+            "title": "Napoleon", "text": html, "mimetype": "text/html", "zim": "fixture.zim"])
+        XCTAssertEqual(SourceBoundAnswer.answer(question: "Tell me about Napoleon", topic: "Napoleon",
+            passages: passages, maxSentences: 1).text, prose)
+    }
+
+    func testWidgetClassesAreExactTokensAndAcceptHTMLAttributeQuoting() {
+        for attributes in ["class='thumb floatright'", "CLASS = \"thumb\"", "class=thumb"] {
+            XCTAssertEqual(ArticleSections.stripHTML(
+                "<div \(attributes)><div>map controls</div>caption</div><p>Real prose.</p>"), "Real prose.")
+        }
+        XCTAssertEqual(ArticleSections.stripHTML(
+            "<div class='thumbnail-history'><p>The thumb is a digit.</p></div>"), "The thumb is a digit.")
+        XCTAssertEqual(ArticleSections.stripHTML(
+            "<div data-class='thumb'><p>Keep this paragraph.</p></div>"), "Keep this paragraph.")
+    }
+
+    func testWidgetHeadingDoesNotSplitOrEraseRealSections() {
+        let html = "<p>Lead prose.</p><div class='thumb'><h2>Map title</h2><div>Map labels</div></div><h2>History</h2><p>History prose.</p>"
+        XCTAssertEqual(ArticleSections.parse(html: html), [
+            ArticleSection(title: "", level: 0, text: "Lead prose."),
+            ArticleSection(title: "History", level: 2, text: "History prose.")
+        ])
+    }
+
 
     private func stripIPAchars(_ s: String) -> Bool {
         // Pure-phonetic marks that never appear in a respelling.

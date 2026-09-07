@@ -5,6 +5,7 @@
 // middle: live transcript or status, right: End button. All
 // orchestration lives in `VoiceChatController`.
 
+import MCPZimKit
 import SwiftUI
 
 struct VoiceChatView: View {
@@ -15,10 +16,14 @@ struct VoiceChatView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             stateIcon
-            Text(previewText)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(previewText)
                 .font(.footnote)
                 .lineLimit(2)
                 .foregroundStyle(.primary)
+              Text(controller?.activeVoiceName ?? TTSBackendPreference.current.displayName)
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
                 .frame(maxWidth: .infinity, alignment: .leading)
             if canInterrupt {
                 Button("Interrupt") {
@@ -125,6 +130,19 @@ struct VoiceChatView: View {
         }
     }
 
+    /// The cards in the chat are equally available by voice. Surface the
+    /// current vocabulary in the listening bar so hands-free mode does not
+    /// look like a separate, less capable product.
+    private var voiceSuggestionHint: String {
+        guard session.messages.last?.role == .assistant,
+              let suggestions = session.messages.last?.suggestions,
+              let cue = ConversationSuggestionSelection.voiceCue(suggestions)
+        else {
+            return "Try “find me a topic” or “explore around me.”"
+        }
+        return cue
+    }
+
     /// What to show in the big text field next to the icon. During
     /// listening we echo the recognized partial; in other states we
     /// show a short status or the last error.
@@ -137,7 +155,7 @@ struct VoiceChatView: View {
             let level = controller?.inputLevel ?? 0
             return level >= (controller?.silenceThreshold ?? 0.02)
                 ? "Hearing you…"
-                : "Listening — start speaking."
+                : voiceSuggestionHint
         }
         if isThinking { return live.isEmpty ? "…" : live }
         if case .speaking = state { return "Playing reply…" }

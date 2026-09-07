@@ -23,9 +23,41 @@ import MCPZimKit
 #if canImport(FoundationModels)
 import FoundationModels
 
+/// Native tools report the actual adapter result to the host before the
+/// model sees it. The model's own final text is never used as evidence.
+@available(macOS 26.0, iOS 19.0, *)
+public struct NativeGroundedDispatcher: Sendable {
+    let adapter: MCPToolAdapter
+    let begin: @MainActor @Sendable () -> UUID?
+    let record: @MainActor @Sendable (UUID, ToolCallTrace) -> Void
+
+    func call(_ name: String, args: [String: AnyJSONValue]) async throws -> String {
+        let messageID = await begin()
+        try Task.checkCancellation()
+        let arguments = args.mapValues(\.anyValue)
+        let result = try await adapter.dispatch(tool: name, args: arguments)
+        try Task.checkCancellation()
+        let raw = String(data: try JSONSerialization.data(withJSONObject: result,
+            options: [.sortedKeys]), encoding: .utf8) ?? "{}"
+        let argumentText = String(data: try JSONSerialization.data(withJSONObject: arguments,
+            options: [.sortedKeys]), encoding: .utf8) ?? "{}"
+        let modelText = await MainActor.run {
+            let trimmed = ChatSession.trimForModel(toolName: name, result: result, articleCapKB: 6)
+            return (try? JSONSerialization.data(withJSONObject: trimmed, options: [.sortedKeys]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        if let messageID {
+            await record(messageID, ToolCallTrace(name: name, arguments: argumentText,
+                result: modelText, rawResult: raw, error: nil))
+        }
+        return modelText
+    }
+}
+
 @available(macOS 26.0, iOS 19.0, *)
 public struct NearNamedPlaceNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
 
     public var name: String { "near_named_place" }
 
@@ -40,7 +72,9 @@ public struct NearNamedPlaceNativeTool: Tool {
             + "bars\" → kinds=[\"bar\"])."
     }
 
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -58,6 +92,10 @@ public struct NearNamedPlaceNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["place": .string(arguments.place), "radius_km": .double(arguments.radiusKm),
+                "limit": .int(arguments.limit), "kinds": .array((arguments.kinds ?? []).map { .string($0) })])
+        }
         // Clamp to the SAME bounds the text path applies in
         // `MCPToolAdapter.dispatch` (radius 0.05…100 km, limit 1…50 —
         // MCPToolAdapter.swift:699-700). The 2026-08-13 review found the
@@ -114,6 +152,7 @@ public struct NearNamedPlaceNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct RouteFromPlacesNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "route_from_places" }
     public var description: String {
         "Plan a driving route between two free-text place names. "
@@ -121,7 +160,9 @@ public struct RouteFromPlacesNativeTool: Tool {
             + "list. Use for ANY \"how do I get from X to Y\" question "
             + "instead of asking for lat/lons."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -134,6 +175,10 @@ public struct RouteFromPlacesNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["origin": .string(arguments.origin), "destination": .string(arguments.destination),
+                "zim": .string(arguments.zim ?? "")])
+        }
         let result = try await service.routeFromPlaces(
             origin: arguments.origin,
             destination: arguments.destination,
@@ -163,6 +208,7 @@ public struct RouteFromPlacesNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct SearchNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "search" }
     public var description: String {
         "Keyword full-text search across every loaded ZIM (encyclopedic "
@@ -172,7 +218,9 @@ public struct SearchNativeTool: Tool {
             + "`near_named_place` instead. Returns paths + titles; read "
             + "bodies with `get_article`."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -185,6 +233,10 @@ public struct SearchNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["query": .string(arguments.query), "limit": .int(arguments.limit),
+                "kind": .string(arguments.kind ?? "")])
+        }
         let kind = arguments.kind.flatMap { ZimKind(rawValue: $0) }
         // Same 1…50 clamp the text path applies before any arithmetic
         // (MCPToolAdapter.swift:511) — `ZimService.search` computes a
@@ -205,13 +257,16 @@ public struct SearchNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct GetArticleNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "get_article" }
     public var description: String {
         "Fetch a single ZIM entry by path (from a prior `search` hit) "
             + "and return its plain-text body. Feed the `path` field "
             + "verbatim — don't guess or reformat it."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -222,6 +277,9 @@ public struct GetArticleNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["path": .string(arguments.path), "zim": .string(arguments.zim ?? "")])
+        }
         let art = try await service.article(path: arguments.path, zim: arguments.zim)
         // Cap the body so a full Wikipedia article doesn't blow the
         // model's context or TTFT on the next turn. ~6 K chars is
@@ -237,11 +295,14 @@ public struct GetArticleNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct GetMainPageNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "get_main_page" }
     public var description: String {
         "Fetch the main/home page of one or every loaded ZIM."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -250,6 +311,9 @@ public struct GetMainPageNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["zim": .string(arguments.zim ?? "")])
+        }
         let pages = try await service.mainPage(zim: arguments.zim)
         if pages.isEmpty { return "no main pages available" }
         return pages.map { p -> String in
@@ -264,18 +328,24 @@ public struct GetMainPageNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct ListLibrariesNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "list_libraries" }
     public var description: String {
         "Inventory the ZIM archives available, with kinds and "
             + "capabilities. Call this first when you're unsure which "
             + "ZIM to consult."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments { /* no parameters */ }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: [:])
+        }
         let inv = try await service.inventory()
         var lines: [String] = [
             "capabilities: \(inv.capabilities.joined(separator: ", "))",
@@ -291,6 +361,7 @@ public struct ListLibrariesNativeTool: Tool {
 @available(macOS 26.0, iOS 19.0, *)
 public struct ZimInfoNativeTool: Tool {
     public let service: any ZimService
+    public let groundedDispatcher: NativeGroundedDispatcher?
     public var name: String { "zim_info" }
     public var description: String {
         "Return the `streetzim-meta.json` descriptor for loaded "
@@ -298,7 +369,9 @@ public struct ZimInfoNativeTool: Tool {
             + "feature counts. Use this to check which region a zim "
             + "covers before calling routing or near_named_place."
     }
-    public init(service: any ZimService) { self.service = service }
+    public init(service: any ZimService, groundedDispatcher: NativeGroundedDispatcher? = nil) {
+        self.service = service; self.groundedDispatcher = groundedDispatcher
+    }
 
     @Generable
     public struct Arguments {
@@ -307,6 +380,9 @@ public struct ZimInfoNativeTool: Tool {
     }
 
     public func call(arguments: Arguments) async throws -> String {
+        if let groundedDispatcher {
+            return try await groundedDispatcher.call(name, args: ["zim": .string(arguments.zim ?? "")])
+        }
         let rows = try await service.zimInfo(zim: arguments.zim)
         if rows.isEmpty { return "no streetzim-meta available" }
         // Serialise compactly — the dictionaries are small.

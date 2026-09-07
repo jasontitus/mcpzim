@@ -37,6 +37,8 @@ public enum ConversationThreads {
         case "locate", "near_named_place", "near_places",
              "nearby_stories", "nearby_stories_at_place":
             return placesThreads(result)
+        case "discover_topics":
+            return discoveryTopicThreads(result)
         case "article_overview", "article_factoid", "get_article_section",
              "get_article_by_title", "narrate_article":
             return articleThreads(result)
@@ -56,25 +58,56 @@ public enum ConversationThreads {
             ?? []
         var out: [DiscoveryThread] = []
         for row in rows {
-            let label = firstString(row, "wiki_title", "label", "name", "title")
+            let label = firstString(
+                row, "wiki_title", "place_name", "label", "name", "title")
             guard let label, !label.isEmpty else { continue }
             let lat = doubleField(row, "lat")
             let lon = doubleField(row, "lon")
-            let path = row["wiki_path"] as? String
-            var note: String?
+            let path = (row["wiki_path"] as? String)
+                ?? (row["path"] as? String)
+            var notes: [String] = []
             if let d = doubleField(row, "distance_m") {
-                note = distanceNote(d)
+                notes.append(distanceNote(d))
             }
+            if let category = firstString(
+                row, "place_subtype", "place_kind"),
+               !category.isEmpty
+            {
+                notes.append(category.replacingOccurrences(of: "_", with: " "))
+            }
+            let note = notes.isEmpty ? nil : notes.joined(separator: " · ")
             out.append(DiscoveryThread(
                 label: label,
                 kind: .place,
                 source: .nearbyPlace,
                 zimPath: path,
                 lat: lat, lon: lon,
-                note: note
+                note: note,
+                prompt: path == nil ? "Show me \(label) on the map" : nil
             ))
         }
         return out
+    }
+
+    /// Main-page topic samples become rich article choices. The adapter has
+    /// already opened each candidate and replaced vague anchor text such as
+    /// "read more" with the canonical article title.
+    private static func discoveryTopicThreads(
+        _ result: [String: Any]
+    ) -> [DiscoveryThread] {
+        let rows = (result["topics"] as? [[String: Any]]) ?? []
+        return rows.compactMap { row in
+            guard let title = row["title"] as? String, !title.isEmpty
+            else { return nil }
+            return DiscoveryThread(
+                label: title,
+                kind: .topic,
+                source: .wikilink,
+                zimPath: row["path"] as? String,
+                zim: result["zim"] as? String,
+                note: row["preview"] as? String,
+                prompt: "Tell me about \(title)")
+        }
     }
 
     /// "Where am I?" surfaces the wiki-backed places AROUND the user (the
@@ -266,7 +299,9 @@ public enum ConversationThreads {
                     kind: .topic,
                     source: .section,
                     note: raw,
-                    prompt: phrased)))
+                    prompt: phrased,
+                    articleTitle: topic,
+                    sectionTitle: raw)))
         }
 
         return candidates.sorted {
@@ -300,10 +335,17 @@ public enum ConversationThreads {
         if h.contains("career") || h.contains("rise to power") {
             return "How did \(possessive) career develop?"
         }
-        if h.contains("foreign policy") || h.contains("nato")
-            || (isBiography && h.contains("the west"))
-        {
+        if h.contains("nato") && (h.contains("west") || h.contains("europe")) {
             return "How has \(topic) dealt with the West and NATO?"
+        }
+        if h.contains("nato") {
+            return "What is \(possessive) relationship with NATO?"
+        }
+        if h.contains("foreign policy") {
+            return "What about \(possessive) foreign policy?"
+        }
+        if isBiography && h.contains("the west") {
+            return "How has \(topic) dealt with the West?"
         }
         if h.contains("public image") || h.contains("approval")
             || h.contains("popularity") || h.contains("poll")
@@ -483,7 +525,12 @@ public enum ConversationThreads {
             list = parts.dropLast().joined(separator: ", ")
                 + ", or \(parts.last!)"
         }
-        return "Want to hear about \(list)?"
+        let mapOnly = picked.allSatisfy {
+            $0.source == .nearbyPlace && $0.zimPath == nil
+        }
+        return mapOnly
+            ? "Want to open \(list) on the map?"
+            : "Want to hear about \(list)?"
     }
 
     // MARK: - Helpers
@@ -604,6 +651,124 @@ public enum WikiLinks {
     public static func parseAll(html: String, max: Int = 8) -> [Link] {
         parseLinks(source: html, max: max)
     }
+
+    /// Candidate article links for open-ended "show me something to learn"
+    /// requests. The Kiwix Wikipedia landing page groups links under Arts,
+    /// Geography, History, Sciences, Society, Sports, and Technology. Reading
+    /// raw document order returned six Arts links in a row; interleave those
+    /// real groups so the first screen offers genuinely different directions.
+    /// Other ZIM main pages fall back to prose-order sampling.
+    public static func discoveryCandidates(
+        html: String,
+        max: Int = 48
+    ) -> [Link] {
+        guard max > 0 else { return [] }
+        let boundedMax = min(max, 96)
+
+        func isEligible(_ link: Link) -> Bool {
+            let label = link.title.lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let path = link.path.lowercased()
+            return !discoveryNavigationLabels.contains(label)
+                && !discoveryNavigationPrefixes.contains(where: {
+                    label.hasPrefix($0)
+                })
+                && !discoveryNavigationPaths.contains(where: {
+                    path.hasSuffix($0)
+                })
+        }
+
+        let grouped = discoveryLinkGroups(html: html)
+        let source: [Link]
+        if grouped.isEmpty {
+            let prose = parse(html: html, max: boundedMax * 4)
+            source = prose.isEmpty
+                ? parseAll(html: html, max: boundedMax * 4)
+                : prose
+        } else {
+            // Rotate each group by its display position. Round zero yields,
+            // for example, Architecture / Antarctica / Ancient Near East /
+            // Computer science instead of the first item from seven generic
+            // category lists. Later rounds cover every skipped item.
+            var interleaved: [Link] = []
+            let rounds = grouped.map(\.count).max() ?? 0
+            for round in 0 ..< rounds {
+                for (groupIndex, links) in grouped.enumerated()
+                where !links.isEmpty {
+                    interleaved.append(
+                        links[(round + groupIndex) % links.count])
+                }
+            }
+            source = interleaved
+        }
+
+        var seen = Set<String>()
+        var out: [Link] = []
+        for link in source where isEligible(link) {
+            let label = link.title.lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let path = link.path.lowercased()
+            let key = path.isEmpty ? label : path
+            guard seen.insert(key).inserted else { continue }
+            out.append(link)
+            if out.count >= boundedMax { break }
+        }
+        return out
+    }
+
+    private static func discoveryLinkGroups(html: String) -> [[Link]] {
+        let pattern = #"<h2\b[^>]*>(.*?)</h2>"#
+        guard let re = RegexCache.shared.compiled(
+            pattern,
+            options: [.caseInsensitive, .dotMatchesLineSeparators])
+        else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = re.matches(in: html, range: range)
+        guard !matches.isEmpty else { return [] }
+        let accepted: Set<String> = [
+            "arts", "geography", "history", "sciences",
+            "society", "sports", "technology",
+        ]
+        var groups: [[Link]] = []
+        for (index, heading) in matches.enumerated() {
+            guard heading.numberOfRanges >= 2,
+                  let titleRange = Range(heading.range(at: 1), in: html),
+                  accepted.contains(
+                    decodeAndStrip(String(html[titleRange])).lowercased())
+            else { continue }
+            let start = heading.range.location + heading.range.length
+            let end = index + 1 < matches.count
+                ? matches[index + 1].range.location
+                : range.location + range.length
+            guard end > start,
+                  let bodyRange = Range(
+                    NSRange(location: start, length: end - start), in: html)
+            else { continue }
+            let links = parseLinks(
+                source: String(html[bodyRange]), max: 24)
+            if !links.isEmpty { groups.append(links) }
+        }
+        return groups
+    }
+
+    private static let discoveryNavigationLabels: Set<String> = [
+        "about wikipedia", "biography", "community portal", "contact us",
+        "contents", "current events", "donate", "encyclopedia",
+        "english wikipedia", "featured content", "help", "learn more",
+        "main page", "more", "more information", "online encyclopedia",
+        "random article", "read more", "recent changes",
+        "simple english wikipedia",
+    ]
+
+    private static let discoveryNavigationPrefixes = [
+        "archive", "edit", "full article", "list of", "portal",
+        "read the", "view", "wikipedia",
+    ]
+
+    private static let discoveryNavigationPaths = [
+        "main_page", "contents", "current_events", "random_article",
+        "featured_content", "about_wikipedia",
+    ]
 
     private static func parseLinks(source: String, max: Int) -> [Link] {
         let pattern = #"<a\b[^>]*?href="([^"]*)"[^>]*>(.*?)</a>"#

@@ -107,3 +107,52 @@ public extension DeviceProfile {
         label: "macOS"
     )
 }
+
+/// Plain, non-actor model-selection rules — deliberately NOT on the
+/// `@MainActor @Observable` `ChatSession` (a `nonisolated` static on an
+/// `@Observable` class is a Swift 5.9 sharp edge that can trip a runtime
+/// isolation assertion on launch). Kept in one place so the default pick,
+/// the load guard, and the picker all agree.
+enum ModelCatalog {
+    /// The llama.cpp GGUF models known to run well on-device. The model
+    /// picker puts these first and labels the rest "Experimental" so a user
+    /// doesn't pick a model that doesn't behave (e.g. the MLX snapshots that
+    /// are download-only or blocked on iOS).
+    static let knownGoodModelIDs: Set<String> = [
+        "bonsai-27b-q1-gguf",
+        "lfm2.5-8b-a1b-q3km-gguf-ft",
+        "gemma3-4b-it-q4km-gguf-ft",
+    ]
+
+    /// The model to default to on a fresh install. The user-verified,
+    /// on-device proven model is LFM2.5-8B, so it is the default wherever
+    /// the budget holds it; the smaller Gemma 3 4B FT is only the fallback
+    /// for a tight (≈4 GB) phone where LFM2.5 can't fit. A bigger model is
+    /// always selectable from the picker.
+    static func recommendedModelID() -> String {
+        if modelFitsDevice(3700) {  // LFM2.5-8B
+            return "lfm2.5-8b-a1b-q3km-gguf-ft"
+        }
+        return "gemma3-4b-it-q4km-gguf-ft"
+    }
+
+    /// Whether a model's advertised resident footprint plausibly fits this
+    /// device's process budget. Used to pick a safe default and to flag the
+    /// picker entry as a risk.
+    ///
+    /// iOS caps a process at ~6 GB (6144 MB with `increased-memory-limit`)
+    /// regardless of physical RAM; the advertised peak also underestimates
+    /// the load-time spike, so we reserve ~2.5 GB for app/UI/TTS/Metal and a
+    /// generation bump and stay under 5.5 GB. macOS swaps, so everything
+    /// fits. Bonsai (5.5 GB advertised, ~5.2 GB real) is allowed on 8 GB+
+    /// devices where it's known to run; it stays flagged on snug phones.
+    static func modelFitsDevice(_ approximateMemoryMB: Int) -> Bool {
+        #if os(macOS)
+        return true
+        #else
+        let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_000_000_000
+        let budgetGB = min(gb - 2.5, 5.5)
+        return Double(approximateMemoryMB) / 1000.0 <= budgetGB
+        #endif
+    }
+}

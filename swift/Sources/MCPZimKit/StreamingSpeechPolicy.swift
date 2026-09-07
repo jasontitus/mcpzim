@@ -28,11 +28,11 @@ public struct StreamingSpeechPrefix: Equatable, Sendable {
 public enum StreamingSpeechPolicy {
     /// Return the earliest stable prefix that is useful to synthesize.
     ///
-    /// While generation is active, complete sentences always win. With
+    /// Complete sentences inside the backend window are preferred. With
     /// `allowEarlyClause`, a natural clause boundary after `minimumClause`
     /// characters can start speech sooner; prose without punctuation is
     /// softly wrapped at a word boundary once it reaches `maximumClause`.
-    /// When generation is complete, the entire tail is returned.
+    /// Completed replies use the same cap when clause splitting is enabled.
     public static func takeSpeakablePrefix(
         _ text: String,
         generating: Bool,
@@ -53,7 +53,10 @@ public enum StreamingSpeechPolicy {
         // the two newlines but keep them out of the spoken prefix so the next
         // call begins cleanly at the next paragraph.
         if chars.count >= 2 {
-            for i in 0..<(chars.count - 1)
+            // A paragraph boundary must obey the backend cap too. Otherwise
+            // a long paragraph bypasses all later sentence/clause bounds.
+            let paragraphLimit = allowEarlyClause ? min(chars.count - 1, maximum + 1) : chars.count - 1
+            for i in 0..<paragraphLimit
             where chars[i] == "\n" && chars[i + 1] == "\n" {
                 let prefix = String(chars[0..<i])
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -73,7 +76,8 @@ public enum StreamingSpeechPolicy {
         // A completed short tail is already stable and should be spoken as-is.
         // Longer tails still need bounded draining for backends with small text
         // windows; otherwise their private chunkers create audible seams.
-        if !generating, chars.count <= maximum {
+        if !generating,
+           text.trimmingCharacters(in: .whitespacesAndNewlines).count <= maximum {
             return StreamingSpeechPrefix(
                 text: text, consumedCharacters: text.count, boundary: .final)
         }
@@ -108,7 +112,7 @@ public enum StreamingSpeechPolicy {
             for i in minimum..<upperBound {
                 let c = chars[i]
                 let isClausePunctuation = c == "," || c == ";" || c == ":"
-                    || c == "—" || c == "–" || c == "\n"
+                    || c == "—" || c == "–" || c == ")" || c == "\n"
                 guard isClausePunctuation else { continue }
                 let followedByWhitespace = c == "\n"
                     || (i + 1 < chars.count && chars[i + 1].isWhitespace)
@@ -126,6 +130,27 @@ public enum StreamingSpeechPolicy {
         // continuation punctuation for more natural prosody without changing
         // how many source characters were consumed.
         guard chars.count >= maximum else { return nil }
+        // Once a forced wrap is necessary, prefer a shorter natural clause
+        // over splitting a phrase at the far edge of the window. Do not cut
+        // inside parenthetical dates; the closing parenthesis is a useful
+        // boundary for a biographical lead. Keep exact source consumption.
+        var parentheses = 0
+        var earlierClause: Int?
+        for i in 0..<min(minimum, chars.count) {
+            let c = chars[i]
+            if c == "(" { parentheses += 1 }
+            if c == ")" { parentheses = max(0, parentheses - 1) }
+            guard i >= 24, parentheses == 0,
+                  ",;:—–)".contains(c),
+                  i + 1 < chars.count, chars[i + 1].isWhitespace else { continue }
+            earlierClause = i + 1
+        }
+        if let consumed = earlierClause {
+            return StreamingSpeechPrefix(
+                text: String(chars[0..<consumed]),
+                consumedCharacters: consumed,
+                boundary: .clause)
+        }
         let cap = min(maximum, chars.count)
         var split: Int?
         if cap > minimum {

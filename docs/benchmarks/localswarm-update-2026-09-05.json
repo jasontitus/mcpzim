@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-05",
+  "upstream_revision": "8febd512756f7a9b43972eb93419ce4222309269",
+  "upstream_engine_changes_since_previous_pin": false,
+  "local_patches_preserved": true,
+  "engine_tests": {
+    "passed": 58,
+    "failed": 0
+  },
+  "app_model_sharing_tests": {
+    "passed": 9,
+    "failed": 0
+  },
+  "device": "A19 Pro iPhone",
+  "phone_debug_library_uuid": "25F5DE56-4232-3ED8-AB85-483D07995D74",
+  "phone_debug_library_sha256": "87e198909a61037d7bd9493090670a0366e45ab163fb12e9b18a70dedd06e565",
+  "phone_checks": {
+    "fixture_cleanup": true,
+    "mixed_layout": true,
+    "startup_pause": true,
+    "transfer_quic": true,
+    "transfer_tcp": true,
+    "wrong_pin_rejected": true
+  },
+  "fixture_files": 3,
+  "fixture_bytes": 3235861,
+  "same_device_transfer_seconds": {
+    "quic": 0.316,
+    "tcp": 0.094
+  },
+  "two_device_radio_benchmark": false,
+  "audio_used": false,
+  "final_phone_health_watch": {
+    "seconds": 45,
+    "passed": true,
+    "ordinary_launch": true
+  },
+  "signed_builds": {
+    "iphone_debug": true,
+    "mac_release_test_host": true
+  },
+  "signature_gates": {
+    "iphone": true,
+    "mac": true
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "date": "2026-09-05",
+  "device": "A19 Pro iPhone",
+  "bundle": "com.tiltastech.zimfo",
+  "binary_uuid": "D557BB03-02C1-3FBD-9E7D-41DD0BFCE3E5",
+  "unit_tests": {
+    "passed": 580,
+    "failed": 0
+  },
+  "adversarial_phone_probes": {
+    "download_cancel": true,
+    "source_cancel": true,
+    "source_draft": true,
+    "source_tool": true,
+    "web_action_gate": true,
+    "web_action_positive": true,
+    "web_offline": true
+  },
+  "real_zim_checks": {
+    "parent_names_from_source": true,
+    "password_missing_evidence": true,
+    "title_repetition_removed": true,
+    "article_to_cafes_transition": true,
+    "around_here_uses_map": true
+  },
+  "model_for_real_questions": "Bonsai 27B Q1 (article answers use host extraction)",
+  "native_foundation_models_runtime_tested": false,
+  "audio_used": false,
+  "notes": [
+    "Mock provider probes require generation; tool case requires actual successful dispatch.",
+    "Isolated-world positive control is an app-invoked handler test, not a physical click.",
+    "No GPS coordinates or full private device logs included."
+  ],
+  "review_findings_repaired": 19,
+  "final_health_watch": {
+    "seconds": 45,
+    "passed": true,
+    "ordinary_launch": true
+  },
+  "signed_builds": {
+    "iphone_debug": "passed and installed",
+    "mac_release": "passed; signature gate passed; not launched"
+  }
+}

@@ -105,6 +105,10 @@ targets:
       path: MCPZimChat/Info.plist
       properties:
         UILaunchScreen: {}
+        # Exposes the app's Documents folder (and the debug-logs/
+        # crash breadcrumbs inside it) in the Files app, so a crashed
+        # session's log is retrievable by the tester without a Mac.
+        UIFileSharingEnabled: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         CFBundleDisplayName: Zimfo
@@ -431,7 +435,7 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           if [ "$CONFIGURATION" = "Release" ]; then
-            "${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run" -gsp "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info-Mac.plist"
+            "${MCPZIM_PACKAGE_CACHE_DIR:-${BUILD_DIR%/Build/*}/SourcePackages}/checkouts/firebase-ios-sdk/Crashlytics/run" -gsp "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GoogleService-Info-Mac.plist"
           fi
         inputFiles:
           - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
