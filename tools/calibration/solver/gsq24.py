@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 from checkpoints import capture_rng_state, restore_rng_state, LocalCheckpointStore
 from .gsq import BlockTrainer
+from .optim import quantizer_optimizer
 from .gsq_residency import GSQResidency
 from .qwen import load_original, run_block
 from .run import (HELD_OUT_STRIDE, atomic_json, corpus_inputs, digest, project_scale_format,
@@ -161,7 +162,7 @@ def import_trainer(model, block, payloads, source_config, upstream):
     trainer = BlockTrainer(model, block, upstream)
     if trainer.names != names_for(model, block):
         raise ValueError('Quantizer projection ordering changed')
-    optimizer = torch.optim.Adam(trainer.parameters(), lr=source_config.get('gsq_lr', .001))
+    optimizer = quantizer_optimizer(trainer.named_parameters())
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
         max(1, source_config.get('gsq_epochs', 1) * source_config['_records']))
     if block == 2:
@@ -210,7 +211,7 @@ def update(model, trainer, optimizer, scheduler, pair, device, step, config, exp
     # Same schedule as first two corpus updates; repeated longest input is a
     # deliberate stress/replay test, not an extra production training epoch.
     temperature = 1. - .9 * (step - 1) / max(1, config['_records'] * config.get('gsq_epochs', 1) - 1)
-    loss = trainer(pair['student'].to(device), temperature=temperature)
+    loss = trainer(pair['student'].to(device), pair['teacher'].to(device), temperature=temperature)
     loss.backward()
     if not torch.isfinite(loss) or any(p.grad is None or not torch.isfinite(p.grad).all() for p in trainer.parameters()):
         raise FloatingPointError('Missing or nonfinite GSQ gradient')

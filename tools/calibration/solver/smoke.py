@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from .performance import measure
 from .gsq import BlockTrainer
+from .optim import quantizer_optimizer
 from .qwen import run_block
 from .rco import RCOTrainer,gather_candidate
 from .candidates import Q1Candidate
@@ -77,9 +78,13 @@ def smoke_run(model,records,config,output,checkpointer,allow_cpu_test=False):
                                 block_kwargs(model,student,previous),strict=False)
         if block>0:del replacements
         trainer=BlockTrainer(model,block,config.get('upstream','/opt/upstream'))
-        optimizer=torch.optim.Adam(trainer.parameters(),lr=config.get('gsq_lr',.001))
+        optimizer=quantizer_optimizer(trainer.named_parameters())
         with measure(output, 'smoke_gsq', 'update', device, block=block, kind=kind, tokens=ids.shape[1]):
-            loss=trainer(student)
+            # The smoke model has no separate clean stream: it propagates through
+            # already-replaced (quantized) layers, so the drifted input stands in as
+            # its own target. This exercises the objective's mechanics on a tiny
+            # model; it does not exercise the drift the real chain measures.
+            loss=trainer(student, student)
             loss.backward()
             finite=bool(torch.isfinite(loss)) and all(p.grad is not None and bool(torch.isfinite(p.grad).all()) for p in trainer.parameters())
             gradient=sum(p.grad.float().square().sum().item() for p in trainer.parameters())**.5 if finite else float('nan')

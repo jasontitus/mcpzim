@@ -23,11 +23,8 @@
   "candidate_archives": {
     "initial_candidates": "runs/native-mps/initialize/initial-candidates.tar"
   },
-  "warmstart_states": {
-    "0": "runs/native-mps/smoke/warmstart-block-0.pt",
-    "3": "runs/native-mps/smoke/warmstart-block-3.pt"
-  },
-  "gsq_epochs": 1,
+  "warmstart_states": {},
+  "gsq_epochs": 10,
   "gsq_lr": 0.001,
   "gsq_memory_mode": "block_cpu_offload",
   "attempt_id": "20260920-090500-manual",
@@ -35,5 +32,9 @@
   "resume_checkpoint": {
     "backend": "local",
     "path": "runs/native-mps/checkpoints/gsq/20260920-075700-ba75"
-  }
+  },
+  "gsq_max_drift_growth": 1.5,
+  "gsq_max_drift_ratio": 2.5,
+  "gsq_min_drift_cosine": 0.85,
+  "warmstart_sha256": {}
 }

@@ -22,7 +22,11 @@ def test_tiny_real_hybrid_blocks_match_model_and_train():
         trainer=BlockTrainer(model,index)
         optimizer=torch.optim.Adam(trainer.parameters(),lr=.001)
         before=[p.detach().clone() for p in trainer.parameters()]
-        loss=trainer(first)
+        # Two streams, as the contract takes them: the input is the composed stream
+        # this block sees (built by the loop below out of the block weights, which
+        # are never replaced here), and the target stream is the same value - this
+        # tiny test has no separate clean stream, exactly as `smoke.py` drives it.
+        loss=trainer(first,first)
         loss.backward()
         assert torch.isfinite(loss) and loss>0
         assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in trainer.parameters())

@@ -63,38 +63,67 @@ def test_actual_hybrid_gsq_interrupt_resume_and_rco(tmp_path):
 
 
 def test_block_objective_target_is_the_unquantized_block(tmp_path):
-    # The fix that mattered most tonight: the target must be the *original* block applied
-    # to the same input the student receives, not the output of a separate teacher stream.
-    # Upstream's own form is `nn.MSELoss()(out_q, out_fp)` with both forwards on the same
-    # batch (cuda_runtime/.context/sources/gsq/src/models/base.py:444-453). Two things are
-    # pinned: the port's loss equals that expression computed independently here, and the
-    # target does not move when the quantized weights do - the leak counterfactual an
-    # adversarial review used to establish the same claim (it measured exactly 0.0).
+    # The corrected pairing, which the run this port discarded did not have. The input is
+    # the student stream - the drifted composed stream the block sees at inference - and
+    # the target is the *unquantized* block applied to the teacher stream, the clean
+    # original input to this block. The superseded form took the target from the same
+    # drifted input the student received, so the block was rewarded for reproducing the
+    # drift faithfully: the composed stream walked from cosine 0.924 to 0.700 across 25
+    # blocks while every block's loss stayed small. Upstream reaches the clean target
+    # another way - it precomputes activations through the unquantized cascade once and
+    # never updates them (cuda_runtime/.context/sources/gsq/src/models/base.py:321-353,
+    # src/trainer.py) - and this drifted-in/clean-target form is the strictly stronger
+    # one, because it also shows the block the drift it is being corrected for.
+    # Three things are pinned: the port's loss equals this pairing computed
+    # independently here, a different teacher moves the published loss, and moving the
+    # student's own quantized weights leaves the target exactly where it was.
     from solver.gsq import BlockTrainer
     from solver.qwen import block_kwargs
     model=new_model()
     trainer=BlockTrainer(model,0)
-    student=torch.randn(1,4,128)
     block=model.model.layers[0]
+    student=torch.randn(1,4,128)
+    teacher=torch.randn(1,4,128)              # a distinct stream, or the swap is invisible
+    other=torch.randn(1,4,128)
 
-    torch.manual_seed(7)
-    loss=trainer.forward(student)
+    def loss_and_target(student_stream,teacher_stream):
+        """The port's loss, then the same computation spelled out independently."""
+        torch.manual_seed(7)
+        loss=trainer.forward(student_stream,teacher_stream)
+        torch.manual_seed(7)                  # same noise draw, same order, same args
+        with torch.no_grad():
+            target=block(teacher_stream,**block_kwargs(model,teacher_stream,0))
+        replacements={name+'.weight':quantizer(1.,1.).to(student_stream.dtype)
+                      for name,quantizer in zip(trainer.names,trainer.quantizers)}
+        output=torch.func.functional_call(block,replacements,(student_stream,),
+                                          block_kwargs(model,student_stream,0),strict=False)
+        return loss,(output.float()-target.float()).square().mean(),target,output
 
-    torch.manual_seed(7)                       # same noise draw, same order, same args
-    replacements={name+'.weight':quantizer(1.,1.).to(student.dtype)
-                  for name,quantizer in zip(trainer.names,trainer.quantizers)}
-    with torch.no_grad():
-        target=block(student,**block_kwargs(model,student,0))
-        output=torch.func.functional_call(block,replacements,(student,),
-                                          block_kwargs(model,student,0),strict=False)
-    expected=(output.float()-target.float()).square().mean()
+    loss,expected,target,output=loss_and_target(student,teacher)
     torch.testing.assert_close(loss,expected,rtol=0,atol=0)
-    # The target is independent of the replacements: recomputing it with the quantized
-    # weights installed changes the *output* side only.
     with torch.no_grad():
-        leaked=torch.func.functional_call(block,replacements,(student,),
-                                          block_kwargs(model,student,0),strict=False)
-        assert not torch.equal(leaked,target)
+        drifted=block(student,**block_kwargs(model,student,0))
+    assert not torch.equal(target,drifted), 'the two streams must differ for this to bite'
+
+    # The teacher stream is where the target comes from: another teacher is another
+    # target and another published loss, at the same seed and the same student.
+    other_loss,other_expected,other_target,other_output=loss_and_target(student,other)
+    assert not torch.equal(other_target,target)
+    torch.testing.assert_close(other_loss,other_expected,rtol=0,atol=0)
+    assert torch.equal(other_output,output)   # only the target moved
+    assert not torch.equal(other_loss,loss)
+
+    # And the target does not move when the student's own quantized weights do: with the
+    # quantizers shifted, the *same* target still satisfies the identity exactly and only
+    # the output side changed. A target taken through the quantized weights, or from the
+    # student's own stream - the two ways to leak the objective - breaks this equality.
+    with torch.no_grad():
+        for quantizer in trainer.quantizers:
+            quantizer.sign_logits.add_(0.5)
+    moved_loss,moved_expected,moved_target,moved_output=loss_and_target(student,teacher)
+    assert torch.equal(moved_target,target)
+    assert not torch.equal(moved_output,output)
+    torch.testing.assert_close(moved_loss,moved_expected,rtol=0,atol=0)
 
 
 def test_rco_step_averages_gradients_over_gumbel_samples(tmp_path):

@@ -87,22 +87,31 @@ class BlockTrainer(torch.nn.Module):
             raise ValueError('No eligible block projections')
         self.quantizers=torch.nn.ModuleList(quantizers)
 
-    def forward(self, student, temperature=1., scale=1.):
-        """Reconstruction loss with the same input on both sides, as upstream.
+    def forward(self, student, teacher, temperature=1., scale=1.):
+        """Reconstruction loss against the *clean* stream's output.
 
-        The target is the *unquantized* block applied to the stream this block is
-        actually given - ``student``, the composed quantized prefix. The previous
-        version took its target from the unquantized stream while feeding the
-        quantized one to the student, so the block was trained on inputs it never
-        sees at inference and the loss could fall while the composed model
-        degraded.
+        The input is the composed quantized prefix - ``student``, what this block
+        actually sees at inference - and the target is the unquantized block
+        applied to ``teacher``, the *original* stream's input to this block. The
+        pair is therefore "drifted input, clean output", which is the only form
+        whose gradient opposes composition drift: a target computed from the same
+        drifted input as the student's costs the calibration outright, because the
+        block is then rewarded for reproducing the drift faithfully and the loss
+        stays small however far the composed model walks from the original.
 
-        ``scale`` is the logit scale upstream anneals 100 -> 500; it was pinned at
-        1.0 here because the callers never passed it.
+        Upstream (src/models/base.py:321-353, src/trainer.py) precomputes
+        activations through the unquantized cascade once and never updates them, so
+        its blocks train on the clean stream with a clean target and never observe
+        the drift they cause at inference. Feeding the drifted stream in while
+        keeping the clean target is the strictly stronger form of the same
+        objective, and the drift this port measures is why it is needed.
+
+        ``scale`` and ``temperature`` are upstream's annealed schedules; the
+        callers pass them per optimizer step (see the update loop in run.py).
         """
         block=self.model.model.layers[self.block_index]
         with torch.no_grad():
-            target=block(student,**block_kwargs(self.model,student,self.block_index))
+            target=block(teacher,**block_kwargs(self.model,teacher,self.block_index))
         replacements={name+'.weight':quantizer(temperature,scale).to(student.dtype)
                       for name,quantizer in zip(self.names,self.quantizers)}
         output=torch.func.functional_call(block,replacements,(student,),

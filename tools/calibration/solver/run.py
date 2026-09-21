@@ -19,6 +19,7 @@ import signal
 import torch
 from safetensors.torch import save_file
 from . import device_policy
+from .optim import quantizer_optimizer
 from .device_policy import same_device
 from .performance import measure
 from .candidates import Q1Candidate,pack_signs
@@ -512,7 +513,14 @@ def gsq_run(model,records,config,output,checkpointer,resume=None,max_steps=None)
             trainer=optimizer=scheduler=loss=tensors=teacher=student=state=None
             try:
                 trainer=BlockTrainer(model,block_index,config.get('upstream','/opt/upstream'))
-                optimizer=torch.optim.Adam(trainer.parameters(),lr=config.get('gsq_lr',.001))
+                # Upstream trains the quantizer with Lion on a two-group split - logits
+                # at lr1=2e-4 with weight_decay 1.0, scales at lr2=1e-4 without - and the
+                # port used Adam at lr=0.001 for both. Lion's update is a sign step with
+                # the decay folded in, so the two are not interchangeable.
+                optimizer=quantizer_optimizer(trainer.named_parameters(),
+                                              lr1=config.get('gsq_lr1',2e-4),
+                                              lr2=config.get('gsq_lr2',1e-4),
+                                              weight_decay=config.get('gsq_weight_decay',1.0))
                 epochs=config.get('gsq_epochs',1)
                 scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,max(1,epochs*len(records)))
                 if resume:
@@ -549,7 +557,14 @@ def gsq_run(model,records,config,output,checkpointer,resume=None,max_steps=None)
                             # as its trainer does (src/config.py: temperature [2, 0.05],
                             # scale [100, 500]). The logit scale was previously never
                             # passed, so kappa stayed at 1.0 for every update.
+                            # The input is the drifted composed stream that this
+                            # block will actually see at inference; the target is
+                            # the unquantized block applied to `teacher`, the
+                            # original stream's input. That pairing is deliberate -
+                            # see BlockTrainer.forward - and it is the only form
+                            # whose gradient opposes the drift measured below.
                             loss=trainer(tensors['student'].to(device),
+                                         tensors['teacher'].to(device),
                                          temperature=2.-1.95*fraction,scale=100.+400.*fraction)
                             loss.backward()
                             if not torch.isfinite(loss) or any(p.grad is None or not torch.isfinite(p.grad).all() for p in trainer.parameters()):
@@ -712,17 +727,29 @@ def gsq_run(model,records,config,output,checkpointer,resume=None,max_steps=None)
         # it here is idempotent -- same state, same snapshot, immutability holds.
         drift_limit=config.get('gsq_max_drift_growth')
         ratio_limit=config.get('gsq_max_drift_ratio')
+        # The two limits above bound magnitude only. The 2026-09-20 sweep held its
+        # magnitude near 0.9 while its cosine fell from 0.893 to 0.700 across
+        # blocks 11-21, so neither limit could fire on the failure this port
+        # actually produced. Bound the direction too, or the guard watches a
+        # composition collapse and reports nothing.
+        cosine_limit=config.get('gsq_min_drift_cosine')
         drift_stop=((drift_limit is not None and drift.get('growth') is not None
                      and drift['growth']>float(drift_limit))
-                    or (ratio_limit is not None and drift['norm_ratio']>float(ratio_limit)))
+                    or (ratio_limit is not None and drift['norm_ratio']>float(ratio_limit))
+                    or (cosine_limit is not None and drift['cosine']<float(cosine_limit)))
         if drift_stop:
-            drift['stopped_by']=('ratio' if (ratio_limit is not None
+            drift['stopped_by']=('cosine' if (cosine_limit is not None
+                and drift['cosine']<float(cosine_limit))
+                else 'ratio' if (ratio_limit is not None
                 and drift['norm_ratio']>float(ratio_limit)) else 'growth')
             atomic_json(drift_path,drift_history)
         if (should_stop_block(config,blocks_this_run) or drift_stop) and block_index+1<len(model.model.layers):
             with residency.block(block_index+1):
                 next_trainer=BlockTrainer(model,block_index+1,config.get('upstream','/opt/upstream'))
-                next_optimizer=torch.optim.Adam(next_trainer.parameters(),lr=config.get('gsq_lr',.001))
+                next_optimizer=quantizer_optimizer(next_trainer.named_parameters(),
+                                                   lr1=config.get('gsq_lr1',2e-4),
+                                                   lr2=config.get('gsq_lr2',1e-4),
+                                                   weight_decay=config.get('gsq_weight_decay',1.0))
                 next_epochs=config.get('gsq_epochs',1)
                 next_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(
                     next_optimizer,max(1,next_epochs*len(records)))
@@ -852,7 +879,16 @@ def boundary_run(stage,model,records,config,output,checkpointer,resume=None,max_
             cache=Path(config['final_cache'])
             extras['cache_final']=archive_directory(cache,output/'cache-final.tar')
         trainer=HeadTrainer(model.lm_head.weight)
-    optimizer=torch.optim.Adam(trainer.parameters(),lr=config.get(stage+'_lr',.001))
+    # The embedding stage trains a GSQ quantizer and so takes upstream's optimiser too;
+    # the head stage is this port's own full-KL objective with no upstream analogue and
+    # keeps Adam.
+    if stage=='embedding':
+        optimizer=quantizer_optimizer(trainer.named_parameters(),
+                                      lr1=config.get('gsq_lr1',2e-4),
+                                      lr2=config.get('gsq_lr2',1e-4),
+                                      weight_decay=config.get('gsq_weight_decay',1.0))
+    else:
+        optimizer=torch.optim.Adam(trainer.parameters(),lr=config.get(stage+'_lr',.001))
     epochs=config.get(stage+'_epochs',1)
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,max(1,epochs*len(records)))
     progress={'stage':stage,'epoch':0,'sequence':0,'global_step':0}

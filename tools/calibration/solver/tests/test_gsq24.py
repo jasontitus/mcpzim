@@ -227,6 +227,7 @@ def test_canary_calls_real_gsq_loop_and_verifies_new_diagnostic_checkpoint(tmp_p
     from solver.qwen import tiny_model
     from solver.gsq import BlockTrainer
     from solver.run import initialize_candidates, archive_directory, digest
+    from solver.optim import quantizer_optimizer
     torch.set_num_threads(1)
     small=tiny_model();layout=copy.deepcopy(small.config);layout.num_hidden_layers=4;layout.layer_types*=2
     model=type(small)(layout).eval().requires_grad_(False)
@@ -252,8 +253,32 @@ def test_canary_calls_real_gsq_loop_and_verifies_new_diagnostic_checkpoint(tmp_p
         torch.save({'teacher':hidden,'student':hidden.clone()},cache/f'{index:06d}.pt')
     archive_directory(cache,source/'cache_block_2')
     trainer=BlockTrainer(model,2)
-    optimizer=torch.optim.Adam(trainer.parameters(),lr=.001)
+    # Upstream trains the quantizer as *two* groups - logit parameters at
+    # `training.lr1` (2e-4) with weight decay 1.0 and per-group scales at `lr2`
+    # (1e-4) with no decay (src/trainer.py:70-97) - and the port builds that split
+    # in one place, `solver/optim.py`'s `quantizer_optimizer`. The snapshot below
+    # has to carry the state the resumed process will load into the optimizer
+    # `import_trainer` builds, so it comes from that same constructor rather than a
+    # stand-in: a single-group Adam snapshot no longer loads at all - measured:
+    # "loaded state dict has a different number of parameter groups". Do not
+    # simplify the groups back to one.
+    optimizer=quantizer_optimizer(trainer.named_parameters())
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,len(records))
+    by_id={id(parameter): name for name, parameter in trainer.named_parameters()}
+    assert len(optimizer.param_groups)==2, 'upstream trains the logits and the scales apart'
+    assert optimizer.param_groups[0]['lr']==2e-4 and optimizer.param_groups[0]['weight_decay']==1.0
+    assert optimizer.param_groups[1]['lr']==1e-4 and optimizer.param_groups[1]['weight_decay']==0.0
+    assert optimizer.param_groups[0]['params'] and optimizer.param_groups[1]['params']
+    assert all(not by_id[id(p)].endswith('scales') for p in optimizer.param_groups[0]['params'])
+    assert all(by_id[id(p)].endswith('scales') for p in optimizer.param_groups[1]['params'])
+    # The round trip the resumed process performs, asserted here so a group mismatch
+    # fails in this test rather than in the checkpoint loader: a freshly constructed
+    # optimizer accepts this snapshot and holds those very parameters.
+    reloaded=quantizer_optimizer(trainer.named_parameters())
+    reloaded.load_state_dict(optimizer.state_dict())
+    assert [len(g['params']) for g in reloaded.param_groups]==[len(g['params']) for g in optimizer.param_groups]
+    assert all(a is b for fresh,original in zip(reloaded.param_groups,optimizer.param_groups)
+               for a,b in zip(fresh['params'],original['params']))
     values={'solver':trainer.state_dict(),'optimizer':optimizer.state_dict(),'scheduler':scheduler.state_dict(),
             'rng':capture_rng_state(),'progress':{'stage':'gsq','block':2,'global_step':174,'epoch':0,'sequence':0}}
     for role,value in values.items():torch.save(value,source/role)
