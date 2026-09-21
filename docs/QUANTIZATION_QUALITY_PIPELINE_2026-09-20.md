@@ -517,27 +517,36 @@ six layers), and the equivalent for us is already installed:
   loads blocked at ~0% CPU rather than failing, which is how a 60 s measurement becomes
   a 25 minute hang. The machine also carries 128 GiB with swap ~98% used, so the
   host-RAM budget in D8 is a shared budget, not this pipeline's alone.
-- **A partially trained chain is not a quality gate, measured.** The 2026-09-20 sweep
-  reached 18 of 64 blocks, and exporting that candidate database (498 tensors, all q1,
-  3.803 GB) and scoring it against the Bonsai control on identical bytes - both arms
-  tokenized to exactly 208 chunks - gave Bonsai **~14.5** and the candidate **~4.4e4**.
-  Two orders of magnitude-plus, on the same text, with the same binary: the artifact is
-  not a compressor. But it does **not** incriminate the chain. 46 of the 64 layers in
-  that artifact are untrained RTN, because a partial chain exports trained candidates
-  for the blocks it has done and falls back to RTN for the rest, so the number is
-  dominated by the fallback and the trained prefix is invisible in it. The intended use
-  of a mid-sweep export was to learn early whether the chain is worth finishing; it does
-  not answer that, and the 40 minutes it cost bought nothing the drift already said.
-  Isolating the trained prefix needs a control arm built from the RTN-only
-  `initial-database.json`, scored on the same text - without that control the candidate's
-  number cannot distinguish "the training is not working" from "the fallback dominates".
-  The absolute values here are **not** comparable to the 7.0653 / 13.397 pair in section
+- **A partially trained chain is not a quality gate, and the control shows what it
+  hides.** The 2026-09-20 sweep reached 18 of 64 blocks. Three arms were scored on
+  identical bytes - all three tokenized to exactly 208 chunks with the same binary:
+
+  | arm | perplexity |
+  |---|---|
+  | Bonsai Q1_0, 3.80 GB (the bar) | **13.4604 +/- 0.176** |
+  | this sweep at 18 blocks, all q1, 3.803 GB | **~4.1e4** |
+  | RTN-only, from `initial-database.json` | **69784.03 +/- 715.77** |
+
+  Two things follow. The trained prefix is doing real work: 18 blocks roughly halve
+  perplexity against the all-RTN floor, so the objective and drift fixes are moving the
+  model toward its teacher and the chain is not inert. And the arm is nevertheless ~3e3
+  from the bar, with 46 of its 64 layers still on the RTN fallback - the trained prefix
+  improved a number that the fallback dominates, which is why a mid-sweep export cannot
+  decide whether the chain is worth finishing. Isolating the prefix needs exactly the
+  RTN control above; without it the candidate's number cannot separate "training is not
+  working" from "the fallback dominates", and here it would have hidden a 1.7x gain.
+  Note also that the RTN floor (69784) sits in the same region as the pre-fix all-Q1
+  measurement (73786) - different text, so not comparable, but consistent with the
+  pre-fix objective having produced nothing beyond its RTN initialisation.
+  The absolute values are not comparable to the 7.0653 / 13.397 pair in section
   2.0.1: this text is a fresh reconstruction from the invocation prompts, and on it
   Bonsai scores a final **13.4604 +/- 0.176**, not 7.07. What that implies is worth
   stating: 13.4604 is statistically indistinguishable from the recorded bf16 ceiling of
   13.397 +/- 0.834, so on this text a 3.80 GB 1-bit artifact already matches unquantized
-  quality. That is the bar, and it is not a lowered one. Only within-run ratios mean
-  anything here, which is the same rule the cross-instrument paragraph above states.
+  quality. Bonsai is all-1-bit, so the thing that makes 1-bit work is quantisation-aware
+  *training*, not a per-tensor q1/bf16 allocation - which sharpens section 2.0.1's
+  framing of what the bar costs. Only within-run ratios mean anything here, which is the
+  same rule the cross-instrument paragraph above states.
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
