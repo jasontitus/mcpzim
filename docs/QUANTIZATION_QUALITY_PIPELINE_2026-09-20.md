@@ -532,9 +532,12 @@ six layers), and the equivalent for us is already installed:
   `initial-database.json`, scored on the same text - without that control the candidate's
   number cannot distinguish "the training is not working" from "the fallback dominates".
   The absolute values here are **not** comparable to the 7.0653 / 13.397 pair in section
-  2.0.1: this text is a fresh reconstruction from the invocation prompts and scores
-  Bonsai at ~14.5 rather than 7.07, so only within-run ratios mean anything, which is
-  the same rule the cross-instrument paragraph above states.
+  2.0.1: this text is a fresh reconstruction from the invocation prompts, and on it
+  Bonsai scores a final **13.4604 +/- 0.176**, not 7.07. What that implies is worth
+  stating: 13.4604 is statistically indistinguishable from the recorded bf16 ceiling of
+  13.397 +/- 0.834, so on this text a 3.80 GB 1-bit artifact already matches unquantized
+  quality. That is the bar, and it is not a lowered one. Only within-run ratios mean
+  anything here, which is the same rule the cross-instrument paragraph above states.
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
