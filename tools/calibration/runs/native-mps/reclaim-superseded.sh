@@ -44,6 +44,7 @@ done
 
 STORE_ROOT=runs/native-mps/checkpoints/gsq
 OUT_GLOB=runs/native-mps/gsq-pb-*
+ARCHIVE=runs/native-mps/drift-archive
 FREED=0
 REMOVED=0
 
@@ -81,6 +82,19 @@ process() {
     fi
     size=$(du -sk "$path" 2>/dev/null | awk '{print $1}')
     size=${size:-0}
+    # Preserve the small metadata before deleting the root. `drift.json` is
+    # attempt-scoped and holds the per-block composed-stream measurement - the
+    # metric this whole port is judged on - and each store records only its own
+    # single commit, so a pruned output directory takes its drift history with it
+    # and the value cannot be recovered afterwards. That happened to blocks 8-10
+    # of the 2026-09-20 sweep before this archiving existed.
+    if [ "$APPLY" -eq 1 ]; then
+      dest="$ARCHIVE/$base"
+      mkdir -p "$dest"
+      for meta in drift.json gsq-report.json performance-report.json latest-checkpoint.json; do
+        [ -f "$path/$meta" ] && cp "$path/$meta" "$dest/" 2>/dev/null
+      done
+    fi
     if [ "$APPLY" -eq 1 ]; then
       echo "remove $label $base ($((size / 1024)) MiB)"
       rm -rf "$path"
