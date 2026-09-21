@@ -836,6 +836,20 @@ unpruned run cannot finish, and the abandoned roots must be reclaimed first (D8)
 run must refuse to start when the free space cannot cover its remaining blocks plus the
 export reserve.
 
+**The reclamation is implemented** as `runs/native-mps/reclaim-superseded.sh`. It keeps
+the newest two stores under `checkpoints/gsq` and the newest two `gsq-pb-*` output
+directories - the live roots plus the ones the next block resumes from - and removes
+older ones. Two is sufficient because the store is content addressed and every publish
+carries every completed block's archive, so the newest store is a complete record of the
+calibration; `run.py` explains that retention is load-bearing, not incidental. Measured
+on the real chain, one superseded store is ~26 GiB and one superseded output directory
+~5 GiB, against a block that writes ~15 GiB of store and up to 28 GiB of output, so
+without this a 64-block sweep stops on the driver's own 60 GiB guard after about five
+blocks. Only roots carrying the driver's `YYYYMMDD-HHMMSS-xxxx` stamp are ever eligible:
+a deliberately named root such as `validate-gsq-20260920c` sorts *after* every timestamp
+and a naive keep-the-newest rule would have deleted a 54 GiB validation store, which the
+first dry run of this script did before the check was added.
+
 **Every number here already includes the linear-attention fallback.** The model's 48
 linear-attention layers run the reference PyTorch implementation, not an optimized kernel:
 `transformers` reports `causal_conv1d_fn` and `chunk_gated_delta_rule` falling back because

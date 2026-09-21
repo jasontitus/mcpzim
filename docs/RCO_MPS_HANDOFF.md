@@ -233,7 +233,11 @@ cloud-GPU and cloud-prep job machinery; `packing/`; the pinned upstream at
 manifest) and the container build inputs; the stage configs (`gsq-run.json`,
 `rco-config.json`, `initialize.json`, `smoke.json`, `gsq-single-process.json`,
 `gsq-single-from-b005.json`); the per-block driver
-`runs/native-mps/run-gsq-per-block.sh`; the RCO reproduction inputs named in §2;
+`runs/native-mps/run-gsq-per-block.sh` and the reclaimer
+`runs/native-mps/reclaim-superseded.sh` (which a 64-block sweep needs: see D8 -
+each block writes ~15 GiB of store and up to 28 GiB of output, and without
+reclaiming superseded roots the sweep stops on the driver's 60 GiB guard after
+about five blocks); the RCO reproduction inputs named in §2;
 and the documentation, including `docs/PORT_VALIDATION.md` (the port's log of
 record) and the `QUANTIZATION_*` design documents.
 
