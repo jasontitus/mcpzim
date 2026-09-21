@@ -36,3 +36,34 @@ packages = ["mcpzim"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Type intelligence for the Python in this repo. The workspace root holds three
+# very different trees and one of them is data: tools/calibration/runs reaches
+# 509 GB of checkpoints, and tools/calibration/.venv plus the vendored
+# cuda_runtime/.context sources add a further ~1 GB of files. Indexing those
+# makes cross-file navigation silently incomplete (measured: before this config,
+# `references` on solver.run.gsq_run returned 2 hits, both inside run.py; after
+# pinning the file set it returns 23, including every callsite in gsq24.py and
+# tests/), so the file set is pinned explicitly instead of discovered.
+[tool.pyright]
+include = ["mcpzim", "tests", "tools/calibration"]
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    ".venv",
+    "build",
+    "dist",
+    "tools/calibration/runs",
+    "tools/calibration/cuda_runtime",
+]
+venvPath = "tools/calibration"
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+diagnosticMode = "openFilesOnly"
+useLibraryCodeForTypes = true
+autoSearchPaths = true
+# The pinned interpreter is the calibration venv, which is the only torch in the
+# repo; the root `mcpzim` package's own deps (libzim, mcp, bs4) are not in it and
+# resolve as warnings rather than errors.
+reportMissingImports = "warning"
