@@ -205,3 +205,51 @@ checkpoints: runs/native-mps/checkpoints/gsq/
 
 `causal_conv1d` and `flash-linear-attention` are **not** installed and, per §7,
 cannot help.
+
+## 11. What this branch contains, and what to regenerate
+
+Branch **`gsq-rco-apple-silicon`** is the complete port. Verified by cloning it
+clean and resolving upstream from the clone:
+
+```sh
+git clone --branch gsq-rco-apple-silicon <repo> /tmp/check
+cd /tmp/check
+python3 -c "
+import importlib.util as u
+s = u.spec_from_file_location('up','tools/calibration/solver/upstream_paths.py')
+m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.resolve())"
+# -> .../tools/calibration/cuda_runtime/.context/sources
+```
+
+`resolve()` defaults to `verify=True`, so that call also hash-checks the sources
+against the pinned manifest. If it returns a path under `/opt/upstream` instead,
+the sources are missing and every stage will fail with a bare
+`ModuleNotFoundError: No module named 'manifold'`.
+
+**In the branch**: the solver and its tests; the calibration scripts; the
+cloud-GPU and cloud-prep job machinery; `packing/`; the pinned upstream at
+`cuda_runtime/.context/sources` (gsq 2.8 MB, rco 496 KB, plus the provenance
+manifest) and the container build inputs; the stage configs (`gsq-run.json`,
+`rco-config.json`, `initialize.json`, `smoke.json`, `gsq-single-process.json`,
+`gsq-single-from-b005.json`); the per-block driver
+`runs/native-mps/run-gsq-per-block.sh`; the RCO reproduction inputs named in §2;
+and the documentation, including `docs/PORT_VALIDATION.md` (the port's log of
+record) and the `QUANTIZATION_*` design documents.
+
+**Not in the branch, and how to get it** — all of it is large or derived:
+
+| missing | how to obtain |
+|---|---|
+| the model, 52 GB at `runs/local-inputs/model` | `tools/calibration/restore_inputs.py`, driven by the `input_commit_sha256` in the config |
+| the corpus at `runs/local-inputs/calibration` | same restore; the directory is empty in the working tree |
+| candidate archives and stage tars, ~6.2 GB under `runs/native-mps/validate-new-objective/` | regenerate with the chain, or restore from GCS |
+| checkpoints and per-block outputs, ~536 GB under `runs/` | regenerate: `runs/native-mps/run-gsq-per-block.sh 64` |
+| smoke warmstart states, 4.6 GB and 4.5 GB at `runs/native-mps/smoke/warmstart-block-{0,3}.pt` | regenerate via the smoke stage. **These are real inputs, not scratch** - deleting them killed a run once |
+| `cuda_runtime/.context/prism`, 154 MB | not needed by the solver; it is unrelated vendored tooling |
+| per-iteration `runs/native-mps/pb-config-*.json` | the driver writes them itself |
+
+`tools/calibration/.gitignore` excludes `runs/` deliberately. Anything under it
+that is genuinely source rather than data (the driver, the stage configs) is
+force-added, so add new ones the same way rather than assuming a `git add` will
+take them.
