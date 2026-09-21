@@ -1,0 +1,33 @@
+{
+  "inputs": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/local-inputs",
+  "input_commit_sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a",
+  "runtime_sha256": "3286ec16bd7709fb3a4e77e645c525bebdf712008f8f02dde7a295a86e8fedca",
+  "largest_first": true,
+  "checkpoint_seconds": 120,
+  "deadline_unix": 1789985619.885238,
+  "target_bytes": 4200000000,
+  "seed": 42,
+  "cost_manifest": {
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/packing/evidence/qwen-cost-manifest.json",
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe"
+  },
+  "upstream": "/Users/jasontitus/experiments/mcpzim/tools/calibration/cuda_runtime/.context/sources",
+  "stage": "rco",
+  "output": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/rco",
+  "checkpoint": {
+    "backend": "local",
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/checkpoints/rco"
+  },
+  "gsq_execution_device": "mps",
+  "gsq_memory_mode": "full",
+  "gsq_max_drift_growth": 2.0,
+  "gsq_max_drift_ratio": 4.0,
+  "candidate_database": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/gsq/candidate-database.json",
+  "candidate_archives": {
+    "candidate_block_0": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/gsq/block-0.tar",
+    "candidate_block_1": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/gsq/block-1.tar",
+    "candidate_block_2": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/gsq/block-2.tar",
+    "initial_candidates": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/initialize/initial-candidates.tar"
+  },
+  "allow_rtn_boundary_smoke": true
+}

@@ -1,0 +1,15 @@
+Name:      us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:0c95864edb0b19dd9c722c5e2cca1ca210fab693b2f142749424711dc2956ab9
+MediaType: application/vnd.oci.image.index.v1+json
+Digest:    sha256:0c95864edb0b19dd9c722c5e2cca1ca210fab693b2f142749424711dc2956ab9
+           
+Manifests: 
+  Name:        us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:f8230df0be73edf4e1c433af167cef11bff294132cc96cacabb43bb6a6383343
+  MediaType:   application/vnd.oci.image.manifest.v1+json
+  Platform:    linux/amd64
+               
+  Name:        us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:e02471be44f980b39a41875a2365d0a0c0d92b511916dc333a13e5563c898c0e
+  MediaType:   application/vnd.oci.image.manifest.v1+json
+  Platform:    unknown/unknown
+  Annotations: 
+    vnd.docker.reference.digest: sha256:f8230df0be73edf4e1c433af167cef11bff294132cc96cacabb43bb6a6383343
+    vnd.docker.reference.type:   attestation-manifest

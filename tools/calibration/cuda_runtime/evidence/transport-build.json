@@ -1,0 +1,12 @@
+{
+  "image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:a1de1726c84d97c208bb8ccde70a985b76f7a65aab2cf985840ae165049e2869",
+  "solver_cpu_tests_passed": 41,
+  "transport_restore_tests_passed": 45,
+  "gpu_validated": false,
+  "source_manifest_sha256": "72dfc5dfa95166a378d3711bf83ea492ba277a1b8c96416e4ea4e3ee6a851258",
+  "changes": [
+    "GCS network range/resumable upload64MiB separate from1MiB local hashing buffer",
+    "Restore continuation and partial-file integrity validation"
+  ],
+  "supersedes_runtime": "0c95864edb0b19dd9c722c5e2cca1ca210fab693b2f142749424711dc2956ab9"
+}

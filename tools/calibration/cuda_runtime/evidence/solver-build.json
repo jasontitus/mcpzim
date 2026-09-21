@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:0c95864edb0b19dd9c722c5e2cca1ca210fab693b2f142749424711dc2956ab9",
+  "amd64_manifest": "sha256:f8230df0be73edf4e1c433af167cef11bff294132cc96cacabb43bb6a6383343",
+  "source_manifest_sha256": "0dd0defe4986e6925815ad26ccbdc88fd185dcaa36569529869a27844f144c82",
+  "solver_cpu_tests_passed": 41,
+  "gpu_validated": false,
+  "full_qwen_cuda_validated": false,
+  "export_converter_import_passed": true,
+  "run_and_job_cli_passed": true,
+  "loader_bf16_explicit": true,
+  "loader_parameter_and_buffer_device_assertion": true
+}

@@ -1,0 +1,47 @@
+{
+  "gsq-cpu.json": {
+    "status": "passed",
+    "stage": "gsq",
+    "device": "cpu",
+    "torch": "2.11.0+cu130",
+    "cuda_toolkit": "13.0",
+    "whole_model_validated": false,
+    "gpu_validated": false,
+    "source_revisions": {
+      "gsq": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+      "rco": "9a1e09c07d468109cbe60a1b87d5036034a79d10"
+    },
+    "compiled_architectures": "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120",
+    "checks": {
+      "imports": [
+        "GumbelQuantizer1Bit",
+        "QuantizationTrainer",
+        "Qwen35Wrapper",
+        "Qwen3_5TextModel"
+      ],
+      "hard_export": "passed",
+      "forward_backward": "not_run_cuda_required"
+    }
+  },
+  "rco-cpu.json": {
+    "status": "passed",
+    "stage": "rco",
+    "device": "cpu",
+    "torch": "2.11.0+cu130",
+    "cuda_toolkit": "13.0",
+    "whole_model_validated": false,
+    "gpu_validated": false,
+    "source_revisions": {
+      "gsq": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+      "rco": "9a1e09c07d468109cbe60a1b87d5036034a79d10"
+    },
+    "compiled_architectures": "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120",
+    "checks": {
+      "masked_full_kl_gradient_oracle": "passed",
+      "candidate_gradients": "passed",
+      "project_adam_retract_transport": "passed",
+      "achieved_budget": 2.0000000021070776,
+      "scope": "one_linear_upstream_components_not_full_model_search"
+    }
+  }
+}

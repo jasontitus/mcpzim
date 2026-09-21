@@ -1,0 +1,30 @@
+{
+  "inputs": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/local-inputs",
+  "input_commit_sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a",
+  "runtime_sha256": "e43a63a6a2a30d67e8f6ad3a00f0700783b28e5ed68c3809a2e97c9da78220ac",
+  "largest_first": true,
+  "checkpoint_seconds": 120,
+  "deadline_unix": 1789953832.20528,
+  "target_bytes": 4200000000,
+  "seed": 42,
+  "cost_manifest": {
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/packing/evidence/qwen-cost-manifest.json",
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe"
+  },
+  "upstream": "/Users/jasontitus/experiments/mcpzim/tools/calibration/cuda_runtime/.context/sources",
+  "stage": "rco",
+  "checkpoint": {
+    "backend": "local",
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/checkpoints/gsq/rco-hang-probe"
+  },
+  "gsq_execution_device": "mps",
+  "output": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/rco-hang-probe",
+  "rco_epochs": 1,
+  "allow_rtn_boundary_smoke": true,
+  "candidate_database": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/stage-run-4/candidate-database.json",
+  "candidate_archives": {
+    "initial_candidates": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/init-run-1/initial-candidates.tar",
+    "candidate_block_0": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/stage-run-4/block-0.tar",
+    "candidate_block_1": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/stage-run-4/block-1.tar"
+  }
+}

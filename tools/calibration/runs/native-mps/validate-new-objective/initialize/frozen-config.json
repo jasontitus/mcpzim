@@ -1,0 +1,23 @@
+{
+  "inputs": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/local-inputs",
+  "input_commit_sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a",
+  "runtime_sha256": "ef7afaf67a002e7c7972f31ec5f321e8e27e89de940304a6bdf2d397a40032f3",
+  "largest_first": true,
+  "checkpoint_seconds": 120,
+  "deadline_unix": 1789953616.228369,
+  "target_bytes": 3803453760,
+  "seed": 42,
+  "cost_manifest": {
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/packing/evidence/qwen-cost-manifest.json",
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe"
+  },
+  "upstream": "/Users/jasontitus/experiments/mcpzim/tools/calibration/cuda_runtime/.context/sources",
+  "stage": "initialize",
+  "output": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/validate-new-objective/init-run-1",
+  "checkpoint": {
+    "backend": "local",
+    "path": "runs/native-mps/checkpoints/gsq/validate-init-20260920"
+  },
+  "gsq_execution_device": "mps",
+  "attempt_id": "validate-init-20260920"
+}

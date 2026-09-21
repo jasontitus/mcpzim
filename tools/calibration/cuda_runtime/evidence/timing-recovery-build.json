@@ -1,0 +1,21 @@
+{
+  "status": "cuda_smoke_and_next_update_recovery_passed",
+  "local_tag": "zimfo-quantization:timing-recovery-20260920",
+  "manifest_list": "sha256:f13a4e99a85f4f650a8e3e130757fb4ddee891eeb8e34e6cea973e99dc56c3cd",
+  "amd64_manifest": "sha256:1e83acf5049fc7030807af3637f663e3676246f63a032cdbb57a1b8f6b0216c6",
+  "source_manifest_sha256": "1c066719eb42f40702e111ebf1890d1794a01b22252afe6e3714a2091d1e1596",
+  "solver_tests_passed": 48,
+  "transport_restore_tests_passed": 45,
+  "independent_review_tests_passed": 11,
+  "cuda_validated": true,
+  "published": true,
+  "cloud_cached": true,
+  "next_update_recovery_validated": true,
+  "log": "tools/calibration/runs/timing-recovery-image-build-final-20260920.log",
+  "registry_image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:f13a4e99a85f4f650a8e3e130757fb4ddee891eeb8e34e6cea973e99dc56c3cd",
+  "cpu_receipt": "tools/calibration/runs/cloud-cpu-prep-20260920-v8/ready.json",
+  "cuda_validation_scope": "Actual27B longest-invocation GSQ both block types and full-model RCO recovery smoke; not full production completion",
+  "gpu_run_id": "zimfo-gpu-6583ec8c4659",
+  "gpu_evidence": "docs/benchmarks/quantization-2026-09-19/gpu-attempt-3.json",
+  "production_completed": false
+}

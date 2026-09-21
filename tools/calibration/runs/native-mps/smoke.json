@@ -1,0 +1,29 @@
+{
+  "inputs": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/local-inputs",
+  "input_commit_sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a",
+  "runtime_sha256": "b0e323462a669bf8163b94b405e37dbf24bbc2bfd4cd405983ff36d79877d1ab",
+  "largest_first": true,
+  "checkpoint_seconds": 1200,
+  "deadline_unix": 1789913528.924408,
+  "target_bytes": 4000000000,
+  "seed": 42,
+  "cost_manifest": {
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/packing/evidence/qwen-cost-manifest.json",
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe"
+  },
+  "upstream": "/Users/jasontitus/experiments/mcpzim/tools/calibration/cuda_runtime/.context/sources",
+  "stage": "smoke",
+  "output": "runs/native-mps/smoke",
+  "checkpoint": {
+    "backend": "local",
+    "path": "runs/native-mps/checkpoints/smoke"
+  },
+  "candidate_database": "runs/native-mps/initialize/initial-database.json",
+  "candidate_archives": {
+    "initial_candidates": "runs/native-mps/initialize/initial-candidates.tar"
+  },
+  "gsq_epochs": 1,
+  "gsq_lr": 0.001,
+  "smoke_component": "gsq",
+  "attempt_id": "20260920-033400"
+}

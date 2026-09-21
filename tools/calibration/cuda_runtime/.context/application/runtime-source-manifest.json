@@ -1,0 +1,170 @@
+{
+  "checkpoints.py": {
+    "sha256": "146ea5310c757adb32db6265baa597d1085a830bb5158fb365a593abbc195f6e",
+    "bytes": 10392
+  },
+  "gcs_checkpoints.py": {
+    "sha256": "e33fc53bfa87a9d644440a8b29143d5cee115042f88bb86c4e76321a60b95aea",
+    "bytes": 18245
+  },
+  "restore_inputs.py": {
+    "sha256": "2ab3a26e0cb1dad3f145307e02e0aeeef98d8c89aac6c54a960e05ea8dbdb36e",
+    "bytes": 18757
+  },
+  "validate_capture.py": {
+    "sha256": "a09167895f7a682976709cbd1465e119196109c6f14947b24dc48cc821786a2e",
+    "bytes": 16361
+  },
+  "verify_baseline.py": {
+    "sha256": "b4bdcf08ccf496c526dd9c46bc6d571d7f4ce33cf1c468e3817f1b64c535fe0e",
+    "bytes": 4191
+  },
+  "encoding_inventory.py": {
+    "sha256": "1f960b06c3aae10ee157c990f1e97b8e90a88da99e7bbed72ad8f6e672569abf",
+    "bytes": 5288
+  },
+  "prepare_gsq24_source.py": {
+    "sha256": "9ab594af0763af87d948a5249c2671e9af17da9bfc3935768295a6ab33e5a1a6",
+    "bytes": 3448
+  },
+  "solver/run.py": {
+    "sha256": "246391fc680653d9c04ee116a4f287df7241681bcd8fb12ae4985d8b0f52656f",
+    "bytes": 38917
+  },
+  "solver/objective.py": {
+    "sha256": "75bff237128679e7d4b8dbbd8bb5e4e8a5073c6a7d054e88dc32ca0c486e0667",
+    "bytes": 4106
+  },
+  "solver/rco.py": {
+    "sha256": "905d73aad4e4c63091f7b23a2b81d811dba1eb573d8b63c1975275d23a307c44",
+    "bytes": 8711
+  },
+  "solver/boundaries.py": {
+    "sha256": "bc659c5d883dc1ba74add27a9b282571e3ac808a791b18074272c1bb1206c9cd",
+    "bytes": 7130
+  },
+  "solver/job.py": {
+    "sha256": "f94fd9d48f61ad47fff2a33c2e0a0436d278bafff74576aa02bfef262cd7174c",
+    "bytes": 22692
+  },
+  "solver/reproducibility.py": {
+    "sha256": "99d328538bf7bbf370957093431fca6822543bdb3053c4401a99450436c2db61",
+    "bytes": 1009
+  },
+  "solver/__init__.py": {
+    "sha256": "37057d3ae3b10a172f6c01d39323da945052e63926b132dab77318b843dd0ad3",
+    "bytes": 81
+  },
+  "solver/gsq_residency.py": {
+    "sha256": "50f2be94921527ed6aa5a14aec716839135d499fe38707a0cad3253c8e51926e",
+    "bytes": 5146
+  },
+  "solver/qwen.py": {
+    "sha256": "aad58276128fcdd0a66d782c97dcae1748b57a9bbc0caf9738f01187988493b5",
+    "bytes": 4980
+  },
+  "solver/gsq24.py": {
+    "sha256": "83659a330f0d98578f5cda05163a42e3d250f8ae83803126c9822e358eb07c2a",
+    "bytes": 29396
+  },
+  "solver/gsq.py": {
+    "sha256": "e13654823c070e5e71984b1c0cd80a6060855166bc8aff2a999c549afb990e30",
+    "bytes": 4468
+  },
+  "solver/candidates.py": {
+    "sha256": "441e5b6db592df63ec446ac4d36e01064d4fc203f18525f48648a7bd80d6003d",
+    "bytes": 5474
+  },
+  "solver/performance.py": {
+    "sha256": "267084fec2e30480af14f996bc36c838fea5094e2bf38bff2bd365bf1becc279",
+    "bytes": 3053
+  },
+  "solver/gsq_migration.py": {
+    "sha256": "562377514ac241b78da73e65d0e13a33968fd2e6883ea6e576413bc7070d80a6",
+    "bytes": 9118
+  },
+  "solver/smoke.py": {
+    "sha256": "232d24996c5caf7bd47aae3a85e4d8d4a14262b0f2547469ed9f45f33e4d2843",
+    "bytes": 11426
+  },
+  "solver/tests/test_job.py": {
+    "sha256": "8ef205a74389cfe9f9b723fa94521b3db73b42221bb316d20861793398401c33",
+    "bytes": 14916
+  },
+  "solver/tests/test_gsq_residency.py": {
+    "sha256": "e029965ab69c965453166d549d98d6098610b99d6f14dff4ee327aeeaa722304",
+    "bytes": 11569
+  },
+  "solver/tests/test_gsq24.py": {
+    "sha256": "a05ee7bf98fa278fbb560e6848598d158889d937887ec81c3123265956c50022",
+    "bytes": 19082
+  },
+  "solver/tests/test_run.py": {
+    "sha256": "979b7f3218715b959fde477e173bdba4cc042ebc980fa8efc55ffc228a994fb8",
+    "bytes": 8763
+  },
+  "solver/tests/test_performance.py": {
+    "sha256": "2d0e7d7e373d214362df5f069bfc390718da96d06b8099476b8f122eb212afd4",
+    "bytes": 2541
+  },
+  "solver/tests/test_qwen.py": {
+    "sha256": "6ce6eb7dd48b8ee6ea5d62c4af11e4e678493bb48abb1ab19a23348686fc9ce4",
+    "bytes": 2173
+  },
+  "solver/tests/test_objective.py": {
+    "sha256": "fd5e637928c120b5f11634d062e24fc99888bda7754340969cca08a8543be79d",
+    "bytes": 4328
+  },
+  "solver/tests/test_gsq_migration.py": {
+    "sha256": "08d46ffd1749241a8fc7b8189ed74bd09e2e5b84b09ee5fa87beb864dfb140c2",
+    "bytes": 7690
+  },
+  "solver/tests/test_boundaries.py": {
+    "sha256": "94ae9aecd74ce3531b480d11007c467cbba9c9b07966e8a31736fb60f308407a",
+    "bytes": 3669
+  },
+  "solver/tests/test_reproducibility.py": {
+    "sha256": "e372d5ad9092bf10d7c78d22580860dc9d0f500f8ce2997e55a9683910f2c332",
+    "bytes": 1682
+  },
+  "packing/gguf.py": {
+    "sha256": "0145e479959bd0a806994549386d9ee018baec0cdf61b13fd764412ad67c59a6",
+    "bytes": 5813
+  },
+  "packing/q1.py": {
+    "sha256": "19355c9255332266056e1728a33c1d67f742fabd41a8041d9409aede61a75eea",
+    "bytes": 4574
+  },
+  "packing/export_qwen.py": {
+    "sha256": "76584f9ba9c236e18f99e079bd6ee887d99b0c7643f00b0e3bbad9300aabda2d",
+    "bytes": 13602
+  },
+  "packing/__init__.py": {
+    "sha256": "9df3f585fdb3068ddbd8f269f688af9260394a42c5968c30071cf63fec336e69",
+    "bytes": 66
+  },
+  "packing/tiny_fixture.py": {
+    "sha256": "34b7b6f891e6d6cd7c715e34f2c48de64359c19b0389cfd780f0d254ac98beac",
+    "bytes": 2748
+  },
+  "packing/rtn_fixture.py": {
+    "sha256": "8a02aa68c9b42a893b1a81111f60c162b04edb8d480ef02a235b05da9d75ba9e",
+    "bytes": 6406
+  },
+  "packing/tests/test_q1.py": {
+    "sha256": "021eee255e74240b24d12701f290624aa6a6f747109df7d0eb5cbd49c87f3bb9",
+    "bytes": 12057
+  },
+  "packing/evidence/qwen-cost-manifest.json": {
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe",
+    "bytes": 201217
+  },
+  "tests/test_gcs_checkpoints.py": {
+    "sha256": "3dd284aadfdc517249f78c0b83d8474c42d5b50643813835c8aad9de0c753760",
+    "bytes": 13979
+  },
+  "tests/test_restore_inputs.py": {
+    "sha256": "66680cbe9054a96f72ddc87df7ab86191e26a9858bea80bd1804d1f991d16ba3",
+    "bytes": 8159
+  }
+}

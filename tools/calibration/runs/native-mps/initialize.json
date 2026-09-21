@@ -1,0 +1,22 @@
+{
+  "inputs": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/local-inputs",
+  "input_commit_sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a",
+  "runtime_sha256": "b0e323462a669bf8163b94b405e37dbf24bbc2bfd4cd405983ff36d79877d1ab",
+  "largest_first": true,
+  "checkpoint_seconds": 120,
+  "deadline_unix": 1789899325.5326211,
+  "target_bytes": 4000000000,
+  "seed": 42,
+  "cost_manifest": {
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/packing/evidence/qwen-cost-manifest.json",
+    "sha256": "db8715f5a0a143d03489a96f35b636859d2b40ce3deea32baa31ca52fbfc3dbe"
+  },
+  "upstream": "/Users/jasontitus/experiments/mcpzim/tools/calibration/cuda_runtime/.context/sources",
+  "stage": "initialize",
+  "output": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/initialize",
+  "checkpoint": {
+    "backend": "local",
+    "path": "/Users/jasontitus/experiments/mcpzim/tools/calibration/runs/native-mps/checkpoints/initialize"
+  },
+  "gsq_execution_device": "mps"
+}

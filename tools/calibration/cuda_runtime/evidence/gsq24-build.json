@@ -1,0 +1,10 @@
+{
+  "status": "local_tests_passed_registry_verified",
+  "registry_image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:4b4c1c1750cf8ae8e0e92bfa9a77f60e65e7a05487360846d4824fb91482fb39",
+  "solver_tests_passed": 156,
+  "transport_tests_passed": 45,
+  "source_manifest_sha256": "ff860fd1f7add58f59bf8a6b6b15652881a4d3e3f5dfbfb2bffc7d86b6c4e491",
+  "cuda_validated": false,
+  "source_matches_build": true,
+  "registry_verified": true
+}

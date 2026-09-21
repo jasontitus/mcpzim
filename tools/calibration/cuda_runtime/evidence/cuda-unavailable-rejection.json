@@ -1,0 +1,15 @@
+{
+  "status": "failed",
+  "stage": "gsq",
+  "device": "cuda",
+  "torch": "2.11.0+cu130",
+  "cuda_toolkit": "13.0",
+  "whole_model_validated": false,
+  "gpu_validated": false,
+  "source_revisions": {
+    "gsq": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+    "rco": "9a1e09c07d468109cbe60a1b87d5036034a79d10"
+  },
+  "compiled_architectures": "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120",
+  "error": "RuntimeError: CUDA requested but unavailable"
+}
