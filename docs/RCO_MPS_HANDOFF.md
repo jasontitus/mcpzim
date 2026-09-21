@@ -146,6 +146,12 @@ assembled model.
 
 ## 7. Not yet tried
 
+- **Add a cosine floor to the drift guard.** As written the guard bounds `norm_ratio` and
+  its per-block change - magnitude only. The 2026-09-20 sweep held its magnitude near 0.9
+  while its cosine fell from 0.893 to ~0.70, with `cosine_min` reaching 0.50, so the guard
+  watched a fifteen-block collapse in *direction* and fired not once. A floor at 0.8 would
+  have stopped that sweep around block 18 instead of spending six more hours producing a
+  worse artifact. It is a one-line addition to `drift_stop` in `solver/run.py`.
 - **`py-spy dump --pid <pid>` with sudo.** Names the Python line. If you have a
   password, do this first.
 - **A minimal reproducer by growing `tiny_model()`** (§6). Highest-value

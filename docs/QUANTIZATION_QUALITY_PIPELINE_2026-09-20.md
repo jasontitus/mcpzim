@@ -585,6 +585,27 @@ six layers), and the equivalent for us is already installed:
   demonstrated rather than assumed, and that the byte arithmetic (under 1% of tensors are
   promotable within the 4.2 GB budget) plus this result leaves little room for RCO to
   recover the gap.]*
+- **The drift guard watches magnitude and this chain degrades in direction, so it would
+  have watched it happen.** Magnitude ratio and cosine, per block, from the 2026-09-20
+  sweep:
+
+  | block | 11 | 13 | 15 | 17 | 18 | 19 | 21 | 24 | 25 |
+  |---|---|---|---|---|---|---|---|---|---|
+  | mean ratio | 1.115 | 1.032 | 0.960 | 0.901 | 0.773 | 0.807 | 0.836 | 0.967 | 0.933 |
+  | cosine | 0.893 | 0.889 | 0.882 | 0.867 | 0.812 | 0.763 | **0.700** | 0.714 | 0.723 |
+
+  The magnitude settles near 0.9 and stays there - so `gsq_max_drift_growth` and
+  `gsq_max_drift_ratio`, which bound `norm_ratio` and its per-block change, would never
+  fire on this chain. The *direction* is what fails: cosine falls from 0.893 to ~0.71
+  over fifteen blocks, and `cosine_min` reaches 0.50-0.53, meaning half the sampled
+  invocations end up with a composed student stream barely correlated with the teacher's.
+  A quantised chain that keeps its magnitude but rotates its hidden states is not
+  converging on the teacher, and this is the mechanism behind the 3.7e3 gap far better
+  than the magnitude ever explained it. **The guard needs a cosine floor** - at 0.8 it
+  would have stopped this sweep around block 18 instead of spending another six hours -
+  and that is a one-line addition to the same `drift_stop` expression.
+  It also means the 18-block export measured at 50275 is not a lower bound on the
+  finished chain: ten more blocks of this trend make the composition worse, not better.
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
