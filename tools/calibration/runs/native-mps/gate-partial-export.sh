@@ -33,13 +33,26 @@ DB="${1:?usage: gate-partial-export.sh <candidate-database> [output-dir]}"
 OUT="${2:-runs/native-mps/gate-partial}"
 MODEL_DIR=runs/local-inputs/model
 PRISM=cuda_runtime/.context/prism
-HELDOUT=runs/native-mps/heldout.txt
+HELDOUT=runs/native-mps/export-partial-b018/heldout.txt
 BONSAI=/Users/jasontitus/.cache/huggingface/hub/models--prism-ml--Bonsai-27B-gguf/snapshots/0cf7e3d21581b169b4df1de8bf01316000e2fbb7/Bonsai-27B-Q1_0.gguf
 PERPLEXITY=/opt/homebrew/bin/llama-perplexity
 RECORD=runs/native-mps/gate-results.jsonl
 
 [ -f "$DB" ] || { echo "=== no candidate database at $DB ==="; exit 1; }
 [ -x "$PERPLEXITY" ] || { echo "=== no llama-perplexity at $PERPLEXITY ==="; exit 1; }
+
+# The reclaimer deletes superseded roots, and a candidate database plus the per-block
+# safetensors the plan points at live inside exactly those roots - so an export that
+# runs while it is pruning can lose its inputs mid-run. That happened on 2026-09-20: a
+# plan step failed with FileNotFoundError on a database that had existed minutes
+# earlier, because the attempt directory holding it had just been reclaimed. Refuse to
+# start rather than discover it three minutes in.
+if pgrep -f "reclaim-superseded" >/dev/null 2>&1; then
+  echo "=== a reclaim-superseded run is active; stop it before exporting ==="
+  echo "===   hub stop reclaim      (restart it once the export finishes) ==="
+  exit 1
+fi
+
 mkdir -p "$OUT"
 
 # The text is built once and never rebuilt, so every arm scores identical bytes.

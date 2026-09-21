@@ -550,6 +550,18 @@ six layers), and the equivalent for us is already installed:
   *training*, not a per-tensor q1/bf16 allocation - which sharpens section 2.0.1's
   framing of what the bar costs. Only within-run ratios mean anything here, which is the
   same rule the cross-instrument paragraph above states.
+- **The embedding must match what the chain was trained through, and nothing stops you
+  from changing it.** Exporting the same 18-block database with `--embedding bf16
+  --head bf16` scored a final **15744877.69 +/- 497495.57** - 313x worse than the q1
+  export - on an artifact the exporter reports `completed` for, whose `metadata.gguf` is
+  byte-identical to the good one and whose model has `tie_word_embeddings: false`. So
+  nothing is structurally broken. The embedding sits in the forward path that the
+  per-block training composes through, so the trained prefix has learned to expect the
+  hidden states a *quantised* embedding produces; handing it bf16 embedding states puts
+  it out of distribution. The plan generator accepts that combination without complaint
+  and the exporter cannot detect it, which makes this a footgun worth a guard. It also
+  means that 15.7e6 measures the embedding swap, not the head it was meant to isolate -
+  the head question needs `--embedding q1 --head bf16`.
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
