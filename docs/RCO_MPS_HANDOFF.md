@@ -237,7 +237,14 @@ manifest) and the container build inputs; the stage configs (`gsq-run.json`,
 `runs/native-mps/reclaim-superseded.sh` (which a 64-block sweep needs: see D8 -
 each block writes ~15 GiB of store and up to 28 GiB of output, and without
 reclaiming superseded roots the sweep stops on the driver's 60 GiB guard after
-about five blocks); the RCO reproduction inputs named in §2;
+about five blocks); the gate wiring `runs/native-mps/gate-partial-export.sh`
+(export -> control -> candidate -> record, for scoring an artifact against the
+Bonsai control on identical held-out bytes); the RCO reproduction inputs named in
+§2; the pinned Prism converter at `cuda_runtime/.context/prism`, checked in as
+exactly the 2,973 files its source receipt covers so the receipt's size and
+sha256 checks pass unchanged - `packing/export_qwen.py` inserts `<prism>/gguf-py`
+and `<prism>` on `sys.path` and refuses to run unless `verify_prism_source`
+passes, so without it no artifact can be exported at all;
 and the documentation, including `docs/PORT_VALIDATION.md` (the port's log of
 record) and the `QUANTIZATION_*` design documents.
 
@@ -250,7 +257,6 @@ record) and the `QUANTIZATION_*` design documents.
 | candidate archives and stage tars, ~6.2 GB under `runs/native-mps/validate-new-objective/` | regenerate with the chain, or restore from GCS |
 | checkpoints and per-block outputs, ~536 GB under `runs/` | regenerate: `runs/native-mps/run-gsq-per-block.sh 64` |
 | smoke warmstart states, 4.6 GB and 4.5 GB at `runs/native-mps/smoke/warmstart-block-{0,3}.pt` | regenerate via the smoke stage. **These are real inputs, not scratch** - deleting them killed a run once |
-| `cuda_runtime/.context/prism`, 154 MB | not needed by the solver; it is unrelated vendored tooling |
 | per-iteration `runs/native-mps/pb-config-*.json` | the driver writes them itself |
 
 `tools/calibration/.gitignore` excludes `runs/` deliberately. Anything under it

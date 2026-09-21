@@ -517,6 +517,24 @@ six layers), and the equivalent for us is already installed:
   loads blocked at ~0% CPU rather than failing, which is how a 60 s measurement becomes
   a 25 minute hang. The machine also carries 128 GiB with swap ~98% used, so the
   host-RAM budget in D8 is a shared budget, not this pipeline's alone.
+- **A partially trained chain is not a quality gate, measured.** The 2026-09-20 sweep
+  reached 18 of 64 blocks, and exporting that candidate database (498 tensors, all q1,
+  3.803 GB) and scoring it against the Bonsai control on identical bytes - both arms
+  tokenized to exactly 208 chunks - gave Bonsai **~14.5** and the candidate **~4.4e4**.
+  Two orders of magnitude-plus, on the same text, with the same binary: the artifact is
+  not a compressor. But it does **not** incriminate the chain. 46 of the 64 layers in
+  that artifact are untrained RTN, because a partial chain exports trained candidates
+  for the blocks it has done and falls back to RTN for the rest, so the number is
+  dominated by the fallback and the trained prefix is invisible in it. The intended use
+  of a mid-sweep export was to learn early whether the chain is worth finishing; it does
+  not answer that, and the 40 minutes it cost bought nothing the drift already said.
+  Isolating the trained prefix needs a control arm built from the RTN-only
+  `initial-database.json`, scored on the same text - without that control the candidate's
+  number cannot distinguish "the training is not working" from "the fallback dominates".
+  The absolute values here are **not** comparable to the 7.0653 / 13.397 pair in section
+  2.0.1: this text is a fresh reconstruction from the invocation prompts and scores
+  Bonsai at ~14.5 rather than 7.07, so only within-run ratios mean anything, which is
+  the same rule the cross-instrument paragraph above states.
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
