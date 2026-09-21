@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "scope": "original BF16 text model load/generation integration; not scored evaluation or calibration",
+  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "load_seconds": 11.93115412502084,
+  "parameter_dtypes": [
+    "mlx.core.bfloat16"
+  ],
+  "prompt_tokens": 1584,
+  "token_ids_match_originating_bonsai": true,
+  "prompt_sha256": "5dbfe83eea95e4fb793453d909934ab7c199cca31ebd8e316d03bf9aa6b4f0ed",
+  "max_generated_tokens": 32,
+  "output_tokens": 16,
+  "mlx_peak_memory_bytes": 56247866614,
+  "total_seconds": 30.626155000005383
+}

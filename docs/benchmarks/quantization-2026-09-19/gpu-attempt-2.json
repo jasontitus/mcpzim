@@ -1,0 +1,105 @@
+{
+  "run_id": "zimfo-gpu-1aa7601d8015",
+  "status": "failed_recovery_equivalence",
+  "phases": {
+    "initialize": {
+      "first_observed_seconds": 4,
+      "last_observed_seconds": 139,
+      "last_progress": {
+        "elapsed_seconds": 139,
+        "event": "zimfo_solver_progress",
+        "job_status": "running",
+        "log_bytes": 266,
+        "optimizer_updates": 0,
+        "phase": "initialize",
+        "process_running": true,
+        "production_optimizer_updates": 0,
+        "validation_optimizer_updates": 0
+      },
+      "observed_phase_seconds": 139
+    },
+    "smoke_gsq": {
+      "first_observed_seconds": 143,
+      "last_observed_seconds": 683,
+      "last_progress": {
+        "elapsed_seconds": 683,
+        "event": "zimfo_solver_progress",
+        "job_status": "running",
+        "log_bytes": 532,
+        "optimizer_updates": 0,
+        "phase": "smoke_gsq",
+        "process_running": true,
+        "production_optimizer_updates": 0,
+        "validation_optimizer_updates": 0
+      },
+      "observed_phase_seconds": 546
+    },
+    "smoke_rco": {
+      "first_observed_seconds": 689,
+      "last_observed_seconds": 1125,
+      "last_progress": {
+        "elapsed_seconds": 1125,
+        "event": "zimfo_solver_progress",
+        "job_status": "running",
+        "log_bytes": 798,
+        "optimizer_updates": 2,
+        "phase": "smoke_rco",
+        "process_running": true,
+        "production_optimizer_updates": 0,
+        "validation_optimizer_updates": 2
+      },
+      "observed_phase_seconds": 623.6703157424927
+    }
+  },
+  "configured_production_updates": {
+    "gsq": 5568,
+    "embedding": 87,
+    "head": 87,
+    "rco": 87
+  },
+  "calibration": {
+    "invocations": 87,
+    "total_tokens": 104557,
+    "max_tokens": 4673,
+    "linear_longest_sequence_equivalents": 22.374705756473357,
+    "quadratic_longest_sequence_equivalents": 11.295976691594317
+  },
+  "estimate_limitations": [
+    "Phase times include model load and checkpoint I/O",
+    "Smoke updates alone are not a complete production throughput sample",
+    "Production step samples are approximately15seconds apart",
+    "Head and full production allocation timing remain unmeasured",
+    "RCO recovery equality failed before any production stage",
+    "No isolated update timing or RCO peak memory survived this runtime; new instrumentation required",
+    "The sum of nested/grouped timing events must not be mistaken for total wall time"
+  ],
+  "vm_elapsed_seconds": 1318.145140998,
+  "solver_elapsed_seconds": 1312.6703157424927,
+  "production_optimizer_updates": 0,
+  "checkpoint_publication_observations": [
+    {
+      "stage": "01-smoke_gsq",
+      "publish_seconds": 224.925093532,
+      "local_payload_bytes": 17420948240,
+      "note": "Payload bytes include reused auxiliary files; not a network-byte counter"
+    },
+    {
+      "stage": "02-smoke_rco",
+      "publish_seconds": 285.2428579340001,
+      "local_payload_bytes": 12919115653,
+      "note": "Payload bytes include reused auxiliary files; not a network-byte counter"
+    }
+  ],
+  "cuda_gsq": {
+    "available": true,
+    "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "capability": [
+      12,
+      0
+    ],
+    "total_memory_bytes": 101973819392,
+    "peak_allocated_bytes": 67594695168,
+    "peak_reserved_bytes": 70718062592
+  },
+  "full_run_eta_seconds": null
+}

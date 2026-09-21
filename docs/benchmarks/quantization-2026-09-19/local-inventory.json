@@ -1,0 +1,53 @@
+{
+  "date": "2026-09-19",
+  "scope": "Existing locally parsed log corpus; biased sample, mixed builds, not exact rendered prompts",
+  "conversations": 43,
+  "routes": {
+    "fast-path:article_overview": 39,
+    "fast-path:article_factoid": 5,
+    "unknown": 61,
+    "llm-tool-loop": 12,
+    "fast-path:discuss_article": 6,
+    "fast-path:near_named_place": 3,
+    "fast-path:near_places": 3,
+    "fast-path:route_from_places": 2,
+    "fast-path:locate": 2
+  },
+  "observed_model_prompt_tokens": {
+    "count": 93,
+    "min": 385,
+    "median": 810,
+    "max": 7330,
+    "buckets": {
+      "under_2048": 86,
+      "2048_to_4096": 0,
+      "over_4096": 7
+    }
+  },
+  "evaluation_suites": {
+    "conversational_qa_v1.json": {
+      "conversations": 18,
+      "turns": 45
+    },
+    "event_followup_qa_v1.json": {
+      "conversations": 1,
+      "turns": 3
+    },
+    "exploration_qa_v1.json": {
+      "conversations": 4,
+      "turns": 13
+    },
+    "location_categories_qa_v1.json": {
+      "conversations": 2,
+      "turns": 5
+    }
+  },
+  "machine": {
+    "ram_bytes": 137438953472,
+    "available_disk_gib_approx": 157
+  },
+  "upstream_revisions": {
+    "GSQ": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+    "RCO": "9a1e09c07d468109cbe60a1b87d5036034a79d10"
+  }
+}

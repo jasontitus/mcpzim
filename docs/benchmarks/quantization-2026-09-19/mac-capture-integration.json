@@ -1,0 +1,18 @@
+{
+  "purpose": "real Mac input-capture integration; not calibration or quality scoring",
+  "status": "completed",
+  "invocations": 2,
+  "turns": 2,
+  "token_counts": [
+    467,
+    1584
+  ],
+  "turn_ids": [
+    1,
+    1
+  ],
+  "prompt_hashes_verified": true,
+  "peak_footprint_mb": 985.4578399658203,
+  "answers_present": true,
+  "scored_turns": 0
+}

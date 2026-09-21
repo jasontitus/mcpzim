@@ -1,0 +1,108 @@
+{
+  "run_id": "zimfo-gpu-6583ec8c4659",
+  "runtime_sha256": "f13a4e99a85f4f650a8e3e130757fb4ddee891eeb8e34e6cea973e99dc56c3cd",
+  "outcome": "supervisor_timeout_after_successful_recovery_smoke_and_durable_production_progress",
+  "vm_deleted": true,
+  "disks_retained": true,
+  "solver_error": "TimeoutError: Stage exceeded job deadline; inspect any committed checkpoint",
+  "guest_elapsed_seconds": 2795.7718533029997,
+  "vm_start_to_stop_seconds": 2869.506,
+  "approximate_compute_cost_usd": 1.3892394464999998,
+  "price_usd_per_hour": 1.7429,
+  "price_source": "https://cloud.google.com/spot-vms/pricing",
+  "cost_scope": "Approximate VM compute only, not invoice; excludes preparation, storage, registry and network",
+  "recovery": {
+    "status": "passed",
+    "checks": {
+      "publication_preserves_rng": true,
+      "restored_solver_exact": true,
+      "restored_optimizer_exact": true,
+      "restored_scheduler_exact": true,
+      "restored_rng_exact": true,
+      "post_update_rng_exact": true,
+      "post_update_solver": true,
+      "post_update_optimizer": true,
+      "post_update_scheduler": true
+    },
+    "first_update": {
+      "loss": 9.952978134155273,
+      "raw_gradient_norm": 0.1848258078098297,
+      "budget_bits": 1.183466911315918
+    },
+    "uninterrupted_update": {
+      "loss": 9.952978134155273,
+      "raw_gradient_norm": 0.1925794929265976,
+      "budget_bits": 1.183466911315918
+    },
+    "replayed_update": {
+      "loss": 9.952978134155273,
+      "raw_gradient_norm": 0.1925794929265976,
+      "budget_bits": 1.183466911315918
+    },
+    "cuda": {
+      "available": true,
+      "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "capability": [
+        12,
+        0
+      ],
+      "total_memory_bytes": 101973819392,
+      "peak_allocated_bytes": 62936995840,
+      "peak_reserved_bytes": 63594037248
+    }
+  },
+  "durable_embedding_updates": 87,
+  "durable_gsq_updates": 174,
+  "gsq_completed_blocks": [
+    0,
+    1
+  ],
+  "gsq_uncommitted_observed_updates": 1,
+  "resume_checkpoint": {
+    "object": "runs/zimfo-gpu-6583ec8c4659/gsq/commits/gsq-b002-s00000174-e000-q00000-p00004.json",
+    "generation": 1789869833752714,
+    "bytes": 3918,
+    "sha256": "75ae90952b053fa2df0d155256fed4cbe2babc00b87b1c835fbad7ead0c89180"
+  },
+  "resume_snapshot": "gsq-b002-s00000174-e000-q00000-p00004",
+  "checkpoint_local_payload_bytes": 16892129196,
+  "continuation_required_free_bytes": 112090193416,
+  "measured_gsq_updates_by_block": {
+    "0": {
+      "updates": 87,
+      "seconds": 18.202410981999492
+    },
+    "1": {
+      "updates": 87,
+      "seconds": 17.961561053999503
+    },
+    "2": {
+      "updates": 1,
+      "seconds": 0.4481472060001579
+    }
+  },
+  "gsq_checkpoint_seconds_completed": 869.37277937,
+  "gsq_cache_propagation_seconds": 7.5470539100006135,
+  "gsq_steady_block_wall_seconds": 229,
+  "gsq_constant_rate_scenario": {
+    "seconds_for_64_blocks": 14656,
+    "hours_for_64_blocks": 4.071111111111111,
+    "compute_usd": 7.095539555555554,
+    "assumptions": [
+      "Transfers the observed block0-end to block1-end interval to all64blocks",
+      "Only linear-attention production blocks observed; full-attention, later accumulated state and network variability can differ",
+      "Excludes startup, recovery, embedding/head/RCO, packing and validation; not a complete-job ETA"
+    ]
+  },
+  "complete_job_eta_seconds": null,
+  "remaining_timing_gaps": [
+    "Full-attention production block corpus",
+    "Production learned-head updates and checkpoints",
+    "RCO across real sequence-length distribution and learned candidates",
+    "Final packing/export and held-out validation"
+  ],
+  "terminal_diagnostics_sha256": "90ea3c9a77f1c9cfee64b2828fb54a56bd38e2e0786df1ca7e192f8577f4f0aa",
+  "remote_commit_verification": "tools/calibration/runs/cloud-gpu-20260920-v3/checkpoint-commit-verification.json",
+  "instances_after_cleanup": "tools/calibration/runs/cloud-gpu-20260920-v3/instances-after-cleanup.json",
+  "continuation_plan": "tools/calibration/runs/cloud-gpu-20260920-v3/continuation-plan/continuation-plan.json"
+}

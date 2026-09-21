@@ -1,0 +1,50 @@
+{
+  "date": "2026-09-19",
+  "region": "us-central1",
+  "source": "https://cloud.google.com/spot-vms/pricing",
+  "method": "direct public HTML retrieval; Iowa selector",
+  "rows": [
+    {
+      "machine": "g2-standard-32",
+      "gpu": "L4",
+      "vram_gb": 24,
+      "host_ram_gib": 128,
+      "spot_vm_usd_hour": 1.040448,
+      "ten_hours_vm_usd": 10.4,
+      "twenty_four_hours_vm_usd": 24.97
+    },
+    {
+      "machine": "g4-standard-48",
+      "gpu": "RTX PRO 6000 Blackwell",
+      "vram_gb": 96,
+      "host_ram_gib": 180,
+      "spot_vm_usd_hour": 1.7429,
+      "ten_hours_vm_usd": 17.43,
+      "twenty_four_hours_vm_usd": 41.83
+    },
+    {
+      "machine": "a2-ultragpu-1g",
+      "gpu": "A100",
+      "vram_gb": 80,
+      "host_ram_gib": 170,
+      "spot_vm_usd_hour": 3.041237534,
+      "ten_hours_vm_usd": 30.41,
+      "twenty_four_hours_vm_usd": 72.99
+    },
+    {
+      "machine": "a3-highgpu-1g",
+      "gpu": "H100",
+      "vram_gb": 80,
+      "host_ram_gib": 234,
+      "spot_vm_usd_hour": 6.620287068,
+      "ten_hours_vm_usd": 66.2,
+      "twenty_four_hours_vm_usd": 158.89
+    }
+  ],
+  "limitations": [
+    "Published VM pricing, not capacity reservation or a fixed quote",
+    "Additional disks, durable checkpoint storage, data transfer and tax excluded",
+    "G4 quota not yet verified; A100 regional quotas currently zero",
+    "VM listing verifies machine type availability, not live Spot capacity"
+  ]
+}

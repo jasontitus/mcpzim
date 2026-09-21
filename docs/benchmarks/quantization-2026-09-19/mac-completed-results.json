@@ -1,0 +1,130 @@
+{
+  "status": "mac_collection_and_paired_rubric_completed",
+  "activation_validation": {
+    "status": "validated",
+    "scope": "CPU artifact integrity and projection coverage only",
+    "manifest_sha256": "b4a3584782917bccec8bfbdba91bbc2249290860431cdae8233f624cfa337ead",
+    "sequences": 87,
+    "tokens": 104557,
+    "projections_per_sequence": 497,
+    "tensors": 173130,
+    "tensor_bytes": 23436670016,
+    "limitations": [
+      "Does not rerun tokenizer or model",
+      "Model artifact descriptors are checked, original weight bytes are not reread",
+      "Does not validate GSQ/RCO numerical parity"
+    ]
+  },
+  "comparison_summaries": {
+    "all_app_turns": {
+      "reference": {
+        "conversation_count": 25,
+        "turn_count": 66,
+        "passed_turns": 51,
+        "conversation_weighted_pass_rate": 0.7733333333333333,
+        "per_conversation_pass_rate": {
+          "prepared_russia_history_followups": 1.0,
+          "prepared_mongolia_topic_chat": 1.0,
+          "prepared_mongolia_religion_continuity": 0.6666666666666666,
+          "prepared_mongolia_mongols_continuity": 0.5,
+          "prepared_lithuania_christianity_continuity": 0.3333333333333333,
+          "putin_biography_followups": 0.5,
+          "george_washington_followups": 0.6666666666666666,
+          "alamo_event_followups": 1.0,
+          "gravitational_wave_followups": 0.0,
+          "washington_age_disambiguation_state": 1.0,
+          "washington_age_disambiguation_dc": 1.0,
+          "seattle_qualified_age": 1.0,
+          "san_francisco_age_fast_path": 1.0,
+          "apple_truncated_voice_factoid": 0.0,
+          "topic_switch_putin_to_alamo": 1.0,
+          "explicit_wikipedia_source_correction": 0.5,
+          "streetzim_nearest_coffee_route": 0.5,
+          "streetzim_named_landmark": 1.0,
+          "lithuania-dissolution": 1.0,
+          "modern-geopolitics": 1.0,
+          "country-facet-transfer": 1.0,
+          "work-medium-transfer": 1.0,
+          "unsupported-specifics": 1.0,
+          "bars-wider-and-selection": 0.6666666666666666,
+          "salinas-coffee-category-followup": 1.0
+        }
+      },
+      "bonsai": {
+        "conversation_count": 25,
+        "turn_count": 66,
+        "passed_turns": 48,
+        "conversation_weighted_pass_rate": 0.744,
+        "per_conversation_pass_rate": {
+          "prepared_russia_history_followups": 1.0,
+          "prepared_mongolia_topic_chat": 0.75,
+          "prepared_mongolia_religion_continuity": 0.3333333333333333,
+          "prepared_mongolia_mongols_continuity": 0.75,
+          "prepared_lithuania_christianity_continuity": 0.3333333333333333,
+          "putin_biography_followups": 0.5,
+          "george_washington_followups": 0.6666666666666666,
+          "alamo_event_followups": 1.0,
+          "gravitational_wave_followups": 0.0,
+          "washington_age_disambiguation_state": 1.0,
+          "washington_age_disambiguation_dc": 1.0,
+          "seattle_qualified_age": 1.0,
+          "san_francisco_age_fast_path": 1.0,
+          "apple_truncated_voice_factoid": 0.0,
+          "topic_switch_putin_to_alamo": 1.0,
+          "explicit_wikipedia_source_correction": 0.5,
+          "streetzim_nearest_coffee_route": 0.5,
+          "streetzim_named_landmark": 1.0,
+          "lithuania-dissolution": 1.0,
+          "modern-geopolitics": 1.0,
+          "country-facet-transfer": 0.6,
+          "work-medium-transfer": 1.0,
+          "unsupported-specifics": 1.0,
+          "bars-wider-and-selection": 0.6666666666666666,
+          "salinas-coffee-category-followup": 1.0
+        }
+      },
+      "reference_minus_bonsai": 0.029333333333333322
+    },
+    "model_involved_app_turns": {
+      "reference": {
+        "conversation_count": 8,
+        "turn_count": 17,
+        "passed_turns": 13,
+        "conversation_weighted_pass_rate": 0.75,
+        "per_conversation_pass_rate": {
+          "prepared_russia_history_followups": 1.0,
+          "prepared_mongolia_topic_chat": 1.0,
+          "prepared_mongolia_religion_continuity": 1.0,
+          "prepared_mongolia_mongols_continuity": 0.0,
+          "gravitational_wave_followups": 0.0,
+          "lithuania-dissolution": 1.0,
+          "modern-geopolitics": 1.0,
+          "country-facet-transfer": 1.0
+        }
+      },
+      "bonsai": {
+        "conversation_count": 8,
+        "turn_count": 17,
+        "passed_turns": 11,
+        "conversation_weighted_pass_rate": 0.6458333333333334,
+        "per_conversation_pass_rate": {
+          "prepared_russia_history_followups": 1.0,
+          "prepared_mongolia_topic_chat": 0.5,
+          "prepared_mongolia_religion_continuity": 0.0,
+          "prepared_mongolia_mongols_continuity": 1.0,
+          "gravitational_wave_followups": 0.0,
+          "lithuania-dissolution": 1.0,
+          "modern-geopolitics": 1.0,
+          "country-facet-transfer": 0.6666666666666666
+        }
+      },
+      "reference_minus_bonsai": 0.10416666666666663
+    }
+  },
+  "promotion_eligible": false,
+  "critical_answer_review": "pending",
+  "cuda_full_model_solver": "pending",
+  "cloud_durable_resume": "pending",
+  "paid_gpu_started": false,
+  "comparison_report_sha256": "d096fb35bc04368d8da6fd9197a1344368bc27c3867af23ddc89467ce406a07b"
+}

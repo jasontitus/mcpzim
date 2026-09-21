@@ -1,0 +1,210 @@
+{
+  "project": "tiltastech-zimfo",
+  "region": "us-central1",
+  "bucket": "tiltastech-zimfo-quantization-us-central1",
+  "public_access_prevention": true,
+  "uniform_bucket_level_access": true,
+  "registry": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization",
+  "preparation_image_digest": "sha256:1ea284684a05dab167b89d574006dc65ec9209ddbafed4d08af9db4bbac0911f",
+  "worker_service_account": "zimfo-quant-worker@tiltastech-zimfo.iam.gserviceaccount.com",
+  "worker_bucket_roles": [
+    "roles/storage.objectViewer",
+    "roles/storage.objectCreator"
+  ],
+  "worker_registry_role": "roles/artifactregistry.reader",
+  "spot_quota": {
+    "containerType": "PROJECT",
+    "dimensions": [
+      "region"
+    ],
+    "dimensionsInfos": [
+      {
+        "applicableLocations": [
+          "africa-south1",
+          "asia-east1",
+          "asia-east2",
+          "asia-northeast1",
+          "asia-northeast2",
+          "asia-northeast3",
+          "asia-south1",
+          "asia-south2",
+          "asia-southeast1",
+          "asia-southeast2",
+          "asia-southeast3",
+          "australia-southeast1",
+          "australia-southeast2",
+          "europe-central2",
+          "europe-north1",
+          "europe-north2",
+          "europe-southwest1",
+          "europe-west1",
+          "europe-west10",
+          "europe-west12",
+          "europe-west2",
+          "europe-west3",
+          "europe-west4",
+          "europe-west6",
+          "europe-west8",
+          "europe-west9",
+          "me-central1",
+          "me-central2",
+          "me-west1",
+          "northamerica-northeast1",
+          "northamerica-northeast2",
+          "northamerica-south1",
+          "southamerica-east1",
+          "southamerica-west1",
+          "us-central1",
+          "us-east1",
+          "us-east4",
+          "us-east5",
+          "us-south1",
+          "us-west1",
+          "us-west2",
+          "us-west3",
+          "us-west4"
+        ],
+        "details": {
+          "value": "1"
+        }
+      }
+    ],
+    "isPrecise": true,
+    "metric": "compute.googleapis.com/preemptible_nvidia_rtx_pro_6000_gpus",
+    "metricDisplayName": "Preemptible NVIDIA RTX PRO 6000 GPUs",
+    "metricUnit": "1",
+    "name": "projects/140100820743/locations/global/services/compute.googleapis.com/quotaInfos/PREEMPTIBLE-NVIDIA-RTX-PRO-6000-GPUS-per-project-region",
+    "quotaDisplayName": "Preemptible NVIDIA RTX PRO 6000 GPUs",
+    "quotaId": "PREEMPTIBLE-NVIDIA-RTX-PRO-6000-GPUS-per-project-region",
+    "quotaIncreaseEligibility": {
+      "isEligible": true
+    },
+    "service": "compute.googleapis.com"
+  },
+  "gpu_started": true,
+  "input_upload_status": "staged",
+  "final_runtime_status": "registry_digest_verified",
+  "input_staging": {
+    "status": "staged",
+    "commit": {
+      "bytes": 45018,
+      "crc32c": "yIhO/w==",
+      "generation": "1789857421832274",
+      "object": "inputs/b4a3584782917bccec8bfbdba91bbc2249290860431cdae8233f624cfa337ead/inputs-manifest.json",
+      "sha256": "b15a9f032f9d0cdc4d1dcf5c601148f257724093e44508d7048a6ff6a672586a"
+    },
+    "data_object_count": 114,
+    "data_bytes": 79091392524
+  },
+  "gpu_launch_authorized": false,
+  "gpu_initial_max_seconds": 3600,
+  "gpu_launched": true,
+  "production_runtime": {
+    "status": "registry_digest_verified",
+    "image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:0c95864edb0b19dd9c722c5e2cca1ca210fab693b2f142749424711dc2956ab9",
+    "source_manifest_sha256": "0dd0defe4986e6925815ad26ccbdc88fd185dcaa36569529869a27844f144c82",
+    "solver_tests_passed": 41,
+    "amd64_manifest": "sha256:f8230df0be73edf4e1c433af167cef11bff294132cc96cacabb43bb6a6383343",
+    "gpu_validated": false,
+    "full_qwen_cuda_validated": false,
+    "build_evidence": "tools/calibration/cuda_runtime/evidence/solver-build.json"
+  },
+  "prepared_disks": {
+    "status": "refreshed_verified_detached",
+    "total_gib": 356,
+    "estimated_usd_per_hour": 0.0724,
+    "boot_disk": {
+      "name": "zimfo-prep-642386909c0d-boot",
+      "id": "6809116840565058866"
+    },
+    "data_disk": {
+      "name": "zimfo-prep-642386909c0d-inputs",
+      "id": "6810041422469836046"
+    },
+    "receipt": "tools/calibration/runs/cloud-cpu-prep-20260919-v7/ready.json"
+  },
+  "cpu_attempt": {
+    "machine": "c4-standard-2",
+    "zone": "us-central1-b",
+    "status": "completed_deleted_disks_retained",
+    "vm_created": true,
+    "run_id": "zimfo-prep-642386909c0d",
+    "plan": "tools/calibration/runs/cloud-cpu-prep-20260919-v6/plan.json",
+    "restart_reason": "Original sequential8MiB reads measured22\u201325MB/s; preserve completed files and resume with64MiB reads before timeout",
+    "driver_open_module_check": "passed_in_resume_guest",
+    "started_utc": "2026-09-19T23:36:11Z",
+    "resume_evidence": {
+      "completed_calibration_archives_reused": 88,
+      "completed_model_files_reused": 8,
+      "remaining_bytes_after_reuse": 42041088015,
+      "observed_new_download_bytes_per_30_seconds": 2818572288,
+      "bootstrap_restore_tests_passed": 74
+    }
+  },
+  "status_snapshot_utc": "2026-09-20T01:06:00Z",
+  "status_evidence": "v2 result, terminal diagnostics, launcher finish and empty quantization instance listing",
+  "prior_cpu_attempt": {
+    "machine": "n4-standard-2",
+    "zone": "us-central1-b",
+    "status": "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS",
+    "vm_created": false
+  },
+  "remaining_gates": [
+    "Collect complete terminal numerical and timing reports",
+    "Measure production throughput, checkpoint and export costs for complete-run estimate",
+    "Complete learned candidate export and size/quality evaluation",
+    "Validate cold continuation controller and remaining-stage orchestration"
+  ],
+  "gpu_attempt": {
+    "status": "stopped_deleted_disks_retained",
+    "run_id": "zimfo-gpu-12634bcb83a0",
+    "plan": "tools/calibration/runs/cloud-gpu-20260919-v1/plan.json",
+    "absolute_deadline": "2026-09-20T00:53:34+00:00",
+    "started_utc": "2026-09-19T23:54:01Z",
+    "smoke_passed": false,
+    "stopped_utc": "2026-09-20T00:06:01Z",
+    "compute_usd_estimate": 0.36,
+    "reason": "Checkpoint remote SHA verification used1MiB GCS ranges; halted to fix idle GPU time"
+  },
+  "gpu_currently_running": false,
+  "next_runtime": {
+    "image": "us-central1-docker.pkg.dev/tiltastech-zimfo/zimfo-quantization/runtime@sha256:a1de1726c84d97c208bb8ccde70a985b76f7a65aab2cf985840ae165049e2869",
+    "status": "cpu_cached_benchmark_passed",
+    "cpu_cache_plan": "tools/calibration/runs/cloud-cpu-prep-20260919-v7/plan.json",
+    "transport_benchmark": {
+      "bytes": 4634634240,
+      "sha256": "4edc5f04ff2ddff7a519cee96395c722b7e440d2de5155225006790927b87dec",
+      "seconds": 47.426990019,
+      "MiB_per_second": 93.19443715180545,
+      "range_bytes": 67108864
+    }
+  },
+  "next_gpu_plan": {
+    "path": "tools/calibration/runs/cloud-gpu-20260919-v2/plan.json",
+    "status": "finished_failed_vm_deleted_disks_retained",
+    "approved": true,
+    "run_id": "zimfo-gpu-1aa7601d8015",
+    "absolute_deadline": "2026-09-20T01:30:01+00:00",
+    "failure": "RCO restored next update differs:76/996 allocation values; maximum absolute difference0.0011873245"
+  },
+  "third_attempt": {
+    "status": "finished_timeout_vm_deleted_disks_retained",
+    "approved": true,
+    "max_seconds": 3600,
+    "image": "sha256:f13a4e99a85f4f650a8e3e130757fb4ddee891eeb8e34e6cea973e99dc56c3cd",
+    "cpu_plan": "tools/calibration/runs/cloud-cpu-prep-20260920-v8/plan.json",
+    "run_id": "zimfo-gpu-6583ec8c4659",
+    "absolute_deadline": "2026-09-20T02:18:23+00:00",
+    "plan": "tools/calibration/runs/cloud-gpu-20260920-v3/plan.json",
+    "smoke_passed": true,
+    "validation_optimizer_updates": 4,
+    "observed_solver_elapsed_seconds": 2795.7718533029997,
+    "source": "docs/benchmarks/quantization-2026-09-19/gpu-attempt-3.json",
+    "production_optimizer_updates": 261,
+    "production_optimizer_updates_durable": 261,
+    "durable_gsq_updates": 174,
+    "durable_embedding_updates": 87,
+    "failure": "Supervisor deadline exceeded during final GSQ checkpoint; numerical recovery passed",
+    "authorization_consumed": true
+  }
+}
