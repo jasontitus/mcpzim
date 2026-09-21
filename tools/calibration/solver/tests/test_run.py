@@ -370,8 +370,12 @@ def test_block_loop_records_stream_drift_and_stops_when_it_grows(tmp_path):
     records=[[1,3,7,9],[2,5,8,11]]
     conf={**config(tmp_path),'gsq_max_blocks':3,'gsq_max_drift_growth':1e-12}
     output=tmp_path/'drift';output.mkdir();initialize_candidates(tiny_model(4),output)
+    # The status must be `drift_stop`, not `blocked_stop`: the per-block driver
+    # advances on `blocked_stop` and treats any other status as a loud stop, so a
+    # guard trip reported as `blocked_stop` would be walked past. The threshold here
+    # is machine epsilon, so this asserts the guard fires rather than any real growth.
     stopped=gsq_run(tiny_model(4),records,conf,output,Checkpointer(conf,output))
-    assert stopped['status']=='blocked_stop' and stopped['stop_reason']=='drift'
+    assert stopped['status']=='drift_stop' and stopped['stop_reason']=='drift'
     history=json.loads((output/'drift.json').read_text())
     assert [record['block'] for record in history]==[0,1]
     first,second=history
