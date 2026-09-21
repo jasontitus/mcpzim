@@ -1,0 +1,385 @@
+{
+  "schemaVersion": 2,
+  "modelDisplayName": "Bonsai 27B (1-bit · Metal)",
+  "contextTokens": 16384,
+  "kvCacheType": "Q4_0",
+  "passedTurns": 17,
+  "failedTurns": 2,
+  "turns": [
+    {
+      "answer": "The Grand Duchy of Lithuania was a sovereign state in northeastern Europe that existed from the 13th century, succeeding the Kingdom of Lithuania, to the late 18th century, when the territory was suppressed during the 1795 partitions of Poland–Lithuania.\n\nThe state was founded by Lithuanians, who were at the time a polytheistic nation of several united Baltic tribes from Aukštaitija.\n\nBy 1440 the grand duchy had become the largest European state, controlling an area from the Baltic Sea in the north to the Black Sea in the south.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 0.2054600715637207,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Grand Duchy of Lithuania"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nOn 26 November 2022, a Lublin Triangle format meeting between the Prime Ministers of Poland, Lithuania and Ukraine was held in Kyiv. In a joint statement the leaders stressed the role of the Lublin Triangle in \"consolidating international support for Ukraine in countering Russia's armed aggression \", \"confirmed their readiness to continue active cooperation in restoring the territorial integrity and sovereignty of Ukraine within its internationally recognized borders\", \"condemned systemic war crimes committed by Russia's forces in regions of Ukraine\" and \"confirmed the further importance of trilateral cooperation in such areas as: military and defense cooperation using NATO and the EU potential\".\n\nIn summer of the same year, Belarusian authorities organized the 2021–2022 Belarus–European Union border crisis consisting of an influx of tens of thousands of immigrants, primarily from Iraqi Kurdistan, to Lithuania, Latvia, and Poland via those countries' borders with Belarus. Belarus allowed its territory to be used by the Russian army in the 2022 Russian invasion of Ukraine to stage and launch forces from the north into Ukraine.\n\nBoth countries are members of the Council of the Baltic Sea States, Council of Europe and NATO. Both countries share a common border of 103 km.\n\nYou can say “Tell me about Lithuania–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 25.420773029327393,
+      "failures": [],
+      "groundingSections": [
+        "Lukashenko era",
+        "Modern times",
+        "lead"
+      ],
+      "groundingTitles": [
+        "History of Belarus",
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Lithuania–Poland relations",
+        "History of Belarus"
+      ],
+      "turn": 2,
+      "user": "How does it relate to modern geopolitics?"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nSome other lands in Ukraine were vassalized by Lithuania later. The subjugation of Eastern Slavs by two powers created substantial differences between them that persist to this day.\n\nWhile there were certainly substantial regional differences in Kievan Rus', it was the Lithuanian annexation of much of southern and western Ruthenia that led to the permanent division between Ukrainians, Belarusians, and Russians, and even four Grand Dukes of Lithuania are appeared on the Millennium of Russia monument. In the 19th century, the romantic references to the times of the Grand Duchy of Lithuania were an inspiration and a substantial part of both the Lithuanian and Belarusian national revival movements and Romanticism in Poland.\n\nYou can say “Tell me about Eastern Ukraine War,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 19.179235100746155,
+      "failures": [],
+      "groundingSections": [
+        "Legacy"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Eastern Ukraine War",
+        "History of Lithuania–Ukraine relations"
+      ],
+      "turn": 3,
+      "user": "How is it relevant to the war in Ukraine?"
+    },
+    {
+      "answer": "I can’t establish public opinion now from this offline archive. Government policy and historical ties don’t tell us how people feel.\n\nI couldn’t find a passage that answers that connection in the articles I searched.\n\nYou can say “Tell me about Lithuania–Ukraine relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 10.22685194015503,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "suggestions": [
+        "Lithuania–Ukraine relations",
+        "History of the Ukrainians in Lithuania",
+        "History of Lithuania-Ukraine relations"
+      ],
+      "turn": 4,
+      "user": "How do Ukrainians feel about Lithuania now?"
+    },
+    {
+      "answer": "Bulgaria, officially the Republic of Bulgaria, is a country in Southeast Europe.\n\nIt is situated on the eastern portion of the Balkans directly south of the Danube river and west of the Black Sea.\n\nBulgaria is bordered by Greece and Turkey to the south, Serbia and North Macedonia to the west, and Romania across the Danube river to the north.\n\nYou can say “What about geography?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 0.3017539978027344,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Bulgaria"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What about geography?",
+        "What about culture?",
+        "What about economy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Bulgaria"
+    },
+    {
+      "answer": "Poland joined NATO and the EU in 1999, and 2004, respectively. Poland supported Bulgaria's aspiration to join NATO, and ratified Bulgaria's accession in 2003.\n\nBulgaria joined NATO in 2004 and the EU in 2007.\n\nYou can say “Tell me about Bulgaria–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 15.679463028907776,
+      "failures": [],
+      "groundingSections": [
+        "NATO and European Union"
+      ],
+      "groundingTitles": [
+        "Bulgaria–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Bulgaria–Poland relations"
+      ],
+      "turn": 2,
+      "user": "When did Bulgaria join NATO?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nLithuania became a full member of NATO in March 2004. Fighter jets of NATO members are deployed in Šiauliai Air Base and provide security for the Baltic airspace.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 20.19918704032898,
+      "failures": [],
+      "groundingSections": [
+        "Military",
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania",
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Lithuania",
+        "Lithuania–Poland relations"
+      ],
+      "turn": 3,
+      "user": "How about Lithuania?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nYou can say “tell me about Southeast Europe,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 18.838531970977783,
+      "failures": [],
+      "groundingSections": [
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Southeast Europe",
+        "European Union",
+        "Balkans",
+        "Europe"
+      ],
+      "turn": 4,
+      "user": "What year?"
+    },
+    {
+      "answer": "9 to 5 (song)\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "work-medium-transfer",
+      "elapsedSeconds": 0.20264708995819092,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "9 to 5 (song)"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about 9 to 5 (song)"
+    },
+    {
+      "answer": "9 to 5 (titled Nine to Five in the opening credits) is a 1980 American comedy film directed by Colin Higgins, who wrote the screenplay with Patricia Resnick, and starring Jane Fonda, Lily Tomlin, Dolly Parton, Dabney Coleman, Elizabeth Wilson, and Sterling Hayden.\n\nIt tells the story of three working women (played by Fonda, Tomlin, and Parton) who live out their fantasies of getting even with and overthrowing their company's autocratic, \"sexist, egotistical, lying, hypocritical bigot\" vice president (played by Coleman).\n\nThe film grossed over $103.3 million.",
+      "conversationID": "work-medium-transfer",
+      "elapsedSeconds": 0.10038197040557861,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "9 to 5 (film)"
+      ],
+      "passed": true,
+      "suggestions": [],
+      "turn": 2,
+      "user": "And the movie?"
+    },
+    {
+      "answer": "The Grand Duchy of Lithuania was a sovereign state in northeastern Europe that existed from the 13th century, succeeding the Kingdom of Lithuania, to the late 18th century, when the territory was suppressed during the 1795 partitions of Poland–Lithuania.\n\nThe state was founded by Lithuanians, who were at the time a polytheistic nation of several united Baltic tribes from Aukštaitija.\n\nBy 1440 the grand duchy had become the largest European state, controlling an area from the Baltic Sea in the north to the Black Sea in the south.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "unsupported-specifics",
+      "elapsedSeconds": 0.2065730094909668,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Grand Duchy of Lithuania"
+    },
+    {
+      "answer": "I couldn't find an article for “the secret password for lithuania's government servers now” in the offline Wikipedia. Try saying the name a different way.",
+      "conversationID": "unsupported-specifics",
+      "elapsedSeconds": 0.20663392543792725,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [],
+      "turn": 2,
+      "user": "What is the secret password for Lithuania's government servers now?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Russia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 2.4523680210113525,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Russia"
+    },
+    {
+      "answer": "During his long reign, Ivan nearly doubled the already large Russian territory by annexing the three Tatar khanates: Kazan and Astrakhan along the Volga, and the Khanate of Sibir in southwestern Siberia. Ultimately, by the end of the 16th century, Russia expanded east of the Ural Mountains.\n\nIn the east, the rapid Russian exploration and colonisation of vast Siberia continued, hunting for valuable furs and ivory. Russian explorers pushed eastward primarily along the Siberian River Routes, and by the mid-17th century, there were Russian settlements in eastern Siberia, on the Chukchi Peninsula, along the Amur River, and on the coast of the Pacific Ocean.\n\nYou can say “Tell me about Siberian fur trade,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 24.497573971748352,
+      "failures": [],
+      "groundingSections": [
+        "Tsardom of Russia"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Siberian fur trade"
+      ],
+      "turn": 2,
+      "user": "When did it expand into Siberia?"
+    },
+    {
+      "answer": "I found related background, but these passages don’t establish the specific connection you asked about.\n\nThe fighting forces on the Communist side were the Red Army, Kuban Cossacks, Communist Mongolian militias, and the Far Eastern Republic. On the White side, there were local White Army units, pro-white Mongolian militias, Mongolian government forces, and the Beiyang Army.\n\nYou can say “Tell me about Far Eastern Front in the Russian Civil War,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 36.40087699890137,
+      "failures": [],
+      "groundingSections": [
+        "Combatants"
+      ],
+      "groundingTitles": [
+        "Far Eastern Front in the Russian Civil War"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Far Eastern Front in the Russian Civil War"
+      ],
+      "turn": 3,
+      "user": "What were the sides in the civil war?"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nRussia's population peaked at over 148 million in 1993, having subsequently declined due to its death rate exceeding its birth rate, which some analysts have called a demographic crisis. In 2009, it recorded annual population growth for the first time in fifteen years, and subsequently experienced annual population growth due to declining death rates, increased birth rates, and increased immigration.\n\nRussia had an estimated population of 146.0 million in 2025 (143.6 million excluding Crimea and Sevastopol), down from 147.2 million in the 2021 census. It is the most populous country in Europe and ninth-most populous country in the world.\n\nHowever, these population gains have been reversed since 2020, as excessive deaths from the COVID-19 pandemic resulted in the largest peacetime decline in its history. Following the 2022 Russian invasion of Ukraine, the demographic crisis has deepened, owing to high military fatalities and renewed emigration.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 20.848554968833923,
+      "failures": [],
+      "groundingSections": [
+        "Demographics"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [],
+      "turn": 4,
+      "user": "What is the population?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 1.848304033279419,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.10941994190216064,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about Buddhism there"
+    },
+    {
+      "answer": "I found related background, but these passages don’t establish the specific connection you asked about.\n\nBut we must remember that in 2014, with the filing of the then Ukrainian Prime Minister Yatsenyuk, litigation with Russia resumed in 32 countries. — Sergei Markov Similar situation occurred with restitution of cultural property. Although on 14 February 1992 Russia and other former Soviet republics signed agreement 'On the return of cultural and historic property to the origin states' in Minsk, it was halted by the Russian State Duma that eventually passed ' Federal Law on Cultural Valuables Displaced to the USSR as a Result of the Second World War and Located on the Territory of the Russian Federation ' which made restitution currently impossible, effectively barring the return of looted cultural heritage by Soviet troops during the Second World War to its original owners.\n\nUnder the 1992 Lisbon Protocol, Russia also agreed to receive all nuclear weapons remaining in the territory of other former Soviet republics. Since then, the Russian Federation has assumed the Soviet Union's rights and obligations, and is widely viewed as the USSR's successor state.\n\nOn 1 September, Germany invaded Poland and on the 17th the Soviet Union invaded Poland as well. On 6 October, Poland fell and part of the Soviet occupation zone was then handed over to Germany.\n\nYou can say “Tell me about Soviet times,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 17.943387031555176,
+      "failures": [
+        "missing one of [Buddhism | Buddhist | monasteries | religion | clergy | purge]",
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Religion | Modern history]"
+      ],
+      "groundingSections": [
+        "Dissolution and aftermath",
+        "Post-Soviet states",
+        "World War II"
+      ],
+      "groundingTitles": [
+        "Soviet times"
+      ],
+      "passed": false,
+      "suggestions": [
+        "Soviet times"
+      ],
+      "turn": 3,
+      "user": "Then what happened in Soviet times"
+    }
+  ],
+  "environment": "Signed headless Mac replay; Bonsai Q1 with phone context settings; June 2026 English no-picture Wikipedia ZIM. Not a physical phone benchmark."
+}

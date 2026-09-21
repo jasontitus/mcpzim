@@ -98,6 +98,9 @@ class AdaINResBlock1 {
       xt = MLX.swappedAxes(xt, 2, 1)
 
       result = xt + result
+      // Bound the live inference graph at a residual boundary. This does not
+      // change the math, precision, or temporal context of the convolution.
+      MLX.eval(result)
     }
     return result
   }

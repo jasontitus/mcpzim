@@ -107,7 +107,13 @@ public final class ChatSession {
     }
 
     public var library: [LibraryEntry] = []
-    public var libraryError: String?
+    public var libraryError: String? {
+        didSet {
+            if let libraryError, libraryError != oldValue {
+                recordVisibleError(libraryError, source: "Library")
+            }
+        }
+    }
     /// True once the launch-time Documents scan and bookmark restore have
     /// completed. A cold "Open in Zimfo" event waits for this so the scan's
     /// replace operation cannot erase the newly opened external file.
@@ -117,7 +123,13 @@ public final class ChatSession {
 
     public private(set) var models: [any ModelProvider]
     public var selectedModel: any ModelProvider
-    public var modelState: ModelLoadState = .notLoaded
+    public var modelState: ModelLoadState = .notLoaded {
+        didSet {
+            if case .failed(let message) = modelState, modelState != oldValue {
+                recordVisibleError(message, source: "Model")
+            }
+        }
+    }
     /// Wall-clock stamp of when the current download started — stamped
     /// on the `.notLoaded → .downloading` transition and cleared on
     /// transitions back to `.notLoaded` / `.ready` / `.failed`. Used by
@@ -142,7 +154,13 @@ public final class ChatSession {
 
     public var messages: [ChatMessage] = []
     public var isGenerating = false
-    public var lastError: String?
+    public var lastError: String? {
+        didSet {
+            if let lastError, lastError != oldValue {
+                recordVisibleError(lastError, source: "Chat")
+            }
+        }
+    }
     private var generationTask: Task<Void, Never>?
     private var activeQueryTelemetry: AppTelemetry.QueryTrace?
 
@@ -258,8 +276,21 @@ public final class ChatSession {
         /// “Then what happened in Soviet times?” inherits its facet for
         /// retrieval and answer framing without changing the visible text.
         var lastQuestion: String?
+        var explorationQuestion: String? = nil
+        var explorationTime: ExplorationPlan.Time? = nil
+        var explorationSubjects: [String] = []
+        var validatedDateEvidence: ValidatedDateEvidence? = nil
+        var siriSource: SiriArticleReference? = nil
     }
     private var discussionState: DiscussionState?
+    /// Only the exact anchor document, never the multi-article RAG bundle.
+    var siriDiscussionArticle: SiriArticleReference? { discussionState?.siriSource }
+    private var siriTurnLibraryVersion = ""
+    private func siriSource(from result: [String: Any]) -> SiriArticleReference? {
+        guard !siriTurnLibraryVersion.isEmpty,
+              siriTurnLibraryVersion == ZimfoRunner.libraryFingerprint() else { return nil }
+        return SiriArticleReference.resolved(result, version: siriTurnLibraryVersion)
+    }
     private var nativeEvidenceMessageID: UUID?
 
     /// Sections already inspected for the current topic. This drives one
@@ -448,6 +479,12 @@ public final class ChatSession {
         set { UserDefaults.standard.set(newValue, forKey: Self.enableAppleFMKey) }
     }
 
+    /// Capture the exact displayed message at assignment, before a transient
+    /// view or alert can dismiss it. Uses the existing opt-in log pipeline.
+    public func recordVisibleError(_ message: String, source: String) {
+        debug("\(source): \(message)", category: "UIError")
+    }
+
     public func debug(_ message: String, category: String = "App") {
         // Prefix every log line with resident-memory so it's easy to eyeball
         // which step moved the needle. Uses `phys_footprint` — the same number
@@ -598,6 +635,44 @@ public final class ChatSession {
     /// double-warm the streetzim routing graph (+2 GB temporarily on
     /// each load). Always read/written on the main actor.
     @ObservationIgnored private var launchSequenceRan = false
+    @ObservationIgnored private var foregroundModelStarted = false
+
+    /// Session-owned guard survives RootView recreation. Siri background
+    /// execution never calls this foreground entry point.
+    public func startForegroundModelLoading() {
+        guard !foregroundModelStarted else { return }
+        foregroundModelStarted = true
+        Task { @MainActor in
+            await self.prewarmBackgroundCaches()
+            await self.loadSelectedModel()
+        }
+    }
+
+    private func installLocationObservation() {
+        #if canImport(UIKit)
+        guard locationSubscription == nil else { return }
+        locationSubscription = LocationFetcher.subscribe { [weak self] coord in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.currentLocation = (coord.latitude, coord.longitude)
+                self.focus.updateLocation(lat: coord.latitude, lon: coord.longitude)
+                // Proactively embed wiki-backed places around the new fix so
+                // semantic recall works for where the user physically is, not
+                // just articles they've opened. Throttled + fire-and-forget.
+                self.seedNearbyPlacesIfMoved(
+                    lat: coord.latitude, lon: coord.longitude)
+            }
+            // Mirror into ZimfoContext so the route_status / what_is_here
+            // tools (dispatched off-main through the adapter's actor) have
+            // a thread-safe source of the latest GPS fix.
+            Task {
+                await ZimfoContext.shared.updateLastLocation(
+                    .init(lat: coord.latitude, lon: coord.longitude)
+                )
+            }
+        }
+        #endif
+    }
 
     /// Single idempotent entry point for RootView's `.task`. SwiftUI
     /// can fire `.task` more than once across a NavigationStack's
@@ -630,6 +705,7 @@ public final class ChatSession {
         // process is restarted. Authorized installs still start updates now;
         // undetermined installs prompt after the first navigational request
         // has already been transcribed and submitted.
+        installLocationObservation()
         LocationFetcher.start()
         refreshLocationIfStale()
         await prewarmBackgroundCaches()
@@ -975,6 +1051,31 @@ public final class ChatSession {
         let dt = Date().timeIntervalSince(started)
         debug(String(format: "prewarmed reranker in %.2fs", dt),
               category: "Rerank")
+        #if !MCPZIM_EVAL && canImport(FluidAudio)
+        // Compile the lightweight speech runtime while the app is idle,
+        // after the language model/reranker settle. No audio engine is made.
+        let thermal = ProcessInfo.processInfo.thermalState
+        let voiceHeadroom = TTSFactory.availableMemoryMB()
+        let prefersKokoro = TTSFactory.prefersKokoroAutomatically(
+            assetsInstalled: KokoroAssets.isDownloaded, availableMemoryMB: voiceHeadroom,
+            thermallyConstrained: thermal == .serious || thermal == .critical)
+        if case .ready = modelState,
+           TTSBackendPreference.current != .system,
+           TTSBackendPreference.current == .supertonic || !prefersKokoro,
+           Supertonic3Assets.readyForSilentWarmup,
+           thermal != .serious, thermal != .critical,
+           voiceHeadroom >= 800 {
+            Task(priority: .utility) { [weak self] in
+                let start = Date()
+                do {
+                    try await Supertonic3TTSService.prewarmRuntime()
+                    self?.debug(String(format: "silent Supertonic runtime ready in %.2fs", Date().timeIntervalSince(start)), category: "Voice")
+                } catch {
+                    self?.debug("silent Supertonic warm-up failed: \(error.localizedDescription)", category: "Voice")
+                }
+            }
+        }
+        #endif
     }
 
     /// Run a silent 1-token "hi" generation so Gemma's KV cache is
@@ -1937,26 +2038,7 @@ public final class ChatSession {
         // polling / timeout machinery — replaces the fragile
         // `refreshLocationIfStale` + `LocationFetcher.once()` pair.
         #if canImport(UIKit)
-        locationSubscription = LocationFetcher.subscribe { [weak self] coord in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.currentLocation = (coord.latitude, coord.longitude)
-                self.focus.updateLocation(lat: coord.latitude, lon: coord.longitude)
-                // Proactively embed wiki-backed places around the new fix so
-                // semantic recall works for where the user physically is, not
-                // just articles they've opened. Throttled + fire-and-forget.
-                self.seedNearbyPlacesIfMoved(
-                    lat: coord.latitude, lon: coord.longitude)
-            }
-            // Mirror into ZimfoContext so the route_status / what_is_here
-            // tools (dispatched off-main through the adapter's actor) have
-            // a thread-safe source of the latest GPS fix.
-            Task {
-                await ZimfoContext.shared.updateLastLocation(
-                    .init(lat: coord.latitude, lon: coord.longitude)
-                )
-            }
-        }
+        if autoLoadOnInit { installLocationObservation() }
         // Listen for iOS memory warnings and aggressively free the KV
         // cache + MLX Metal pool when they fire. Across a long
         // conversation the KV mirror grows by thousands of tokens
@@ -2408,7 +2490,7 @@ public final class ChatSession {
 
     // MARK: - Model switching
 
-    private var isSwitchingModel = false
+    public private(set) var isSwitchingModel = false
 
     public func select(modelId: String) async {
         guard !isSwitchingModel else { return }
@@ -2749,7 +2831,8 @@ public final class ChatSession {
     /// carry category-specific guidance (Phase 2b).
     public private(set) var lastQueryComplexity: QueryComplexity = .topical
 
-    public func send(_ submittedText: String, suggestion: DiscoveryThread? = nil) {
+    public func send(_ submittedText: String, suggestion: DiscoveryThread? = nil,
+                     offlineSource: OfflineArticle? = nil, offlineLibraryVersion: String? = nil) {
         // Setup must have finished (prompt-cache prewarm / load) before
         // we let a real turn hit the generator — otherwise the user's
         // first query races with the prewarm's container.perform and
@@ -2764,6 +2847,7 @@ public final class ChatSession {
             debug("send() ignored — a turn is still generating", category: "Chat")
             return
         }
+        siriTurnLibraryVersion = ZimfoRunner.libraryFingerprint()
         // Spoken card choices use the exact same prompt as a tap, before
         // classification or pinned-discussion routing. Only the latest reply
         // can offer actions; old cards and unshown tool candidates cannot.
@@ -2835,6 +2919,28 @@ public final class ChatSession {
                 if activeQueryTelemetry === queryTelemetry {
                     activeQueryTelemetry = nil
                 }
+            }
+            if let offlineSource {
+                // An explicit source handoff ends the previous document's
+                // eligibility even when the new source fails validation.
+                discussionState?.siriSource = nil
+                do {
+                    let runner = try await ZimfoRunner.load()
+                    let entity = try ZimfoArticleEntity(article: offlineSource, version: offlineLibraryVersion ?? "")
+                    let source = try await entity.validated(using: runner)
+                    if let named = OfflineKnowledge.topic(in: submittedText),
+                       !EntityResolutionPolicy.sameTitle(named, source.title) {
+                        throw AskOfflineQuestionIntent.QuestionFailure.conflictingTopic
+                    }
+                    _ = await handleWikipediaSourceDirective(
+                        .init(title: source.title, question: submittedText),
+                        exactSource: source, sourceAdapter: runner.adapter,
+                        libraryVersion: runner.libraryVersion)
+                } catch {
+                    updateAssistant(error.localizedDescription)
+                }
+                isGenerating = false
+                return
             }
             // Request location lazily, after voice recognition has finished
             // submitting the turn. General Wikipedia questions never need to
@@ -3046,7 +3152,7 @@ public final class ChatSession {
             // each turn afresh. An explicit "stop" or a navigation / new-
             // topic intent exits; anything else is a grounded question
             // about the pinned article.
-            if let ds = discussionState, !wantsContinue {
+            if var ds = discussionState, !wantsContinue {
                 if IntentRouter.isDiscussionExit(text) {
                     activeQueryTelemetry?.setRoute("discussion")
                     discussionState = nil
@@ -3061,6 +3167,28 @@ public final class ChatSession {
                 let switchIntent = IntentRouter.classify(
                     text, currentLocation: currentLocation, focus: focus,
                     mode: conversationMode)
+                // A short subject substitution takes precedence over mere
+                // mentions of that subject inside the previous article.
+                if let intent = switchIntent, intent.toolName == "article_overview",
+                   IntentRouter.isEllipticalDiscussionFollowUp(text),
+                   let subject = intent.anyArgs["title"] as? String,
+                   !IntentRouter.isDiscussionFacetTitle(subject),
+                   ExplorationPlan.asksPastDate(ds.explorationQuestion ?? ds.lastQuestion ?? ""),
+                   let resolved = ExplorationPlan.substituteSubject(
+                       in: ds.explorationQuestion ?? ds.lastQuestion ?? "",
+                       old: ds.anchorTitle, new: subject) {
+                    // The fallback below also owns this copy of the state.
+                    // Do not let failed exploration restore the old source.
+                    if !EntityResolutionPolicy.sameTitle(subject, ds.anchorTitle) {
+                        ds.siriSource = nil
+                        discussionState?.siriSource = nil
+                    }
+                    if await answerExploration(state: ds, question: resolved, preferredSource: subject) {
+                        isGenerating = false
+                        if let i = messages.indices.last { messages[i].finishedAt = Date() }
+                        return
+                    }
+                }
                 // A founding-date factoid is grounded and deterministic even
                 // inside a pinned discussion. Execute it here instead of
                 // handing the same article lead to Bonsai for another long
@@ -3099,6 +3227,19 @@ public final class ChatSession {
                     }
                 } else if let intent = switchIntent,
                           intentLeavesDiscussion(intent, state: ds, userText: text) {
+                    if intent.toolName == "article_overview",
+                       IntentRouter.isEllipticalDiscussionFollowUp(text) {
+                        let newSubject = intent.anyArgs["title"] as? String
+                        let resolved = newSubject.flatMap {
+                            ExplorationPlan.substituteSubject(in: ds.explorationQuestion ?? ds.lastQuestion ?? "",
+                                old: ds.anchorTitle, new: $0)
+                        } ?? text
+                        if await answerExploration(state: ds, question: resolved, preferredSource: newSubject) {
+                            isGenerating = false
+                            if let i = messages.indices.last { messages[i].finishedAt = Date() }
+                            return
+                        }
+                    }
                     debug("discussion leave: \(intent.toolName)(\((intent.anyArgs["title"] as? String) ?? "-")) vs pinned \(ds.topic)",
                           category: "Router")
                     discussionState = nil   // topic change → normal routing below
@@ -4176,6 +4317,8 @@ public final class ChatSession {
             debug("triggerArticleRead: empty path, ignoring", category: "Chat")
             return
         }
+        discussionState?.siriSource = nil
+        siriTurnLibraryVersion = ZimfoRunner.libraryFingerprint()
         let caption = title.isEmpty
             ? "Read article at \(path)"
             : "Read \(title)"
@@ -4223,6 +4366,7 @@ public final class ChatSession {
                   category: "Chat")
             return
         }
+        discussionState?.siriSource = nil
         refreshLocationIfStale()
         guard let origin = currentLocation else {
             lastError = "Can't route — no GPS fix yet."
@@ -4362,15 +4506,18 @@ public final class ChatSession {
         if let e = result["error"] as? String, !e.isEmpty { return }
         guard let title = result["title"] as? String, !title.isEmpty else { return }
         let topic = ArticleHeuristics.topicCore(title)
+        let source = siriSource(from: result)
         if let ds = discussionState,
-           ds.topic.caseInsensitiveCompare(topic) == .orderedSame { return }
+           ds.topic.caseInsensitiveCompare(topic) == .orderedSame,
+           ds.siriSource == source, source != nil { return }
         groundedEvidenceSelection = nil
         discussionState = DiscussionState(
             anchorTitle: title, topic: topic,
             zim: result["zim"] as? String, sources: [],
             linkedArticleTitles: [],
             sectionEmbeddings: [:],
-            lastQuestion: nil)
+            lastQuestion: nil,
+            siriSource: source)
     }
 
     /// Enter discussion mode from a `discuss_article` dispatch: pin every
@@ -4427,7 +4574,8 @@ public final class ChatSession {
             sources: sources,
             linkedArticleTitles: Self.linkedArticleTitles(from: fullResult),
             sectionEmbeddings: embeddings,
-            lastQuestion: nil)
+            lastQuestion: nil,
+            siriSource: siriSource(from: fullResult))
         discussionState = state
         updateAssistant(preparing
             + "\n\nReady. Pick a question below, or ask your own.")
@@ -4501,32 +4649,43 @@ public final class ChatSession {
     /// California's "20th century" section).
     @MainActor
     private func handleWikipediaSourceDirective(
-        _ directive: WikipediaSourceDirective
+        _ directive: WikipediaSourceDirective,
+        exactSource: OfflineArticle? = nil, sourceAdapter: MCPToolAdapter? = nil,
+        libraryVersion: String? = nil
     ) async -> Bool {
-        guard let adapter else {
+        guard let adapter = sourceAdapter ?? adapter else {
             updateAssistant("Wikipedia isn't ready yet.")
             return true
         }
         var args: [String: Any] = ["title": directive.title]
-        guard let wikipedia = library.first(where: {
-            $0.isEnabled && $0.reader.kind == .wikipedia
-        }) ?? library.first(where: {
-            $0.isEnabled && $0.reader.kind == .mdwiki
-        }) else {
-            updateAssistant(
-                "I don't have an enabled offline Wikipedia library open.")
-            debug("explicit Wikipedia source unavailable: no Wikipedia ZIM",
-                  category: "Router")
-            return true
+        if let exactSource {
+            args["zim"] = exactSource.zim
+            args["path"] = exactSource.path
+        } else {
+            guard let wikipedia = library.first(where: {
+                $0.isEnabled && $0.reader.kind == .wikipedia
+            }) ?? library.first(where: {
+                $0.isEnabled && $0.reader.kind == .mdwiki
+            }) else {
+                updateAssistant(
+                    "I don't have an enabled offline Wikipedia library open.")
+                debug("explicit Wikipedia source unavailable: no Wikipedia ZIM",
+                      category: "Router")
+                return true
+            }
+            // Supplying the exact library is the authority boundary: a source
+            // correction may resolve or fail inside Wikipedia, but it can never
+            // drift into a StreetZIM article or place search.
+            args["zim"] = wikipedia.url.lastPathComponent
         }
-        // Supplying the exact library is the authority boundary: a source
-        // correction may resolve or fail inside Wikipedia, but it can never
-        // drift into a StreetZIM article or place search.
-        args["zim"] = wikipedia.url.lastPathComponent
         guard let result = try? await adapter.dispatch(
             tool: "discuss_article", args: args)
         else {
             updateAssistant("I couldn't open the Wikipedia article on \(directive.title).")
+            return true
+        }
+        if let libraryVersion, libraryVersion != ZimfoRunner.libraryFingerprint() {
+            updateAssistant(OfflineKnowledge.Failure.staleArticle.localizedDescription)
             return true
         }
         let argsData = try? JSONSerialization.data(
@@ -4575,7 +4734,8 @@ public final class ChatSession {
             sources: sources,
             linkedArticleTitles: Self.linkedArticleTitles(from: result),
             sectionEmbeddings: embeddings,
-            lastQuestion: nil)
+            lastQuestion: nil,
+            siriSource: siriSource(from: result))
         discussionState = state
         groundedEvidenceSelection = nil
         focus.remember(FocusEntity(
@@ -4605,6 +4765,49 @@ public final class ChatSession {
                                         suggestion: DiscoveryThread? = nil) async {
         activeQueryTelemetry?.setRoute("discussion")
         var state = ds
+        if let title = ExplorationPlan.mediumTitle(question: question, anchor: state.anchorTitle), let adapter {
+            var args: [String: Any] = ["title": title]
+            if let zim = state.zim { args["zim"] = zim }
+            if let result = try? await adapter.dispatch(tool: "article_overview", args: args),
+               result["error"] == nil, let resolved = result["title"] as? String,
+               EntityResolutionPolicy.sameTitle(title, resolved) {
+                let passages = SourceBoundAnswer.passages(toolName: "article_overview", result: result)
+                if !passages.isEmpty {
+                    discussionState = nil
+                    noteDiscussionAnchor(toolName: "article_overview", result: result)
+                    focus.remember(FocusEntity(name: resolved, kind: .topic, zimPath: result["path"] as? String))
+                    presentSourceBoundAnswer(question: "Tell me about " + resolved,
+                        topic: resolved, passages: passages)
+                    debug("work medium switch resolved exactly: \(resolved)", category: "Exploration")
+                    return
+                }
+            }
+        }
+        if let passages = state.validatedDateEvidence?.answer(to: question,
+                currentQuestion: state.explorationQuestion) {
+            preemptLlamaPromptOptimizationForGroundedTurn()
+            presentSourceBoundAnswer(question: question, topic: state.topic,
+                passages: passages, selectedReply: ExplorationEvidence.reply(passages: passages))
+            if let idx = messages.indices.last, messages[idx].role == .assistant {
+                var seen = Set<String>()
+                messages[idx].suggestions = passages.filter { seen.insert($0.article).inserted }.map {
+                    DiscoveryThread(label: $0.article, kind: .topic, source: .relation,
+                        note: "Explore this offline article", prompt: "Tell me about \($0.article)")
+                }
+            }
+            debug("date refinement reused validated source evidence; no LLM or search", category: "Exploration")
+            return
+        }
+        // An exploration frame may have changed the active entity while
+        // preserving the historical anchor as context. Resolve subsequent
+        // pronouns against that frame before the anchor's lexical fast path.
+        var alreadyTriedExploration = state.explorationQuestion != nil
+            && ExplorationPlan.needsFrameResolution(question)
+        let explorationQuestion = ExplorationPlan.refineDateQuestion(question,
+            previous: state.explorationQuestion) ?? ArticleHeuristics.contextualizedDiscussionQuestion(
+                question, previousQuestion: state.explorationQuestion ?? state.lastQuestion)
+        if alreadyTriedExploration,
+           await answerExploration(state: state, question: explorationQuestion) { return }
         let needsPreparation = state.sources.isEmpty
         let contextualQuestion = ArticleHeuristics
             .contextualizedDiscussionQuestion(
@@ -4645,6 +4848,10 @@ public final class ChatSession {
                 guard !Task.isCancelled else { return }
                 preemptLlamaPromptOptimizationForGroundedTurn()
                 state.lastQuestion = question
+                state.explorationQuestion = nil
+                state.explorationTime = nil
+                state.explorationSubjects = []
+                state.validatedDateEvidence = nil
                 discussionState = state
                 let passages = sections.map {
                     SourceBoundAnswer.Passage(article: anchor.title, section: $0.title,
@@ -4661,6 +4868,46 @@ public final class ChatSession {
                 return
             }
         }
+        if !alreadyTriedExploration, ExplorationPlan.requiresRelationshipSelection(question) {
+            alreadyTriedExploration = true
+            if await answerExploration(state: state, question: contextualQuestion) { return }
+        }
+        // Search the complete in-hand evidence before a top-k section cut
+        // or a linked-article search can discard the answer. Still use the
+        // same evidence gate; this expands recall, not factual permission.
+        if !ArticleHeuristics.questionKeywords(contextualQuestion).isEmpty {
+            let inHand = state.sources.flatMap { source in
+                source.sections.map { section in
+                    SourceBoundAnswer.Passage(article: source.title,
+                        section: section.title.isEmpty ? "lead" : section.title,
+                        library: state.sourceLibraries[source.title] ?? state.zim,
+                        text: section.text)
+                }
+            }
+            let reply = SourceBoundAnswer.answer(question: contextualQuestion,
+                topic: state.topic, passages: inHand,
+                maxSentences: longerReplies ? 6 : 3,
+                maxCharacters: longerReplies ? 2_200 : 1_200)
+            if reply.hasEvidence {
+                preemptLlamaPromptOptimizationForGroundedTurn()
+                state.lastQuestion = question
+                state.explorationQuestion = nil
+                state.explorationTime = nil
+                state.explorationSubjects = []
+                state.validatedDateEvidence = nil
+                discussionState = state
+                debug("follow-up evidence found before section ranking/search", category: "Grounding")
+                presentSourceBoundAnswer(question: contextualQuestion, topic: state.topic,
+                    passages: inHand, selectedReply: reply)
+                if let idx = messages.indices.last, messages[idx].role == .assistant {
+                    messages[idx].suggestions = groundedSuggestions(state: state,
+                        sections: state.sources.first?.sections ?? [], after: question)
+                }
+                return
+            }
+        }
+        if !alreadyTriedExploration,
+           await answerExploration(state: state, question: question) { return }
         if needsPreparation, discussionPreparationStrategy == .semanticSections {
             state.sectionEmbeddings = await prepareDiscussionEmbeddings(sources: state.sources)
             discussionState = state
@@ -4732,6 +4979,10 @@ public final class ChatSession {
                 debug("discuss: in-article retry answered after a don't-see",
                       category: "Router")
                 state.lastQuestion = question
+                state.explorationQuestion = nil
+                state.explorationTime = nil
+                state.explorationSubjects = []
+                state.validatedDateEvidence = nil
                 discussionState = state
                 return
             }
@@ -4992,13 +5243,15 @@ public final class ChatSession {
                                           passages: [SourceBoundAnswer.Passage],
                                           sectionOverview: Bool = false,
                                           deferMissingAnswer: Bool = false,
-                                          selectedReply: SourceBoundAnswer.Reply? = nil) -> String {
+                                          selectedReply: SourceBoundAnswer.Reply? = nil,
+                                          preface: String = "") -> String {
         let started = Date()
         let reply = selectedReply ?? SourceBoundAnswer.answer(question: question, topic: topic,
             passages: passages, maxSentences: longerReplies ? 6 : 3,
             maxCharacters: longerReplies ? 2_200 : 1_200,
             sectionOverview: sectionOverview)
-        let text = reply.hasEvidence ? reply.text : SourceBoundAnswer.missingAnswer(topic: topic)
+        let body = reply.hasEvidence ? reply.text : SourceBoundAnswer.missingAnswer(topic: topic)
+        let text = preface.isEmpty ? body : preface + "\n\n" + body
         if !reply.hasEvidence && deferMissingAnswer {
             debug("no evidence in this retrieval attempt; retrying before presentation", category: "Grounding")
             return text
@@ -5033,6 +5286,275 @@ public final class ChatSession {
     }
 
 
+
+    /// Bounded on-device reasoning produces navigation/selection data only.
+    /// Neither its prose nor proposed titles are accepted as source evidence.
+    private func explorationJSON(instructions: String, data: String, maxTokens: Int) async throws -> String {
+        await awaitLlamaPromptOptimizationIfNeeded()
+        try Task.checkCancellation()
+        let prompt = selectedModel.template.renderTranscript(systemPreamble: instructions,
+            tools: [], turns: [ChatTurn(role: .user, text: data)])
+        var output = ""
+        for try await chunk in selectedModel.generate(prompt: prompt, parameters:
+            GenerationParameters(maxTokens: maxTokens, temperature: 0, topP: 1,
+                                 useModelSamplingProfile: false)) {
+            try Task.checkCancellation()
+            output += chunk
+            if ExplorationPlan.objectData(output).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) != nil { break }
+        }
+        return output
+    }
+
+    private func answerExploration(state original: DiscussionState, question: String, preferredSource: String? = nil) async -> Bool {
+        let switchesSubject = preferredSource.map {
+            !EntityResolutionPolicy.sameTitle($0, original.anchorTitle)
+        } ?? false
+        if switchesSubject { discussionState?.siriSource = nil }
+        #if MCPZIM_EVAL
+        // Headless regression control; never compiled into either app.
+        if ProcessInfo.processInfo.environment["MCPZIM_EVAL_DISABLE_EXPLORATION"] == "1" { return false }
+        #endif
+        guard modelState == .ready, let adapter, !Task.isCancelled else { return false }
+        let started = Date()
+        var state = original
+        if switchesSubject { state.siriSource = nil }
+        func json(_ value: Any) -> String {
+            (try? JSONSerialization.data(withJSONObject: value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        do {
+            var planningQuestion = ArticleHeuristics.contextualizedDiscussionQuestion(question,
+                previousQuestion: state.explorationQuestion ?? state.lastQuestion)
+            let eventSelection = ExplorationPlan.requiresEventSelection(planningQuestion)
+            if eventSelection {
+                planningQuestion = ExplorationPlan.fallback(question: planningQuestion,
+                    anchor: state.explorationSubjects.first ?? state.anchorTitle).question
+            }
+            let anchorTerms = ArticleHeuristics.questionKeywords(state.anchorTitle)
+            let anchorEvent = eventSelection && !anchorTerms.isEmpty
+                && anchorTerms.allSatisfy { planningQuestion.lowercased().contains($0) }
+                && (state.explorationSubjects.isEmpty
+                    || EntityResolutionPolicy.sameTitle(state.explorationSubjects.first ?? "", state.anchorTitle))
+            let input = json(["anchor": state.anchorTitle,
+                "previous_question": state.explorationQuestion ?? state.lastQuestion ?? "",
+                "previous_time": state.explorationTime?.rawValue ?? "archive",
+                "previous_subjects": state.explorationSubjects.joined(separator: ", "),
+                "previous_answer": String((messages.dropLast().last(where: { $0.role == .assistant })?.text ?? "").prefix(1800)),
+                "question": question]) + "\nPREVIOUS QUESTION (retain its facet for an elliptical subject switch): "
+                + (state.explorationQuestion ?? state.lastQuestion ?? "") + "\nCURRENT QUESTION: " + planningQuestion
+            let raw: String
+            if anchorEvent {
+                // The host already has both the subject and its article.
+                // Skip search planning, but still ask the model to judge evidence.
+                let local = ExplorationPlan.fallback(question: planningQuestion, anchor: state.anchorTitle)
+                raw = json(["question": planningQuestion, "need": "fact",
+                            "time": local.time.rawValue, "queries": [state.anchorTitle],
+                            "subjects": [state.anchorTitle]])
+            } else {
+                raw = try await explorationJSON(instructions: ExplorationPlan.planningInstructions,
+                                                data: input, maxTokens: 220)
+            }
+            let contextual = ArticleHeuristics.contextualizedDiscussionQuestion(question,
+                previousQuestion: state.explorationQuestion ?? state.lastQuestion)
+            let proposedPlan = ExplorationPlan.decode(raw) ?? ExplorationPlan.fallback(question: contextual, anchor: state.anchorTitle)
+            // Do not let a planner leave an event's subject as "it" after
+            // the conversation has already resolved it deterministically.
+            let plan = eventSelection ? ExplorationPlan(question: planningQuestion,
+                need: .fact, time: proposedPlan.time, queries: proposedPlan.queries,
+                subjects: proposedPlan.subjects) : proposedPlan
+            if ExplorationPlan.decode(raw) == nil {
+                debug("invalid exploration plan; using bounded host search: \(raw.prefix(800))", category: "Exploration")
+            }
+            debug("plan need=\(plan.need.rawValue) time=\(plan.time.rawValue) question=\(plan.question) queries=\(plan.queries)", category: "Exploration")
+            // Search independently of the historical anchor. A user-requested
+            // topic does not require a link from that old article. Resolve the
+            // exact returned title through the archive; no fuzzy substitution.
+            var newSources: [(title: String, sections: [ArticleSection])] = []
+            var seen = Set(state.sources.map { $0.title.lowercased() })
+            var searchQueries = plan.queries
+            if let subjects = plan.subjects, subjects.count == 2,
+               subjects.allSatisfy({ !$0.isEmpty && $0.count < 80 }) {
+                searchQueries.insert(subjects.sorted().joined(separator: "–") + " relations", at: 0)
+            }
+            // The current user's nouns are always searched independently;
+            // a model repeating the previous question cannot erase them.
+            let currentTerms = ArticleHeuristics.questionKeywords(planningQuestion).filter {
+                !["relate", "relevant", "modern", "geopolitics", "feel", "now"].contains($0)
+            }
+            if !currentTerms.isEmpty { searchQueries.insert(currentTerms.joined(separator: " "), at: min(1, searchQueries.count)) }
+            if let preferredSource { searchQueries.insert(preferredSource, at: 0) }
+            // For an event about the anchor, judge its existing evidence
+            // before unrelated search hits can replace that subject.
+            for query in (anchorEvent ? [] : Array(searchQueries.prefix(3))) {
+                try Task.checkCancellation()
+                var exactArgs: [String: Any] = ["title": query]
+                if let zim = state.zim { exactArgs["zim"] = zim }
+                if newSources.count < 3,
+                   let exact = try? await adapter.dispatch(tool: "discuss_article", args: exactArgs),
+                   exact["error"] == nil, let title = exact["title"] as? String,
+                   EntityResolutionPolicy.sameTitle(query, title),
+                   seen.insert(title.lowercased()).inserted,
+                   let rows = exact["sections"] as? [[String: Any]] {
+                    state.sourceLibraries[title] = (exact["zim"] as? String) ?? state.zim
+                    newSources.append((title, rows.map(Self.decodedArticleSection)))
+                    debug("resolved exact exploration source: \(title)", category: "Exploration")
+                    continue
+                }
+                guard let result = try? await adapter.dispatch(tool: "search",
+                    args: ["query": query, "limit": 3]) else { continue }
+                let hits = (result["hits"] as? [[String: Any]]) ?? (result["results"] as? [[String: Any]]) ?? []
+                for hit in hits.prefix(1) {
+                    guard newSources.count < 3, let title = hit["title"] as? String,
+                          seen.insert(title.lowercased()).inserted else { continue }
+                    guard let path = hit["path"] as? String,
+                          let library = hit["zim"] as? String else { continue }
+                    let args: [String: Any] = ["title": title, "path": path, "zim": library]
+                    guard let source = try? await adapter.dispatch(tool: "discuss_article", args: args),
+                          source["error"] == nil, let resolved = source["title"] as? String,
+                          let rows = source["sections"] as? [[String: Any]] else { continue }
+                    state.sourceLibraries[resolved] = library
+                    let sections = rows.map(Self.decodedArticleSection)
+                    newSources.append((resolved, sections))
+                    debug("resolved exploration source: \(resolved)", category: "Exploration")
+                }
+            }
+            // Keep the original anchor plus bounded recent support sources.
+            let sources = Array(state.sources.prefix(1)) + Array(state.sources.dropFirst().suffix(2)) + newSources
+            let ranked = ArticleHeuristics.rankSectionsMultiSource(plan.question + " " + plan.queries.joined(separator: " "),
+                sources: sources, k: 12)
+            var candidates: [SourceBoundAnswer.Passage] = []
+            // Include a lead from each new entity so title-search results are
+            // judged in context, and the anchor's Legacy section as background.
+            let initial = (anchorEvent ? Array(sources.prefix(1)) : newSources).compactMap { source -> (article: String, section: ArticleSection)? in
+                source.sections.first(where: { $0.title.isEmpty }).map { (source.title, $0) }
+            } + sources.prefix(1).flatMap { source in
+                source.sections.filter { $0.title.lowercased().contains("legacy") }.map { (article: source.title, section: $0) }
+            }
+            var seenSections = Set<String>()
+            for item in initial + ranked {
+                guard seenSections.insert(item.article + "§" + item.section.title).inserted else { continue }
+                let sentences = SourceBoundAnswer.sentences(item.section.text)
+                // Two-sentence windows preserve nearby qualifications. Rank
+                // windows separately so useful evidence deep in a section can
+                // beat a historical preface; no whole-article model prompt.
+                for i in stride(from: 0, to: sentences.count, by: 2) {
+                    let body = sentences[i..<min(i + 2, sentences.count)].joined(separator: " ")
+                    guard body.count >= 30, body.count <= 1100 else { continue }
+                    candidates.append(.init(article: item.article, section: item.section.title,
+                        library: state.sourceLibraries[item.article] ?? state.zim, text: body))
+                }
+            }
+            let relevanceQuery = question + " " + plan.queries.joined(separator: " ")
+            let scored = candidates.enumerated().map { item in
+                (offset: item.offset, element: item.element,
+                 score: ExplorationEvidence.relevanceScore(text: item.element.text, query: relevanceQuery)
+                    + (anchorEvent && item.element.article == state.anchorTitle && item.element.section.isEmpty ? 100 : 0))
+            }
+            let ordered = scored.sorted { $0.score == $1.score ? $0.offset < $1.offset : $0.score > $1.score }
+            // Diversify: a single repetitive article must not consume all
+            // evidence slots and hide a modern relationship or the anchor.
+            var windows: [ExplorationEvidence.Window] = []
+            var counts: [String: Int] = [:]
+            var chars = 0
+            for item in ordered {
+                let p = item.element
+                if plan.requiresTemporalCaution(originalQuestion: question)
+                    || (state.explorationTime == .current && !ExplorationPlan.asksPastDate(question) && question.range(of: #"\b[12][0-9]{3}\b"#, options: .regularExpression) == nil) {
+                    let enduring = p.text.range(of:
+                        #"(?i)\b(?:19[0-9]{2}|20[0-9]{2}|today|current|modern|NATO|European Union|revival|continuity|persist\w*|permanent|commemorat\w*)\b"#,
+                        options: .regularExpression) != nil
+                    if !enduring { continue }
+                }
+                if plan.requiresOpinionEvidence(originalQuestion: question),
+                   p.text.range(of: #"\b(?:19[0-9]{2}|20[0-9]{2})\b"#, options: .regularExpression) == nil { continue }
+                if planningQuestion != question,
+                   !ExplorationEvidence.coversContextAnchor(p,
+                       anchor: state.explorationSubjects.first ?? state.anchorTitle) { continue }
+                if !ExplorationEvidence.coversNamedTerms(p, question: question)
+                    || !ExplorationEvidence.coversInheritedFacet(p, current: question, contextual: planningQuestion) { continue }
+                guard windows.count < 14, chars + p.text.count <= 9000,
+                      counts[p.article, default: 0] < (anchorEvent ? 14 : 5) else { continue }
+                windows.append(.init(id: windows.count, passage: p))
+                counts[p.article, default: 0] += 1; chars += p.text.count
+            }
+            let evidence = windows.map { ["id": $0.id, "article": $0.passage.article,
+                "section": $0.passage.section, "text": $0.passage.text] as [String: Any] }
+            let selectionRaw: String
+            if windows.isEmpty {
+                selectionRaw = #"{"direct":[],"background":[]}"#
+            } else {
+                let selectionInstructions = ExplorationPlan.selectionInstructions + (eventSelection
+                    ? "\nSelect at most ONE direct passage: the strongest explicit answer about the subject's own event. Do not add later restoration attempts or background to that answer." : "")
+                selectionRaw = try await explorationJSON(instructions: selectionInstructions,
+                    data: json(["resolved_question": plan.question, "need": plan.need.rawValue,
+                                "time": plan.time.rawValue, "evidence": evidence]) + "\nCURRENT QUESTION: " + planningQuestion, maxTokens: 100)
+            }
+            guard let selected = ExplorationEvidence.selected(selectionRaw, windows: windows) else {
+                debug("invalid exploration evidence IDs; rejected: \(selectionRaw.prefix(800))", category: "Exploration")
+                return false
+            }
+            try Task.checkCancellation()
+            // Current opinion cannot be certified by an offline snapshot.
+            // Cross-article connections remain explicitly background: exact
+            // quotation proves provenance, not a new causal interpretation.
+            let hasExplicitYear = question.range(of: #"\b[12][0-9]{3}\b"#, options: .regularExpression) != nil
+            let current = plan.requiresTemporalCaution(originalQuestion: question)
+                || (state.explorationTime == .current && !hasExplicitYear && !ExplorationPlan.asksPastDate(question))
+            let opinion = plan.requiresOpinionEvidence(originalQuestion: question)
+            let contextOnly = current || opinion || plan.need == .connection
+            let direct = contextOnly ? [] : Array(selected.direct.prefix(eventSelection ? 1 : 3))
+            let background = contextOnly ? selected.direct + selected.background : selected.background
+            let chosen = (direct.isEmpty ? background : direct).filter {
+                !contextOnly || ExplorationEvidence.coversNamedTerms($0, question: question)
+            }
+            state.validatedDateEvidence = ValidatedDateEvidence(question: plan.question,
+                passages: chosen, directFact: !contextOnly && plan.need == .fact && !direct.isEmpty)
+            state.explorationQuestion = plan.question
+            state.explorationTime = current ? .current : (plan.time == .current ? .archive : plan.time)
+            state.explorationSubjects = Array((plan.subjects ?? []).prefix(3))
+            state.lastQuestion = question
+            state.sources = Array(sources.prefix(1)) + Array(sources.dropFirst().suffix(4))
+            discussionState = state
+            let notice: String
+            if opinion {
+                notice = current
+                    ? "I can’t establish public opinion now from this offline archive. Government policy and historical ties don’t tell us how people feel."
+                    : "Public opinion needs dated evidence about people’s views. These related passages alone don’t establish those views."
+            } else if current {
+                notice = "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today."
+            } else if direct.isEmpty {
+                notice = "I found related background, but these passages don’t establish the specific connection you asked about."
+            } else { notice = "" }
+            if chosen.isEmpty {
+                let missing = "I couldn’t find a passage that answers that connection in the articles I searched."
+                updateAssistant(current || opinion ? notice + "\n\n" + missing : missing)
+                debug("exploration: no supported spans after independent search", category: "Exploration")
+            } else {
+                let reply = ExplorationEvidence.reply(passages: chosen)
+                // Put the qualification into the same atomic render as the
+                // excerpts, so speech can never start with an unqualified claim.
+                presentSourceBoundAnswer(question: question, topic: state.topic,
+                    passages: chosen, selectedReply: reply, preface: notice)
+            }
+            if let idx = messages.indices.last, messages[idx].role == .assistant {
+                let usedTitles = Set(chosen.map(\.article))
+                let named = ExplorationEvidence.namedTerms(question)
+                let usefulSources = newSources.filter { source in
+                    usedTitles.contains(source.title) || (!named.isEmpty &&
+                        ExplorationEvidence.coversNamedTerms(.init(article: source.title, text: source.title), question: question))
+                }
+                messages[idx].suggestions = usefulSources.prefix(3).map { source in
+                    DiscoveryThread(label: source.title, kind: .topic, source: .relation,
+                        note: "Explore this offline article", prompt: "Tell me about \(source.title)")
+                }
+            }
+            debug(String(format: "exploration completed %.2fs · direct=%d background=%d", Date().timeIntervalSince(started), direct.count, background.count), category: "Exploration")
+            return true
+        } catch {
+            if Task.isCancelled { return true }
+            debug("exploration failed: \(error.localizedDescription)", category: "Exploration")
+            return false
+        }
+    }
 
     /// Find an article that covers a follow-up the pinned article(s) don't,
     /// and return its sections. Reuses the `search` (best title) +
@@ -5152,6 +5674,15 @@ public final class ChatSession {
     @MainActor
     private func executeDirectIntent(_ intent: DirectIntent) async -> Bool {
         guard !Task.isCancelled else { updateAssistant("Stopped."); return true }
+        // These actions replace what the user is looking at. Revoke before
+        // awaiting the tool so a miss cannot resurrect the old document.
+        // Successful overviews/discussions capture a new exact identity below.
+        switch intent.toolName {
+        case "article_overview", "discuss_article", "narrate_article",
+             "get_article_section", "plan_driving_route", "route_from_places":
+            discussionState?.siriSource = nil
+        default: break
+        }
         guard let adapter else { return false }
         activeQueryTelemetry?.setRoute("fast_path", primaryTool: intent.toolName)
         // Replace "my location" / "here" / "me" / "current location"
@@ -5490,6 +6021,23 @@ public final class ChatSession {
                 let synth = IntentRouter.synthesizeArticleFactoidReply(
                     args: dictArgs, fullResult: fullResult)
                 updateAssistant(synth)
+                if let idx = messages.indices.last, messages[idx].role == .assistant,
+                   let title = fullResult["title"] as? String,
+                   let evidence = fullResult["evidence"] as? String, !evidence.isEmpty {
+                    let source = (fullResult["sections"] as? [[String: Any]])?.first
+                    let section = source?["title"] as? String
+                    messages[idx].groundingSources = [GroundingSource(kind: .wikipedia,
+                        title: title, section: section == "lead" ? nil : section,
+                        library: fullResult["zim"] as? String)]
+                    // The date is quoted; the approximate age is computed by
+                    // the host. Do not label that arithmetic as a ZIM excerpt.
+                    if let sourceText = source?["text"] as? String {
+                        messages[idx].sentenceAttributions = AnswerAttribution.attribute(answer: evidence,
+                            passages: [.init(article: title, section: section ?? "lead", text: sourceText)])
+                    }
+                    messages[idx].suggestions = [DiscoveryThread(label: title, kind: .topic,
+                        source: .relation, note: "Explore this offline article", prompt: "Tell me about \(title)")]
+                }
                 debug(synth, category: "Assistant")
                 let resolution = (fullResult["resolution"] as? String) ?? "unknown"
                 debug("factoid fast path → grounded Wikipedia lead (\(resolution)); no LLM",

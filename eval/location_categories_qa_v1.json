@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "name": "Specific nearby venue categories",
+  "description": "Replay with the California StreetZIM. Use the privately recorded origin for the wider-bar regression; do not publish device coordinates.",
+  "conversations": [
+    {
+      "id": "bars-wider-and-selection",
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Where is a bar near here?",
+          "mustNotContain": [
+            "article",
+            "Barrow pit"
+          ]
+        },
+        {
+          "user": "Search wider",
+          "anchorGroups": [
+            [
+              "The Pit Bar"
+            ]
+          ],
+          "mustNotContain": [
+            "nearest bar is 101 Wine Press",
+            "nearest bar is Bear's Hideaway"
+          ]
+        },
+        {
+          "user": "Show me The Pit Bar on the map",
+          "anchorGroups": [
+            [
+              "The Pit Bar"
+            ]
+          ],
+          "mustNotContain": [
+            "Barrow pit",
+            "I don't see an answer"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "salinas-coffee-category-followup",
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Where is a good coffee shop in Salinas",
+          "mustNotContain": [
+            "A Good Lender",
+            "Salinas Drive",
+            "Cafe 126"
+          ]
+        },
+        {
+          "user": "Museum?",
+          "mustNotContain": [
+            "A Good Lender",
+            "Salinas Drive",
+            "Cafe 126",
+            "Barrow pit"
+          ],
+          "anchorGroups": [
+            [
+              "National Steinbeck Center"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -139,6 +139,7 @@ public protocol TTSService: AnyObject, Sendable {
     /// Block until all previously queued audio has finished playing.
     /// Default is a no-op (most backends are synchronous).
     func awaitPlayback() async
+    var playbackFailure: String? { get }
 
     /// Prepare expensive model/G2P execution before the first conversational
     /// response. Implementations must not play audio. The voice controller
@@ -157,6 +158,7 @@ public extension TTSService {
         try await speakChunk(text)
     }
     func takeStreamingChunkMetrics() -> TTSChunkPlaybackMetrics? { nil }
+    var playbackFailure: String? { nil }
     func awaitPlayback() async {}
     func prepareForConversation() async throws {}
 }
@@ -179,17 +181,17 @@ public enum TTSFactory {
     public static func makeBest(voice: String = "af_heart") -> TTSService {
         let preference = TTSBackendPreference.current
         let thermal = ProcessInfo.processInfo.thermalState
-        let automaticKokoro = preference == .automatic && prefersKokoroAutomatically(
+        let kokoroSafe = prefersKokoroAutomatically(
             assetsInstalled: KokoroAssets.isDownloaded,
             availableMemoryMB: availableMemoryMB(),
             thermallyConstrained: thermal == .serious || thermal == .critical)
-        if preference == .supertonic || (preference == .automatic && !automaticKokoro) {
+        if preference == .supertonic || (preference != .system && !kokoroSafe) {
             #if canImport(FluidAudio)
             return Supertonic3TTSService(voice: SupertonicVoicePreference.current)
             #endif
         }
         #if canImport(KokoroSwift)
-        if (preference == .kokoro || (preference == .automatic && automaticKokoro)),
+        if (preference == .kokoro || preference == .automatic), kokoroSafe,
            KokoroAssets.isDownloaded,
            let kokoro = try? KokoroTTSService(voice: voice) {
             return kokoro
@@ -325,14 +327,12 @@ import MLXUtilsLibrary
 /// and feed the resulting Float32 PCM through `AVAudioEngine`.
 public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     public let displayName = "Kokoro v1.0 (MLX, on-device)"
-    /// Steady-state with the bf16 82M-param model held + MLX cache.
-    /// Synthesis allocates more during generation (~70 MB extra);
-    /// we `Memory.clearCache()` after each utterance to keep
-    /// steady-state bounded.
+    /// Weight-storage planning estimate, not a bound on runtime footprint.
+    /// Inference intermediates and Metal allocations are substantially larger;
+    /// admission uses peakSynthesisMemoryMB instead.
     public let approximateMemoryMB = 360
-    /// Measured by MCPZimTTSBenchCLI on Apple silicon with a representative
-    /// 92-character, punctuation-heavy chunk. MLX briefly reached 2.74 GB
-    /// above the settled prepared footprint; round up for the iOS safety gate.
+    /// Retain the conservative pre-optimization admission allowance until the
+    /// bounded vocoder has been measured alongside Bonsai on a physical phone.
     public let peakSynthesisMemoryMB = TTSFactory.kokoroPeakMemoryMB
     #if os(macOS)
     /// Mac has enough memory and substantially faster MLX execution to give
@@ -353,8 +353,8 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
         withLockedState { speaking in speaking }
     }
 
-    /// Fifty-four voices ship in `voices.npz`. Exposed for the UI
-    /// picker; `voiceName` selects the current one.
+    /// Supported picker voices; `voiceName` selects one immutable embedding
+    /// from the installed pack, whose contents may vary by asset revision.
     public static let availableVoices: [String] = [
         "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
         "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
@@ -367,7 +367,9 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let kokoro: KokoroTTS
-    private let voices: [String: MLXArray]
+    // A service's voice is immutable. Retaining the entire pack kept every
+    // unused embedding alive for the duration of a conversation.
+    private let voiceEmbedding: MLXArray
     public let voiceName: String
     private let stateLock = NSLock()
     private var speaking = false
@@ -441,13 +443,9 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     /// responsive while synthesis is running.
     private func synthesizeOffMain(_ text: String) async throws -> [Float] {
         try await Task.detached(priority: .userInitiated) { [self] in
-            guard let embedding = voices[voiceName + ".npy"] else {
-                throw TTSError.synthesisFailed(
-                    "Voice '\(voiceName)' not present in voices.npz.")
-            }
             let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
             let (samples, _) = try kokoro.generateAudio(
-                voice: embedding, language: language, text: text, speed: 1.0
+                voice: voiceEmbedding, language: language, text: text, speed: 1.0
             )
             Memory.clearCache()
             return samples
@@ -475,7 +473,10 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
               !loadedVoices.isEmpty else {
             throw TTSError.synthesisFailed("voices.npz could not be parsed.")
         }
-        self.voices = loadedVoices
+        guard let embedding = loadedVoices[voice + ".npy"] else {
+            throw TTSError.synthesisFailed("Voice '\(voice)' not present in voices.npz.")
+        }
+        self.voiceEmbedding = embedding
         self.voiceName = voice
         super.init()
         engine.attach(player)
@@ -514,15 +515,12 @@ public final class KokoroTTSService: NSObject, TTSService, @unchecked Sendable {
     func renderForBenchmark(_ text: String) throws -> (samples: [Float], sampleRate: Int) {
         let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return ([], 24_000) }
-        guard let embedding = voices[voiceName + ".npy"] else {
-            throw TTSError.synthesisFailed("Voice '\(voiceName)' not present in voices.npz.")
-        }
         let language: Language = voiceName.hasPrefix("a") ? .enUS : .enGB
         let chunks = Self.chunkForTTS(Self.prepForTTS(raw))
         var combined: [Float] = []
         for chunk in chunks {
             let (samples, tokens) = try kokoro.generateAudio(
-                voice: embedding, language: language, text: chunk, speed: 1.0
+                voice: voiceEmbedding, language: language, text: chunk, speed: 1.0
             )
             if ProcessInfo.processInfo.environment["MCPZIM_TTS_TRACE_PHONEMES"] == "1",
                let tokens {

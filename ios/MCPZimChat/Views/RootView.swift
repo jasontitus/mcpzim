@@ -12,8 +12,12 @@ import AVFoundation
 #endif
 
 struct RootView: View {
+    private enum Route: Hashable { case settings }
     @Environment(ChatSession.self) private var session
     @EnvironmentObject private var swarm: ZimSwarmController
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var startedForegroundLaunch = false
+    @State private var navigationPath = NavigationPath()
     @AppStorage("onboarding.didOfferOfflineContentV1")
     private var didOfferOfflineContent = false
     @State private var showOfflineSetup = false
@@ -28,8 +32,8 @@ struct RootView: View {
     #endif
 
     var body: some View {
-        NavigationStack {
-            ChatView()
+        NavigationStack(path: $navigationPath) {
+            ChatView(siriContextVisible: navigationPath.isEmpty && !showOfflineSetup && SiriQuestionHandoff.shared.search == nil)
                 .navigationTitle("Zimfo")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -45,76 +49,127 @@ struct RootView: View {
                         .disabled(session.messages.isEmpty || session.isGenerating)
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        NavigationLink { LibraryView() } label: {
+                        NavigationLink(value: Route.settings) {
                             Image(systemName: "gearshape")
                         }
                         .accessibilityLabel("Settings")
                     }
                 }
+                .navigationDestination(for: Route.self) { _ in
+                    LibraryView()
+                }
                 .overlay {
                     SetupOverlayView()
                 }
-                .task {
-                    // Reconnect the background download session right away —
-                    // a transfer started last session needs a live delegate
-                    // to hand its finished file to, even if the user never
-                    // opens the downloads UI this launch.
-                    _ = ZimDownloadManager.shared
-                    // Nearby sharing seeds the enabled library entries and
-                    // imports received ZIMs through the normal library path
-                    // (which also invalidates the prompt cache).
-                    swarm.shareableFiles = { [weak session] in
-                        session?.library.filter { $0.isEnabled }.map(\.url) ?? []
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    guard phase == .active, !startedForegroundLaunch else { return }
+                    // Hosted unit tests exercise the intent service without
+                    // starting the user's model/GPS setup in the test host.
+                    guard NSClassFromString("XCTestCase") == nil else { return }
+                    startedForegroundLaunch = true
+                    // Keep initialization alive across brief Siri/permission
+                    // overlays. A cancelled .task(id:scenePhase) would leave
+                    // ChatSession's one-shot launch guard half initialized.
+                    Task { @MainActor in
+                        session.startForegroundModelLoading()
+                        // Reconnect the background download session right away —
+                        // a transfer started last session needs a live delegate
+                        // to hand its finished file to, even if the user never
+                        // opens the downloads UI this launch.
+                        _ = ZimDownloadManager.shared
+                        // Nearby sharing seeds the enabled library entries and
+                        // imports received ZIMs through the normal library path
+                        // (which also invalidates the prompt cache).
+                        swarm.shareableFiles = { [weak session] in
+                            session?.library.filter { $0.isEnabled }.map(\.url) ?? []
+                        }
+                        swarm.importFiles = { [weak session] urls in
+                            await session?.addReaders(urls: urls)
+                        }
+                        // The AI model rides along in the share (single-file
+                        // GGUF models only) and adopts straight into the
+                        // provider's cache slot on receive.
+                        swarm.shareableModelFiles = { [weak session] in
+                            session?.shareableModelFiles() ?? []
+                        }
+                        swarm.importModelFile = { [weak session] url in
+                            await session?.importSharedModelFile(at: url) ?? false
+                        }
+                        // Single idempotent entry point — SwiftUI can fire
+                        // `.task` more than once as navigation reshapes the
+                        // stack, and ChatSession.runLaunchSequence() guards
+                        // against double-opening the library / double-warming
+                        // the streetzim routing graph.
+                        await session.runLaunchSequence()
+                        if session.library.isEmpty, !didOfferOfflineContent {
+                            didOfferOfflineContent = true
+                            showOfflineSetup = true
+                        }
+                        #if DEBUG
+                        if ProcessInfo.processInfo.environment["MCPZIM_SIRI_EINSTEIN_SMOKE"] == "1" {
+                            await SiriEinsteinSmoke.run()
+                        }
+                        if ProcessInfo.processInfo.environment["MCPZIM_SIRI_PUTIN_BIRTHPLACE_SMOKE"] == "1" {
+                            await SiriPutinBirthplaceSmoke.run()
+                        }
+                        #if canImport(FluidAudio)
+                        await runSupertonicBenchmarkIfRequested()
+                        #endif
+                        if !didRunAppReviewProbe,
+                           ProcessInfo.processInfo.environment["MCPZIM_APP_REVIEW_PROBE"] == "1" {
+                            didRunAppReviewProbe = true
+                            await AppReviewProbe.run(log: { session.debug($0, category: "AppReview") })
+                        }
+                        if !didRunSwarmProbe,
+                           ProcessInfo.processInfo.environment["MCPZIM_SWARM_PROBE"] == "1" {
+                            didRunSwarmProbe = true
+                            await SwarmIntegrationProbe.run(log: { session.debug($0, category: "SwarmProbe") })
+                        }
+                        await runLaunchQuestionsIfRequested()
+                        #if canImport(FluidAudio)
+                        await runSilentVoiceProbeIfRequested()
+                        #endif
+                        await runRawContextBenchmarkIfRequested()
+                        await runLatencyBenchmarkIfRequested()
+                        #endif
                     }
-                    swarm.importFiles = { [weak session] urls in
-                        await session?.addReaders(urls: urls)
-                    }
-                    // The AI model rides along in the share (single-file
-                    // GGUF models only) and adopts straight into the
-                    // provider's cache slot on receive.
-                    swarm.shareableModelFiles = { [weak session] in
-                        session?.shareableModelFiles() ?? []
-                    }
-                    swarm.importModelFile = { [weak session] url in
-                        await session?.importSharedModelFile(at: url) ?? false
-                    }
-                    // Single idempotent entry point — SwiftUI can fire
-                    // `.task` more than once as navigation reshapes the
-                    // stack, and ChatSession.runLaunchSequence() guards
-                    // against double-opening the library / double-warming
-                    // the streetzim routing graph.
-                    await session.runLaunchSequence()
-                    if session.library.isEmpty, !didOfferOfflineContent {
-                        didOfferOfflineContent = true
-                        showOfflineSetup = true
-                    }
-                    #if DEBUG
-                    #if canImport(FluidAudio)
-                    await runSupertonicBenchmarkIfRequested()
-                    #endif
-                    if !didRunAppReviewProbe,
-                       ProcessInfo.processInfo.environment["MCPZIM_APP_REVIEW_PROBE"] == "1" {
-                        didRunAppReviewProbe = true
-                        await AppReviewProbe.run(log: { session.debug($0, category: "AppReview") })
-                    }
-                    if !didRunSwarmProbe,
-                       ProcessInfo.processInfo.environment["MCPZIM_SWARM_PROBE"] == "1" {
-                        didRunSwarmProbe = true
-                        await SwarmIntegrationProbe.run(log: { session.debug($0, category: "SwarmProbe") })
-                    }
-                    await runLaunchQuestionsIfRequested()
-                    #if canImport(FluidAudio)
-                    await runSilentVoiceProbeIfRequested()
-                    #endif
-                    await runRawContextBenchmarkIfRequested()
-                    await runLatencyBenchmarkIfRequested()
-                    #endif
                 }
         }
         .sheet(isPresented: $showOfflineSetup) {
             OfflineContentSetupView()
                 .environment(session)
                 .environmentObject(swarm)
+        }
+        .onChange(of: SiriQuestionHandoff.shared.pending?.id) { _, id in
+            if id != nil { navigationPath = NavigationPath() }
+        }
+        .sheet(item: Binding(get: { SiriQuestionHandoff.shared.search },
+                             set: { SiriQuestionHandoff.shared.search = $0 })) { search in
+            NavigationStack {
+                List {
+                    Section("Downloaded articles matching “\(search.query)”") {
+                        if search.articles.isEmpty {
+                            Text("No matching articles in the enabled offline library. Try a more specific title or add an archive.")
+                        }
+                        ForEach(search.articles) { article in
+                            NavigationLink {
+                                SiriOfflineArticleView(article: article)
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(article.title)
+                                    Text(article.archive).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Offline search")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { SiriQuestionHandoff.shared.search = nil }
+                    }
+                }
+            }
         }
         .onReceive(NotificationCenter.default
             .publisher(for: ZimDownloadManager.fileReadyNotification)) { note in
@@ -847,3 +902,55 @@ private enum SwarmIntegrationProbe {
     }
 }
 #endif
+
+/// Real local search destination for the system.searchInApp schema. Opening
+/// a result revalidates the archive; the entity's old excerpt isn't rendered.
+private struct SiriOfflineArticleView: View {
+    let article: ZimfoArticleEntity
+    @State private var answer: String?
+    @State private var failure: String?
+    @State private var question = ""
+    @State private var validatedSource: OfflineArticle?
+    @State private var libraryVersion: String?
+    @State private var loadedArticleID: String?
+    private var currentSiriSource: SiriArticleReference? {
+        guard loadedArticleID == article.id, answer != nil, let validatedSource, let libraryVersion else { return nil }
+        return .init(article: validatedSource, libraryVersion: libraryVersion)
+    }
+    var body: some View {
+        Form {
+            Section(article.archive) {
+                if let answer { Text(answer) }
+                else if let failure { Text(failure) }
+                else { ProgressView("Reading downloaded article…") }
+            }
+            Section("Continue the conversation") {
+                TextField("Question about this article", text: $question, axis: .vertical)
+                Button("Use in conversation") {
+                    SiriQuestionHandoff.shared.pending = .init(question: question, source: validatedSource, libraryVersion: libraryVersion)
+                    SiriQuestionHandoff.shared.search = nil
+                }
+                .disabled(answer == nil || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || question.count > 500 || SiriQuestionHandoff.shared.pending != nil)
+            }
+        }
+        .navigationTitle(article.title)
+        .siriCurrentArticle(currentSiriSource)
+        .task(id: article.id) {
+            answer = nil; failure = nil; validatedSource = nil; libraryVersion = nil; loadedArticleID = nil
+            do {
+                let runner = try await ZimfoRunner.load()
+                let source = try await article.validated(using: runner)
+                let text = try await OfflineKnowledge(service: runner.service)
+                    .answer(question: "Tell me about \(source.title)", article: source)
+                guard runner.libraryVersion == ZimfoRunner.libraryFingerprint() else { throw OfflineKnowledge.Failure.staleArticle }
+                try Task.checkCancellation()
+                validatedSource = source
+                libraryVersion = runner.libraryVersion
+                loadedArticleID = article.id
+                answer = text
+            } catch is CancellationError { }
+            catch { failure = error.localizedDescription }
+        }
+    }
+}

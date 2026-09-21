@@ -644,6 +644,14 @@ public actor DefaultZimService: ZimService {
     public func articleByTitle(title: String, zim: String?, section: String? = "lead")
         async throws -> (zim: String, path: String, title: String, section: ArticleSection)
     {
+        try await lookupArticleTitle(title: title, zim: zim, section: section,
+                                     allowLeadingArticleRetry: true)
+    }
+
+    private func lookupArticleTitle(title: String, zim: String?, section: String?,
+                                    allowLeadingArticleRetry: Bool)
+        async throws -> (zim: String, path: String, title: String, section: ArticleSection)
+    {
         // Strip language prefix if present (e.g. "en:HP Garage" → "HP Garage").
         let cleanedTitle: String = {
             if let r = title.range(of: ":"), r.lowerBound != title.startIndex {
@@ -741,6 +749,14 @@ public actor DefaultZimService: ZimService {
                 return (parsed.zim, hit.path, parsed.title, sec)
             }
         }
+        // Spoken requests often prepend a grammatical article. Preserve an
+        // actual title beginning with "The" by trying it FIRST; only an exact
+        // miss may retry without that prefix. Never fuzzy-open another entity.
+        let trimmed = withSpaces.trimmingCharacters(in: .whitespacesAndNewlines)
+        if allowLeadingArticleRetry, trimmed.lowercased().hasPrefix("the ") {
+            return try await lookupArticleTitle(title: String(trimmed.dropFirst(4)),
+                zim: zim, section: section, allowLeadingArticleRetry: false)
+        }
         throw ZimServiceError.notFound("title \"\(cleanedTitle)\" not found in any Wikipedia ZIM")
     }
 
@@ -831,7 +847,7 @@ public actor DefaultZimService: ZimService {
     /// call runs against the zim that actually matched — otherwise a nil
     /// `zim` arg makes `pickStreetzim` fall back to `candidates.first`,
     /// which is almost never the right one.
-    private func geocodeResolved(query: String, limit: Int, zim: String?, kinds: [String]?) async throws
+    private func geocodeResolved(query: String, limit: Int, zim: String?, kinds: [String]?, exactNameOnly: Bool = false) async throws
         -> [(place: Place, zim: String)]
     {
         // If a valid streetzim is pinned, use only it; otherwise try every
@@ -896,7 +912,9 @@ public actor DefaultZimService: ZimService {
                         let leafMatches: [[String: Any]] = try autoreleasepool {
                             try loadMatchingChunk(pair: pair, leaf: leaf, query: q)
                         }
-                        matching += leafMatches
+                        matching += exactNameOnly ? leafMatches.filter {
+                            ($0["n"] as? String)?.caseInsensitiveCompare(attempt) == .orderedSame
+                        } : leafMatches
 
                         // For a single-result named-place lookup, an exact
                         // case-insensitive name is globally optimal (offset 0
@@ -914,8 +932,13 @@ public actor DefaultZimService: ZimService {
                             return [(exact, pair.name)]
                         }
                     }
-                    if matching.count >= max(200, limit * 8), leaves.count > 1 {
+                    if !exactNameOnly, matching.count >= max(200, limit * 8), leaves.count > 1 {
                         break
+                    }
+                }
+                if exactNameOnly {
+                    matching = matching.filter {
+                        ($0["n"] as? String)?.caseInsensitiveCompare(attempt) == .orderedSame
                     }
                 }
                 // A stripped city qualifier remains a hard constraint.
@@ -1311,6 +1334,14 @@ public actor DefaultZimService: ZimService {
                 nameKeywords.append(contentsOf: syn.nameKeywords)
             }
         }
+        let strictVenueKind = !filter.isEmpty && filter.isSubset(of: ["bar", "pub", "nightclub", "coffee", "cafe"])
+        let drinkingVenues: Set<String> = ["bar", "pub", "cocktail_bar", "sports_bar", "wine_bar",
+            "beer_bar", "dive_bar", "tiki_bar", "karaoke_bar", "brewpub", "taproom", "bar_and_grill"]
+        var venueSubtypes = Set<String>()
+        if filter.contains("bar") { venueSubtypes.formUnion(drinkingVenues) }
+        if filter.contains("pub") { venueSubtypes.formUnion(["pub", "brewpub"]) }
+        if filter.contains("nightclub") { venueSubtypes.insert("nightclub") }
+        if !filter.isDisjoint(with: ["coffee", "cafe"]) { venueSubtypes.formUnion(["cafe", "coffee_shop"]) }
         let needKeywordFallback = !nameKeywords.isEmpty
         // A museum/gallery name can refine a coarse tourism record, but
         // cannot turn an explicitly tagged cafe/shop into a museum.
@@ -1338,7 +1369,16 @@ public actor DefaultZimService: ZimService {
                 let wikidata = rec["q"] as? String ?? ""
                 if wiki.isEmpty && wikidata.isEmpty { continue }
             }
-            if applyKindFilter {
+            if applyKindFilter && strictVenueKind {
+                let subtype = ((rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "").lowercased()
+                let kind = ((rec["t"] as? String) ?? (rec["type"] as? String) ?? "").lowercased()
+                // Shared chips contain retail alcohol/breweries and plain
+                // bakeries. Membership or suggestive names cannot establish
+                // the requested venue type. Prefer the recorded subtype.
+                let recorded = subtype.isEmpty || ["poi", "amenity"].contains(subtype) ? kind : subtype
+                guard venueSubtypes.contains(recorded) else { continue }
+            }
+            if applyKindFilter && !strictVenueKind {
                 let kind = ((rec["t"] as? String) ?? (rec["type"] as? String) ?? "").lowercased()
                 let subtype = ((rec["s"] as? String) ?? (rec["subtype"] as? String) ?? "").lowercased()
                 // Exact membership — the original OSM-style check.
@@ -1644,6 +1684,7 @@ public actor DefaultZimService: ZimService {
         "urgent care": "clinic",
         // cafes
         "coffee house": "cafe", "coffeehouse": "cafe",
+        "coffee shop": "coffee", "coffee_shop": "coffee",
         // bars
         "tavern": "bar", "boozer": "bar",
         // hotels
@@ -1703,6 +1744,8 @@ public actor DefaultZimService: ZimService {
         // The museums chip includes landmarks and other tourism records.
         // Keep subtype/name evidence instead of labeling the entire chip.
         "museum", "gallery",
+        // These share a chip with retail alcohol and production breweries.
+        "bar", "pub", "nightclub", "coffee", "cafe",
     ]
 
     /// Return the streetzim `streetzim-meta.json` block (if present) for
@@ -1731,7 +1774,14 @@ public actor DefaultZimService: ZimService {
         place: String, radiusKm: Double, limit: Int,
         kinds: [String]?, zim: String?
     ) async throws -> (resolved: Place, result: NearPlacesResult) {
-        let hits = try await geocodeResolved(query: place, limit: 1, zim: zim, kinds: nil)
+        // A named search area should prefer the settlement over a same-name
+        // shop or street. Never silently substitute a longer substring match.
+        var hits = try await geocodeResolved(query: place, limit: 1, zim: zim,
+                                             kinds: ["place"], exactNameOnly: true)
+        if hits.isEmpty {
+            hits = try await geocodeResolved(query: place, limit: 1, zim: zim,
+                                            kinds: nil, exactNameOnly: true)
+        }
         guard let first = hits.first else { throw ZimServiceError.noMatch(place) }
         // Pin `nearPlaces` to the zim that resolved the name. Without this,
         // a nil/stale `zim` would send the follow-up scan against the wrong

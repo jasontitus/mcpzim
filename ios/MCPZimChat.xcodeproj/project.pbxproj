@@ -13,12 +13,14 @@
 		04BCEA5F78DFEB8ADDC01DB4 /* OfflineContentSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B13C484CAF96A267AA137F /* OfflineContentSetupView.swift */; };
 		0587388607CB91081A166378 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A035447C78F57AFCE9AF658D /* MLXLMCommon */; };
 		05D209BE3A2D769FEA34A551 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = E20C40C7FF5FAF41F519D3B7 /* GoogleService-Info.plist */; };
+		075D94CE196131260C103118 /* ZimCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42850CF0B4389C3AECAAF578 /* ZimCatalog.swift */; };
 		07B6BBF1C2A214E0CBEFCDB8 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		08496228AA371E7E9190F493 /* ZimURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD4F4779980B1468D5C6829 /* ZimURLSchemeHandler.swift */; };
 		0AA041615E3E93AAE0FDEF38 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94333E6F9FCA8D53D381D08A /* Assets.xcassets */; };
 		0CFAA697E603F3DA76F850D1 /* KokoroDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E5D7B98B9F26DC13252C7E /* KokoroDownloader.swift */; };
 		0D3DFA7E4D37B077303CA421 /* LibzimReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13C2EE422E1BB55369509CE /* LibzimReader.swift */; };
 		0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
+		EC8E7BB3C7DBBBEC33204EDD /* SiriCurrentArticle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD9CF088223904ED0B513D62 /* SiriCurrentArticle.swift */; };
 		10FF797EA9AC81D9E7AB7A85 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C05D5166643856E4261880 /* Message.swift */; };
 		116583BFD7EF5B09CB1F1CF0 /* NearbyShareView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEDF996EE1E2EA5E2FB182B /* NearbyShareView.swift */; };
 		1184368CEFF0ECE27456F558 /* Supertonic3TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE5C3D5D0A549907CDF0C871 /* Supertonic3TTSService.swift */; };
@@ -75,6 +77,7 @@
 		5369533E7A4AC1E924B5F602 /* ZimfoContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51F39432F92BDC2873FF548 /* ZimfoContext.swift */; };
 		548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
+		D5D725F896B2428EBD0A31DD /* SiriCurrentArticle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD9CF088223904ED0B513D62 /* SiriCurrentArticle.swift */; };
 		596AC66F609D652B602B468E /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 3E2FE9FB9928746EDEDB1F23 /* MLXUtilsLibrary */; };
 		5A8471899899133BC701BE88 /* ChatSession+ModelSharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A82BB5CABD10E8B7E0842E56 /* ChatSession+ModelSharing.swift */; };
 		5AA8354ADF3A57116E84B014 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B325A1633250C44B267166D /* SpeechRecognizerService.swift */; };
@@ -175,6 +178,7 @@
 		D4DF5A386843890406EFC924 /* LogArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A07E5C8A32C8BF3B549551 /* LogArchive.swift */; };
 		D545A04576364A00D190809D /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 627D27FCFC19D35BACEC4DB2 /* KokoroSwift */; };
 		D5BA2D72BF66C5E29E87FBF4 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 5E83B350638473AE0CD57BB9 /* Tokenizers */; };
+		D75EFBB34077A6D69A80BBEA /* ZimDownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB3BD714E8800F7312E23C1 /* ZimDownloadManager.swift */; };
 		D83B160C0CF3FB95004FB80E /* LibzimBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = ECFB9A58FA96810183B7FC1D /* LibzimBridge.mm */; };
 		D888710F79EA20F6D2DFFEAF /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F116399360AD2DE54223FA7 /* ChatView.swift */; };
 		DAB96DD245708E6AD02ED7E7 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = B5171F3BEEDD189FEC289536 /* Tokenizers */; };
@@ -186,6 +190,7 @@
 		E18395D889A1ACFD60C1F226 /* KokoroAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDDE71862DDBAA167E3A237 /* KokoroAssets.swift */; };
 		E1D81FA198B01F3774BBC0BB /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = 661598B25A1979D4207EE34B /* FluidAudio */; };
 		E1FB76DEEBFB837F5D6F65A6 /* ZimfoIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */; };
+		28C3E963B18D35E907A00992 /* SiriCurrentArticle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD9CF088223904ED0B513D62 /* SiriCurrentArticle.swift */; };
 		E3A0F6A5DE2419C07E0BB3DF /* DiagnosticsUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A07280ED6DE33767EC53F6 /* DiagnosticsUploader.swift */; };
 		E3B934A7B93D5C7AD77033D9 /* SemanticReranker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9BED45C834E5C10D2376B3C /* SemanticReranker.swift */; };
 		E6D3EA87BF3CA84F3A685700 /* CatalogParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD00ECE74DF66F2F9C624291 /* CatalogParsingTests.swift */; };
@@ -259,6 +264,7 @@
 		2B7FE3FA8B63BF9DBD844158 /* MCPZimChatMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MCPZimChatMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2C313188252286C00B327D81 /* ModelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelProvider.swift; sourceTree = "<group>"; };
 		329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimfoIntents.swift; sourceTree = "<group>"; };
+		AD9CF088223904ED0B513D62 /* SiriCurrentArticle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriCurrentArticle.swift; sourceTree = "<group>"; };
 		349569ECF3028238D99DA6C7 /* GoogleService-Info-Mac.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "GoogleService-Info-Mac.plist"; sourceTree = "<group>"; };
 		42850CF0B4389C3AECAAF578 /* ZimCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZimCatalog.swift; sourceTree = "<group>"; };
 		4A320A42DAA63F3797271EC6 /* llama.cpp-swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "llama.cpp-swift"; path = "LocalPackages/llama.cpp-swift"; sourceTree = SOURCE_ROOT; };
@@ -459,6 +465,7 @@
 				7495A1AA64C657297341FF95 /* LocationFetcher.swift */,
 				C51F39432F92BDC2873FF548 /* ZimfoContext.swift */,
 				329B26FE7E2249C4CD99F96F /* ZimfoIntents.swift */,
+				AD9CF088223904ED0B513D62 /* SiriCurrentArticle.swift */,
 				2063D3B0115E793DA18B3027 /* ZimfoRunner.swift */,
 			);
 			path = AppIntents;
@@ -1041,6 +1048,7 @@
 				799EF5736678928BFBA4962C /* ZimfoContext+Adapter.swift in Sources */,
 				3569A18ECEA25DFFA02E346C /* ZimfoContext.swift in Sources */,
 				55F36BCEE603E78AF6BD536D /* ZimfoIntents.swift in Sources */,
+				D5D725F896B2428EBD0A31DD /* SiriCurrentArticle.swift in Sources */,
 				2FDFC126506F934041D5B973 /* ZimfoRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1089,9 +1097,12 @@
 				A0F054FD94F4415F7502A573 /* ProbeCompareCLI.swift in Sources */,
 				86136E0023E6718920F529D8 /* ProbeE2ECLI.swift in Sources */,
 				548F9C6F420D9AEE553DB012 /* SemanticReranker.swift in Sources */,
+				075D94CE196131260C103118 /* ZimCatalog.swift in Sources */,
+				D75EFBB34077A6D69A80BBEA /* ZimDownloadManager.swift in Sources */,
 				5E811913A5328F9377D2BD13 /* ZimfoContext+Adapter.swift in Sources */,
 				AE843C00BE5209BD3320E18B /* ZimfoContext.swift in Sources */,
 				E1FB76DEEBFB837F5D6F65A6 /* ZimfoIntents.swift in Sources */,
+				28C3E963B18D35E907A00992 /* SiriCurrentArticle.swift in Sources */,
 				195A361EA7F2F73ECE06E638 /* ZimfoRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1149,6 +1160,7 @@
 				D4C6FA388511ADE3EEF2F1F2 /* ZimfoContext+Adapter.swift in Sources */,
 				5369533E7A4AC1E924B5F602 /* ZimfoContext.swift in Sources */,
 				0E25AB75B33A4FFF6F852817 /* ZimfoIntents.swift in Sources */,
+				EC8E7BB3C7DBBBEC33204EDD /* SiriCurrentArticle.swift in Sources */,
 				C9AFDA297646DDAD66FEE56A /* ZimfoRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

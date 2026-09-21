@@ -38,6 +38,24 @@ public enum SourceBoundAnswer {
         ArticleHeuristics.sentenceChunks(clean(text))
     }
 
+    /// Recognize the relationship separately from the affected subject.
+    /// “affects modern Ukraine” must retain Ukraine, even if it also occurs
+    /// in the anchor title. This is not permission to infer a modern effect.
+    public static func modernEffectTarget(_ question: String) -> String? {
+        let pattern = #"(?i)^(?:what about how|how) (?:does it affect|did it affect|it affects|has it affected|does it influence|has it influenced) (?:modern|present-day|today's) ([\p{L}][\p{L} '-]*?)[?.!]*$"#
+        guard let regex = RegexCache.shared.compiled(pattern),
+              let match = regex.firstMatch(in: question, range: NSRange(question.startIndex..., in: question)),
+              let range = Range(match.range(at: 1), in: question) else { return nil }
+        return String(question[range]).trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    /// Lasting effects and reception can be expressed without the word
+    /// “legacy”. Keep the entire source sentence, including qualifications.
+    private static func hasLegacyEvidence(_ sentence: String) -> Bool {
+        sentence.range(of: #"(?i)\b(?:legacy|influenc(?:e|ed|es)|inspir(?:ation|ed)|remembered|commemorat\w*|memorial\w*|revival|revived|memory|heritage|continuity|persist\w*|lasting|enduring|permanent|to this day|named after|laid the (?:framework|foundation)|provided the model|remains? (?:both |a )?(?:controversial|reviled|revered)|idolised|demonised)\b"#,
+            options: .regularExpression) != nil
+    }
+
     public static func missingAnswer(topic: String? = nil) -> String {
         let subject = topic.map { " on \($0)" } ?? ""
         return "I don't see an answer to that in the ZIM passages I found\(subject). Try a more specific question or another article."
@@ -50,6 +68,10 @@ public enum SourceBoundAnswer {
     public static func answer(question: String, topic: String, passages: [Passage],
                               maxSentences: Int = 3, maxCharacters: Int = 1_200,
                               sectionOverview: Bool = false) -> Reply {
+        // Provenance alone cannot establish which event an "end" refers to.
+        // The semantic evidence selector must resolve these relationships;
+        // a failed selector must not fall back to the same keyword mistake.
+        if ExplorationPlan.requiresEventSelection(question) { return Reply(excerpts: []) }
         if sectionOverview {
             let focused = answer(question: question, topic: topic, passages: passages,
                 maxSentences: maxSentences, maxCharacters: maxCharacters)
@@ -62,6 +84,12 @@ public enum SourceBoundAnswer {
             let score: Double
             let parentIdentity: Bool
         }
+        // A section heading locates evidence; it does not make every sentence
+        // responsive. Legacy sections often begin with historical background.
+        let modernTarget = Self.modernEffectTarget(question)
+        let asksLegacy = modernTarget != nil || question.range(of: #"(?i)\blegacy\b"#,
+            options: .regularExpression) != nil
+            && topic.range(of: #"(?i)\blegacy\b"#, options: .regularExpression) == nil
         let contract = EvidenceQuestion.parse(question)
         let titleTerms = Set(([topic] + passages.map(\.article))
             .flatMap(ArticleHeuristics.questionKeywords).map(ArticleHeuristics.stem))
@@ -80,10 +108,10 @@ public enum SourceBoundAnswer {
         }
         let asksParentIdentity = parentQuestion && lower.range(
             of: #"^(?:(?:and|so)\s+)?who\b|\bnames?\b"#, options: .regularExpression) != nil
-        let keywords = sectionOverview ? [] : ArticleHeuristics.questionKeywords(relevanceQuestion).filter {
+        let keywords = modernTarget.map { ArticleHeuristics.questionKeywords($0) } ?? (sectionOverview ? [] : ArticleHeuristics.questionKeywords(relevanceQuestion).filter {
             !titleTerms.contains(ArticleHeuristics.stem($0)) && !generic.contains($0)
                 && !(parentQuestion && ["name", "names"].contains($0))
-        }
+        })
         let weighted = ArticleHeuristics.weightedKeywords(keywords)
         let variants = keywords.map(evidenceTerms)
         let broad = keywords.isEmpty
@@ -106,14 +134,33 @@ public enum SourceBoundAnswer {
                     || (keyword == "west" && headingWords.contains("western"))
             }
             let headingCoverage = keywords.filter(headingCovers).count
-            let headingOverview = !broad && headingCoverage == keywords.count
+            let headingOverview = modernTarget == nil && !broad && headingCoverage == keywords.count
             let sourceSentences = sentences(passage.text)
             for (position, sentence) in sourceSentences.enumerated() {
                 if let contract, !contract.accepts(sentence: sentence,
                     preceding: Array(sourceSentences.prefix(position).suffix(4)), article: passage.article,
                     topic: topic, section: passage.section) { continue }
                 guard sentence.count >= 8, sentence.count <= 2_400 else { continue }
-                let words = Set(ArticleHeuristics.questionKeywords(sentence).map(ArticleHeuristics.stem))
+                if asksLegacy && !Self.hasLegacyEvidence(sentence) { continue }
+                if modernTarget != nil && sentence.range(of:
+                    #"(?i)\b(?:persist\w*|permanent|lasting|enduring|to this day|revival|revived|memory|heritage|continuity|commemorat\w*|memorial\w*|named after|modern|today|constitution)\b"#,
+                    options: .regularExpression) == nil { continue }
+                // In an explicit causal construction, match the affected country
+                // in the effect, not the actor (“Lithuanian annexation led
+                // to ... Ukrainians” is not evidence of an effect on Lithuania).
+                var matchingText = sentence
+                if modernTarget != nil,
+                   let effect = sentence.range(of: #"(?i)\b(?:led to|resulted in|inspiration for)\b"#,
+                                               options: .regularExpression) {
+                    matchingText = String(sentence[effect.upperBound...])
+                    // A trailing aside about a monument/other actor is not
+                    // the recipient of the preceding causal assertion.
+                    if let aside = matchingText.range(of: #"(?i);|,\s+and\b|\band even\b"#,
+                                                      options: .regularExpression) {
+                        matchingText = String(matchingText[..<aside.lowerBound])
+                    }
+                }
+                let words = Set(ArticleHeuristics.questionKeywords(matchingText).map(ArticleHeuristics.stem))
                 // A source can identify both parents in one clause without
                 // repeating "mother" or "father". Keep that entire clause;
                 // never assign either name to a role using model knowledge.
@@ -125,7 +172,7 @@ public enum SourceBoundAnswer {
                 // "Early life" + "secret dossier" cannot answer "secret password".
                 let covered = zip(keywords, variants).filter { keyword, terms in
                     (contract != nil && ["write", "author", "pen"].contains(EvidenceQuestion.lemma(keyword)))
-                        || headingCovers(keyword)
+                        || (modernTarget == nil && headingCovers(keyword))
                         || (collectiveParentIdentity && ["parent", "parents", "mother", "father"].contains(keyword))
                         || terms.contains { term in
                         words.contains(ArticleHeuristics.stem(term))
@@ -136,7 +183,7 @@ public enum SourceBoundAnswer {
                 var score = weighted.reduce(0.0) { sum, term in
                     sum + (words.contains(ArticleHeuristics.stem(term.term)) ? Double(term.weight) : 0)
                 }
-                if contract != nil { score += 8 }
+                if contract != nil || modernTarget != nil { score += 8 }
                 if preferred.contains(sentence) { score += 4 }
                 var parentIdentity = false
                 if parentQuestion {
@@ -198,6 +245,8 @@ public enum SourceBoundAnswer {
         case "write", "wrote", "written", "writing": return ["write", "wrote", "written", "authored", "penned"]
         case "nato": return ["nato", "north atlantic treaty organization", "north atlantic treaty organisation"]
         case "west": return ["west", "western"]
+        case "ukraine": return ["ukraine", "ukrainian", "ukrainians"]
+        case "lithuania": return ["lithuania", "lithuanian", "lithuanians"]
         case "mother", "father": return [keyword]
         case "school", "education": return ["school", "education", "university", "college", "studied"]
         default: return ArticleHeuristics.weightedKeywords([keyword]).map(\.term)

@@ -1067,6 +1067,17 @@ public final class LlamaCppProvider: ModelProvider, @unchecked Sendable {
                 + "trim the transcript before generating")
         }
 
+        let captureProfile = parameters.useModelSamplingProfile ? samplingProfile : nil
+        try ModelInputCapture.shared.record(
+            modelID: id, runtime: "llamacpp", prompt: prompt, tokenIDs: tokens,
+            sampler: ["temperature": captureProfile?.temperature ?? parameters.temperature,
+                      "topP": captureProfile?.topP ?? parameters.topP,
+                      "topK": Double(captureProfile?.topK ?? parameters.topK),
+                      "presencePenalty": captureProfile?.presencePenalty ?? 0,
+                      "maxTokens": Double(parameters.maxTokens),
+                      "seed": Double(samplingSeed)],
+            stopSequences: parameters.stopSequences)
+
         // Cross-turn KV prefix reuse (2026-06-10). ChatSession rebuilds the
         // transcript byte-for-byte each turn (`toolRoundTrips` exists for
         // exactly this), so turn N's prompt is normally turn N-1's prompt +

@@ -87,6 +87,32 @@ final class HotSplitGeocoderTests: XCTestCase {
             "lowercase hash branch plus title-case hash branch, not all 256")
     }
 
+    func testNamedAreaFindsCityPastHundredsOfStreetMatches() async throws {
+        let leaves = ["sa-0", "sa-1"]
+        let streets: [[String: Any]] = (0..<250).map {
+            ["n": "Salinas Drive \($0)", "t": "street", "a": 34.29, "o": -119.16]
+        } + [["n": "Salinas", "t": "poi", "s": "shop", "a": 33.0, "o": -117.0]]
+        let city: [[String: Any]] = [["n": "Salinas", "t": "place", "s": "city",
+                                    "a": 36.6744, "o": -121.6550]]
+        let store: [String: Data] = [
+            "search-data/manifest.json": try JSONSerialization.data(withJSONObject:
+                ["chunks": ["sa-0": 251, "sa-1": 1], "sub_chunks": ["sa": leaves]]),
+            "search-data/sa-0.json": try JSONSerialization.data(withJSONObject: streets),
+            "search-data/sa-1.json": try JSONSerialization.data(withJSONObject: city),
+        ]
+        let service = DefaultZimService(readers: [("osm-test", TrackingReader(store: store))])
+        let hit = try await service.nearNamedPlace(place: "salinas", radiusKm: 5,
+                                                   limit: 10, kinds: ["cafe"], zim: nil)
+        XCTAssertEqual(hit.resolved.kind, "place")
+        XCTAssertEqual(hit.resolved.lat, 36.6744, accuracy: 0.0001)
+        XCTAssertEqual(hit.resolved.lon, -121.6550, accuracy: 0.0001)
+        do {
+            _ = try await service.nearNamedPlace(place: "Salinas Dr", radiusKm: 5,
+                                                 limit: 10, kinds: ["cafe"], zim: nil)
+            XCTFail("A partial street name must not silently become the search area")
+        } catch { /* An unavailable exact area must fail explicitly. */ }
+    }
+
     func testPrioritizationPreservesEveryLeafForSubstringFallback() {
         let leaves = (0..<16).flatMap { first in
             (0..<16).map { second in "st-\(String(first, radix: 16))-\(String(second, radix: 16))" }

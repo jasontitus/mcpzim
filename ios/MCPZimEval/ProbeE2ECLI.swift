@@ -411,6 +411,8 @@ enum ProbeDiscussCLI {
         let streetzim: String?
         let gguf: String
         let modelDisplayName: String
+        let runtime: String
+        let modelArtifact: String
         let modelFileMB: Double
         let contextTokens: Int
         let kvCacheType: String
@@ -456,6 +458,8 @@ enum ProbeDiscussCLI {
         var preparationStrategy: ChatSession.DiscussionPreparationStrategy =
             .semanticSections
         var reportJSONPath: String?
+        var captureDirectory: String?
+        var qwenBF16Directory: String?
         var runtime = "llamacpp"
         // Ternary 2-bit is the stock-runnable MLX pack (affine bits=2).
         // The phone-class 1-bit pack needs PrismML-Eng/mlx-swift branch
@@ -519,6 +523,21 @@ enum ProbeDiscussCLI {
             case "--report-json":
                 reportJSONPath = args.first.map { String($0) }
                 if !args.isEmpty { args = args.dropFirst() }
+            case "--capture-model-inputs":
+                guard let path = args.first, !path.hasPrefix("--") else {
+                    print("probe-discuss: --capture-model-inputs requires a new directory")
+                    exit(2)
+                }
+                captureDirectory = String(path)
+                args = args.dropFirst()
+            case "--qwen-bf16-dir":
+                guard let path = args.first, !path.hasPrefix("--") else {
+                    print("probe-discuss: --qwen-bf16-dir requires verified original local weights")
+                    exit(2)
+                }
+                qwenBF16Directory = String(path)
+                runtime = "mlx"
+                args = args.dropFirst()
             case "--phone-mode":
                 phoneMode = true
             case "--ram-mb":
@@ -690,12 +709,33 @@ enum ProbeDiscussCLI {
         let lowerGGUF = gguf.lowercased()
         // --runtime mlx is Bonsai-only today, so the MLX path inherits the
         // Bonsai sampling recipe even when --gguf points elsewhere.
-        let isBonsai = lowerGGUF.contains("bonsai") || runtime == "mlx"
+        let isQwenReference = qwenBF16Directory != nil
+        if let directory = qwenBF16Directory {
+            do {
+                let data = try Data(contentsOf: URL(fileURLWithPath: directory)
+                    .appendingPathComponent("config.json"))
+                guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      config["model_type"] as? String == "qwen3_5",
+                      config["quantization_config"] == nil,
+                      let text = config["text_config"] as? [String: Any],
+                      text["quantization_config"] == nil,
+                      text["dtype"] as? String == "bfloat16",
+                      text["num_hidden_layers"] as? Int == 64,
+                      runtime == "mlx", !phoneMode else {
+                    throw NSError(domain: "QwenReference", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Expected original Qwen3.8-27B BF16 configuration on Mac"])
+                }
+            } catch {
+                print("probe-discuss: invalid Qwen reference: \(error)")
+                exit(2)
+            }
+        }
+        let isBonsai = !isQwenReference && (lowerGGUF.contains("bonsai") || runtime == "mlx")
         let isTernaryBonsai = isBonsai
             && (lowerGGUF.contains("ternary") || lowerGGUF.contains("q2_0"))
         let isLFM = lowerGGUF.contains("lfm")
         let template: any ModelTemplate
-        if isBonsai || lowerGGUF.contains("qwen") {
+        if isBonsai || isQwenReference || lowerGGUF.contains("qwen") {
             template = QwenChatMLTemplate()
         } else if isLFM {
             template = LFM25Template()
@@ -730,17 +770,21 @@ enum ProbeDiscussCLI {
             // ChatML template, same sampling profile — only the runtime
             // differs. Weights download via HubClient on first load
             // (~3.8 GB) into the shared HF cache.
-            sessionModelID = "bonsai-27b-q1-mlx"
+            sessionModelID = isQwenReference ? "qwen3.8-27b-bf16" : "bonsai-27b-q1-mlx"
             provider = Gemma4Provider(
                 id: sessionModelID,
-                displayName: "Bonsai 27B (1-bit · MLX)",
-                huggingFaceRepo: mlxRepo,
-                approximateMemoryMB: 5900,
+                displayName: isQwenReference ? "Qwen3.8 27B (original BF16 · MLX)" : "Bonsai 27B (1-bit · MLX)",
+                huggingFaceRepo: isQwenReference ? "Qwen/Qwen3.8-27B" : mlxRepo,
+                approximateMemoryMB: isQwenReference ? 60000 : 5900,
                 template: QwenChatMLTemplate(),
                 replyTokensFloor: 512,
-                samplingProfile: samplingProfile)
+                samplingProfile: samplingProfile,
+                localWeightsDirectory: qwenBF16Directory.map { URL(fileURLWithPath: $0) })
+            if let directory = qwenBF16Directory {
+                modelFileMB = Double(dirSizeBytes(at: URL(fileURLWithPath: directory))) / 1_048_576
+            }
             reportKVType = DeviceProfile.current.useQuantizedKVCache
-                ? "mlx-q4" : "mlx-fp16"
+                ? "mlx-q4" : "mlx-unquantized"
             print("runtime: \(provider.displayName)"
                 + " · repo \(mlxRepo)"
                 + " · profile=\(DeviceProfile.current.label)"
@@ -829,6 +873,23 @@ enum ProbeDiscussCLI {
             }
         }
 
+        if let captureDirectory {
+            do {
+                try ModelInputCapture.shared.start(
+                    directory: URL(fileURLWithPath: captureDirectory),
+                    metadata: ["purpose": "evaluation-model-inputs-not-activations",
+                               "suitePath": suitePath ?? "ad-hoc",
+                               "zimPath": zim, "streetzimPath": streetzim ?? "",
+                               "modelArtifact": qwenBF16Directory ?? (runtime == "mlx" ? mlxRepo : gguf),
+                               "runtime": runtime,
+                               "template": String(describing: type(of: provider.template)),
+                               "provenanceStatus": "requires-artifact-and-source-hash-verification"])
+            } catch {
+                print("probe-discuss: cannot start input capture: \(error)")
+                exit(5)
+            }
+        }
+
         var passedTurns = 0
         var failedTurns = 0
         var advisoryLatencyMisses = 0
@@ -839,6 +900,7 @@ enum ProbeDiscussCLI {
             print("╔══ [\(conversationIndex + 1)/\(runConversations.count)] \(conversation.id)")
             if let description = conversation.description { print("║ \(description)") }
             for (turnIndex, turn) in conversation.turns.enumerated() {
+                ModelInputCapture.shared.setCase(conversation: conversation.id, turn: turnIndex)
                 print("─── [\(turnIndex + 1)/\(conversation.turns.count)] YOU: \(turn.user)")
                 let directIntent = IntentRouter.classify(
                     turn.user,
@@ -1028,6 +1090,8 @@ enum ProbeDiscussCLI {
                 streetzim: streetzim,
                 gguf: gguf,
                 modelDisplayName: provider.displayName,
+                runtime: runtime,
+                modelArtifact: qwenBF16Directory ?? (runtime == "mlx" ? mlxRepo : gguf),
                 modelFileMB: modelFileMB,
                 contextTokens: reportContextTokens,
                 kvCacheType: reportKVType,
@@ -1061,6 +1125,11 @@ enum ProbeDiscussCLI {
                     "probe-discuss: could not write JSON report: \(error)\n".utf8))
                 exit(5)
             }
+        }
+        do { try ModelInputCapture.shared.finish() }
+        catch {
+            print("probe-discuss: incomplete input capture: \(error)")
+            exit(5)
         }
         exit(failedTurns == 0 ? 0 : 1)
     }

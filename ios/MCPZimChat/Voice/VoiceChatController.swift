@@ -43,7 +43,13 @@ public final class VoiceChatController {
         case error(String)
     }
 
-    public private(set) var state: State = .idle
+    public private(set) var state: State = .idle {
+        didSet {
+            if case .error(let message) = state, state != oldValue {
+                session.recordVisibleError(message, source: "Voice")
+            }
+        }
+    }
     /// Live partial transcript shown to the user under the orb so they
     /// can see the recognizer is hearing them in real time.
     public private(set) var liveTranscript: String = ""
@@ -58,13 +64,34 @@ public final class VoiceChatController {
     /// started but silent for several seconds. Keep TTS genuinely lazy and
     /// construct it only after the user's utterance has been submitted.
     @ObservationIgnored private var ttsStorage: TTSService?
-    public private(set) var activeVoiceName = TTSBackendPreference.current.displayName
+    public private(set) var activeVoiceName = "Selecting voice…"
+    public private(set) var voiceFallbackReason: String? {
+        didSet {
+            if let voiceFallbackReason, voiceFallbackReason != oldValue {
+                log("Displayed voice notice: \(voiceFallbackReason)")
+            }
+        }
+    }
     public var tts: TTSService {
         if let ttsStorage { return ttsStorage }
         let service = TTSFactory.makeBest(
             voice: KokoroVoicePreference.current)
         ttsStorage = service
+        voiceFallbackReason = nil
         activeVoiceName = service.displayName
+        if TTSBackendPreference.current == .kokoro && !(service is KokoroTTSService) {
+            let thermal = ProcessInfo.processInfo.thermalState
+            if !KokoroAssets.isDownloaded {
+                voiceFallbackReason = "Download the Kokoro voice in Settings to use it."
+            } else if thermal == .serious || thermal == .critical {
+                voiceFallbackReason = "Using a lighter voice while the device is hot."
+            } else if Self.availableMemoryMB() < Double(TTSFactory.kokoroPeakMemoryMB) + 700 {
+                voiceFallbackReason = "Kokoro needs more memory headroom; using a lighter voice."
+            } else {
+                voiceFallbackReason = "Kokoro could not initialize; using a lighter voice."
+            }
+            log("Voice preference fallback: \(voiceFallbackReason ?? "")")
+        }
         log("TTS backend initialized after capture — \(service.displayName)")
         return service
     }
@@ -94,6 +121,9 @@ public final class VoiceChatController {
                 "High-memory TTS backend %@ needs ~%d MB peak but only %.0f MB free — selecting a lightweight voice",
                 current.displayName, current.peakSynthesisMemoryMB, available))
         }
+        voiceFallbackReason = thermallyConstrained
+            ? "Using a lighter voice while the device is hot."
+            : "Using a lighter voice because memory headroom is low."
         current.stop()
         #if canImport(FluidAudio)
         ttsStorage = Supertonic3TTSService(voice: SupertonicVoicePreference.current)
@@ -270,6 +300,10 @@ public final class VoiceChatController {
         stt.cancel()
         ttsStorage?.stop()
         ttsStorage = nil
+        ttsPreparation?.cancel()
+        ttsPreparation = nil
+        activeVoiceName = "Selecting voice…"
+        voiceFallbackReason = nil
         if engine.isRunning {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -943,11 +977,13 @@ public final class VoiceChatController {
                                     toSpeak, boundary: ttsBoundary)
                             } catch {
                                 log("TTS chunk failed: \(error.localizedDescription)")
-                                // Leave `spokenUpTo` unchanged so the same
-                                // source text remains pending rather than
-                                // being silently discarded.
-                                try? await Task.sleep(nanoseconds: 75_000_000)
-                                continue
+                                guard !Task.isCancelled else { return }
+                                // Repeating an audio failure every 75 ms can
+                                // hang forever or repeat partially heard audio.
+                                let failure = tts.playbackFailure ?? error.localizedDescription
+                                tts.stop()
+                                state = .error(failure)
+                                return
                             }
                             let synthesisSeconds =
                                 Date().timeIntervalSince(synthesisStarted)
@@ -1020,6 +1056,12 @@ public final class VoiceChatController {
         // Interrupt/stop can resume the playback waiter. Its new listening
         // cycle owns capture; the cancelled reply must not rearm it again.
         guard !Task.isCancelled else { return }
+        if let failure = tts.playbackFailure {
+            log("TTS playback failed — \(tts.displayName): \(failure)")
+            tts.stop()
+            state = .error(failure)
+            return
+        }
         // wall = generation overlap + audio + gaps + final drain. When
         // audio+gaps ≈ wall the turn length is real speech; large uncounted
         // remainder means waiting on text (generation-bound), not TTS.

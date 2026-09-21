@@ -89,5 +89,9 @@
 			</dict>
 		</dict>
 	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.tiltastech.zimfo.current-article</string>
+	</array>
 </dict>
 </plist>

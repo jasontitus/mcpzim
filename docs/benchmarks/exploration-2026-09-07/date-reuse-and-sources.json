@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 2,
+  "modelDisplayName": "Bonsai 27B (1-bit · Metal)",
+  "contextTokens": 16384,
+  "kvCacheType": "Q4_0",
+  "passedTurns": 11,
+  "failedTurns": 1,
+  "turns": [
+    {
+      "answer": "Bulgaria, officially the Republic of Bulgaria, is a country in Southeast Europe.\n\nIt is situated on the eastern portion of the Balkans directly south of the Danube river and west of the Black Sea.\n\nBulgaria is bordered by Greece and Turkey to the south, Serbia and North Macedonia to the west, and Romania across the Danube river to the north.\n\nYou can say “What about geography?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 0.3086669445037842,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Bulgaria"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What about geography?",
+        "What about culture?",
+        "What about economy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Bulgaria"
+    },
+    {
+      "answer": "International military relations were further expanded with accession to NATO in March 2004 and the US-Bulgarian Defence Cooperation Agreement signed in April 2006. Bezmer and Graf Ignatievo air bases, the Novo Selo training range, and a logistics centre in Aytos subsequently became joint military training facilities cooperatively used by the United States and Bulgarian militaries.\n\nBulgaria joined NATO in 2004 and the EU in 2007.\n\nYou can say “Tell me about Bulgaria–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 29.38273298740387,
+      "failures": [],
+      "groundingSections": [
+        "Foreign relations",
+        "NATO and European Union"
+      ],
+      "groundingTitles": [
+        "Bulgaria",
+        "Bulgaria–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Bulgaria–Poland relations"
+      ],
+      "turn": 2,
+      "user": "When did Bulgaria join NATO?"
+    },
+    {
+      "answer": "Both countries have since joined NATO (Poland in 1999, Lithuania in 2004, with Poland being a vocal supporter of Lithuania's accession ) and the European Union (both in 2004). However, in the late 2000s, disagreements over Lithuania's implementation of the Friendship Treaty have soured relations and cooperation on energy issues.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 17.353155970573425,
+      "failures": [],
+      "groundingSections": [
+        "Modern times"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Lithuania–Poland relations"
+      ],
+      "turn": 3,
+      "user": "How about Lithuania?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nYou can say “tell me about Southeast Europe,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 13.97343099117279,
+      "failures": [],
+      "groundingSections": [
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Southeast Europe",
+        "European Union",
+        "Balkans",
+        "Europe"
+      ],
+      "turn": 4,
+      "user": "What year?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nYou can say “Tell me about Lithuania–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 0.10767996311187744,
+      "failures": [],
+      "groundingSections": [
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Lithuania–Poland relations"
+      ],
+      "turn": 5,
+      "user": "What year?"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.10280001163482666,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "It was admitted to the Union as the 42nd state in 1889. That was about 137 years ago.\n\nYou can say “Tell me about Washington (state),” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.30934298038482666,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Washington (state)"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Washington (state)"
+      ],
+      "turn": 2,
+      "user": "The second one"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.10273396968841553,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "The Residence Act, adopted on July 16, 1790, approved the creation of the capital district along the Potomac River, and is considered the city's founding date. That was about 236 years ago.\n\nYou can say “Tell me about Washington, D.C.,” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.305927038192749,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Washington, D.C."
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Washington, D.C."
+      ],
+      "turn": 2,
+      "user": "The third one"
+    },
+    {
+      "answer": "Arthur A. Denny and his group of travelers, subsequently known as the Denny Party, arrived from Illinois via Portland, Oregon, on the schooner Exact at Alki Point on November 13, 1851. The settlement was moved to the eastern shore of Elliott Bay in 1852 and named \"Seattle\" in honor of Chief Seattle, a prominent 19th-century leader of the local Duwamish and Suquamish tribes. That was about 175 years ago.\n\nYou can say “Tell me about Seattle, Washington,” “more topics,” or ask your own follow-up.",
+      "conversationID": "seattle_qualified_age",
+      "elapsedSeconds": 0.30873000621795654,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Seattle, Washington"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "Seattle, Washington"
+      ],
+      "turn": 1,
+      "user": "How old is Seattle, Washington?"
+    },
+    {
+      "answer": "On June 29, 1776, settlers from New Spain established the Presidio of San Francisco at the Golden Gate, and the Mission San Francisco de Asís a few miles away, both named for Francis of Assisi. That was about 250 years ago.\n\nYou can say “Tell me about San Francisco,” “more topics,” or ask your own follow-up.",
+      "conversationID": "san_francisco_age_fast_path",
+      "elapsedSeconds": 0.30398499965667725,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "San Francisco"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "San Francisco"
+      ],
+      "turn": 1,
+      "user": "How old is San Francisco?"
+    },
+    {
+      "answer": "Founded in 1976 as Apple Computer Company by Steve Jobs, Steve Wozniak and Ronald Wayne, the company was incorporated by Jobs and Wozniak as Apple Computer, Inc. the following year.\n\nYou can say “Tell me about Apple, Inc.,” “more topics,” or ask your own follow-up.",
+      "conversationID": "apple_truncated_voice_factoid",
+      "elapsedSeconds": 0.4064760208129883,
+      "failures": [
+        "missing grounded source [Apple Inc.]"
+      ],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Apple, Inc."
+      ],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "Apple, Inc."
+      ],
+      "turn": 1,
+      "user": "When was Apple"
+    }
+  ],
+  "environment": "Signed Mac CLI; Bonsai Q1 with phone context settings; June 2026 Wikipedia. Development replay, not phone timing. Source attribution was subsequently tightened to use the full actual section."
+}

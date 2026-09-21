@@ -38,6 +38,36 @@ final class BundledArticleTests: XCTestCase {
     <h2>History</h2><p>It was added to the National Register in 1996.</p>
     """
 
+    func testDiscussionSearchPathCannotBroadenIntoParentArticle() async throws {
+        let reader = MapReader(kind: .wikipedia, [
+            "A/Lithuania": "<p>The parent country article.</p>",
+            "A/History_of_Lithuania": "<p>The exact search result history article.</p>"
+        ])
+        let service = DefaultZimService(readers: [(name: "wiki", reader: reader)])
+        let adapter = MCPToolAdapter(service: service, hasStreetzim: false)
+        let result = try await adapter.dispatch(tool: "discuss_article",
+            args: ["title": "History of Lithuania", "path": "A/History_of_Lithuania", "zim": "wiki"])
+        let rows = try XCTUnwrap(result["sections"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["text"] as? String, "The exact search result history article.")
+        let missing = try await adapter.dispatch(tool: "discuss_article",
+            args: ["title": "History of Lithuania", "path": "A/Missing", "zim": "wiki"])
+        XCTAssertNotNil(missing["error"])
+    }
+
+    func testSpokenLeadingTheRetriesOnlyAfterExactMiss() async throws {
+        let wiki = MapReader(kind: .wikipedia, [
+            "A/Grand_Duchy_of_Lithuania": "<p>The requested historical state.</p>",
+            "A/The_Who": "<p>The band.</p>",
+            "A/Who": "<p>A different article.</p>"
+        ])
+        let svc = DefaultZimService(readers: [(name: "wiki", reader: wiki)])
+        let corrected = try await svc.articleByTitle(
+            title: "The Grand Duchy of Lithuania", zim: nil)
+        XCTAssertEqual(corrected.path, "A/Grand_Duchy_of_Lithuania")
+        let exact = try await svc.articleByTitle(title: "The Who", zim: nil)
+        XCTAssertEqual(exact.path, "A/The_Who")
+    }
+
     func testResolvesStreetzimBundledArticleWithNoWikipediaZim() async throws {
         // Only a streetzim, carrying the article at wiki-article/<Title>.
         let sz = MapReader(kind: .streetzim,

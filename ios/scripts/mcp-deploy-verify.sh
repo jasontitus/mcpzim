@@ -10,7 +10,8 @@
 #   ios/scripts/mcp-deploy-verify.sh pull <name.ips> # copy one report to /tmp
 #
 # Exit codes: 0 = app alive after WATCH_SECS; 1 = app died (crash reports,
-# if any, are pulled automatically); 2 = install/launch failed.
+# if any, are pulled automatically); 2 = install/launch failed;
+# 3 = final process query unavailable (verification inconclusive).
 
 set -uo pipefail
 
@@ -35,8 +36,12 @@ pull_crash() {
 }
 
 alive() {
-  xcrun devicectl device info processes --device "$DEVICE" 2>/dev/null \
-    | grep -c "$BUNDLE\|MCPZimChat.app" || true
+  local out
+  if ! out=$(xcrun devicectl --timeout 15 device info processes --device "$DEVICE" 2>&1); then
+    echo "Process query unavailable: $out" >&2
+    return 2
+  fi
+  echo "$out" | grep -c "$BUNDLE\|MCPZimChat.app" || true
 }
 
 case "${1:-deploy}" in
@@ -88,9 +93,16 @@ esac
 echo "== watch (${WATCH_SECS}s) =="
 BEFORE=$(list_crashes)
 DEAD=0
+LAST_CHECK_OK=0
 for t in $(seq 5 5 "$WATCH_SECS"); do
   sleep 5
-  if [ "$(alive)" -eq 0 ]; then
+  if ! count=$(alive); then
+    LAST_CHECK_OK=0
+    echo "  t=${t}s device query unavailable — app state unknown"
+    continue
+  fi
+  LAST_CHECK_OK=1
+  if [ "$count" -eq 0 ]; then
     echo "✗ app NOT RUNNING at t=${t}s"
     DEAD=1
     break
@@ -116,5 +128,9 @@ fi
 if [ "$DEAD" -eq 1 ]; then
   echo "RESULT: FAILED — app died within ${WATCH_SECS}s"
   exit 1
+fi
+if [ "$LAST_CHECK_OK" -eq 0 ]; then
+  echo "RESULT: INCONCLUSIVE — could not verify the final app state"
+  exit 3
 fi
 echo "RESULT: OK — app alive after ${WATCH_SECS}s"

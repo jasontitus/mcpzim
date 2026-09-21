@@ -1,5 +1,32 @@
 # Isolated speech comparison
 
+## MLX Kokoro memory regression
+
+`check-kokoro-parity.py` compares a retained baseline KokoroSwift framework
+against the optimized framework using `MCPZimTTSBenchCLI`. Build that Xcode
+scheme in Release, retain the baseline framework **before** applying a change,
+then rebuild the candidate. Both sides use the same final harness and assets.
+
+```sh
+python3 tools/tts-compare/check-kokoro-parity.py \
+  --executable /absolute/path/to/MCPZimTTSBenchCLI \
+  --baseline-frameworks /absolute/baseline/PackageFrameworks \
+  --candidate-frameworks /absolute/candidate/PackageFrameworks \
+  --models /absolute/path/to/kokoro_mlx \
+  --output /private/tmp/kokoro-parity
+```
+
+The framework search paths may contain colon-separated directories for
+unchanged supporting frameworks. Keep the executable beside its MLX resource
+bundle. The script runs serially, requires exact first/warm Float32 PCM,
+and saves WAVs, Float32 sidecars, process logs and parity JSON. The benchmark
+seeds its own random stream; production does not. `KOKORO_BENCH_CACHE_MB` is
+an isolated allocator experiment only and is removed by the parity script.
+See [the memory review](../../docs/KOKORO_MEMORY_REVIEW_2026-09-06.md) for
+results and limitations.
+
+## Core ML comparison
+
 This macOS Release harness compares the actual Swift/Core ML runtimes without
 loading Bonsai, MLX, playback, or speech recognition. Run one backend per process
 and one process at a time. It never opens audio hardware. `--save` writes WAV

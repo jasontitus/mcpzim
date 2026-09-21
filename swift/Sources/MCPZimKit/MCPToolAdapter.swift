@@ -1533,7 +1533,13 @@ public actor MCPToolAdapter {
         let broad = ArticleHeuristics.topicCore(title)
         let resolved: (zim: String, path: String, title: String, sections: [ArticleSection])
         do {
-            if broad.lowercased() != title.lowercased(),
+            if let path = args["path"] as? String, !path.isEmpty {
+                // A host-selected search hit already has an archive identity.
+                // Read that exact path (including real ZIM redirects); do not
+                // broaden a History/Relations title into a different article.
+                let parsed = try await service.articleSections(path: path, zim: zim)
+                resolved = (parsed.zim, path, parsed.title, parsed.sections)
+            } else if broad.lowercased() != title.lowercased(),
                let b = try? await ArticleHeuristics.sectionsByTitle(
                    service: service, title: broad, zim: zim) {
                 resolved = b

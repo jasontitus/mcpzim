@@ -4,17 +4,23 @@ import Foundation
 /// of a relationship: an authorship question needs a subject, an authorship
 /// assertion and an identifiable work, not an incidental occurrence of 'write'.
 public struct EvidenceQuestion: Equatable, Sendable {
-    public enum Relation: String, Sendable { case authoredWorks }
+    public enum Relation: String, Sendable { case authoredWorks, birthplace }
     public let relation: Relation
     public let workKind: String?
+    private let permitsArticleSubject: Bool
 
     public static func parse(_ question: String) -> EvidenceQuestion? {
         let q = question.lowercased()
+        if q.range(of: #"\bwhere\b"#, options: .regularExpression) != nil,
+           q.range(of: #"\bborn\b"#, options: .regularExpression) != nil {
+            let relativeOrMultiple = q.range(of: #"['’]s\b|\b(?:mother|father|parents|brother|sister|son|daughter|wife|husband|and|or)\b"#, options: .regularExpression) != nil
+            return .init(relation: .birthplace, workKind: nil, permitsArticleSubject: !relativeOrMultiple)
+        }
         guard q.range(of: #"^\s*(?:what|which)\b"#, options: .regularExpression) != nil,
               q.range(of: #"\b(?:write|wrote|written|author|authored|pen|penned)\b"#, options: .regularExpression) != nil else { return nil }
         let kinds = ["play", "book", "novel", "poem", "song", "essay", "story"]
         let words = Set(ArticleHeuristics.questionKeywords(q).map(ArticleHeuristics.stem))
-        return .init(relation: .authoredWorks, workKind: kinds.first { words.contains($0) })
+        return .init(relation: .authoredWorks, workKind: kinds.first { words.contains($0) }, permitsArticleSubject: true)
     }
 
     public static func lemma(_ word: String) -> String {
@@ -36,6 +42,24 @@ public struct EvidenceQuestion: Equatable, Sendable {
         let subject = "(?:" + names.joined(separator: "|") + ")"
         func matches(_ text: String, _ pattern: String) -> Bool {
             text.range(of: pattern, options: .regularExpression) != nil
+        }
+        if relation == .birthplace {
+            guard permitsArticleSubject, EntityResolutionPolicy.sameTitle(article, topic) else { return false }
+            // Keep the full title for source identity, but remove a trailing
+            // disambiguator when matching the person's name in source prose.
+            let person = topic.replacingOccurrences(of: #"\s+\([^()]+\)$"#, with: "", options: .regularExpression)
+            let birthNames = [person, person.split(separator: " ").last.map(String.init) ?? person]
+                .map(NSRegularExpression.escapedPattern(for:))
+            let birthActor = "(?:" + birthNames.joined(separator: "|") + ")"
+            // Require a named assertion: even a preceding subject sentence
+            // can introduce another person whose pronoun follows it.
+            guard let assertion = sentence.range(of: "(?i)^" + birthActor + #"\s+(?:was|is)\s+born\b"#,
+                                                  options: .regularExpression) else { return false }
+            let remainder = String(sentence[assertion.upperBound...])
+            let placePattern = #"(?i:\b(?:in|at)\s+(?:the\s+)?)(?!(?i:January|February|March|April|May|June|July|August|September|October|November|December)\b)\p{Lu}[\p{L}’'-]+"#
+            guard let place = remainder.range(of: placePattern, options: .regularExpression) else { return false }
+            let between = String(remainder[..<place.lowerBound])
+            return !matches(between, #"(?i)[;.!?]|\b(?:and|but|whose|mother|father|parents|wife|husband|brother|sister|son|daughter)\b"#)
         }
         // Pronouns are accepted only in an unbroken subject-anchored run.
         // A new named subject, quotation or unrecognized sentence breaks it.

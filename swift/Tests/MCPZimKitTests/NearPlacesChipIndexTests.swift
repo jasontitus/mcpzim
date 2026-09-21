@@ -82,6 +82,38 @@ final class NearPlacesChipIndexTests: XCTestCase {
         ]
     }
 
+    func testCoffeeDoesNotRelabelPlainBakeriesOrShopsAsCafes() async throws {
+        var fixture = newZimWithChips()
+        fixture["category-index/chip-cafes.json"] = #"[{"n":"Coffee Shop","t":"poi","s":"coffee_shop","a":37.442,"o":-122.155},{"n":"Bakery Cafe","t":"poi","s":"cafe","a":37.442,"o":-122.155},{"n":"Plain Bakery","t":"poi","s":"bakery","a":37.442,"o":-122.155},{"n":"Coffee Equipment","t":"poi","s":"shop","a":37.442,"o":-122.155},{"n":"Tea Only","t":"poi","s":"tea_room","a":37.442,"o":-122.155}]"#
+        for query in ["coffee", "coffee shop", "coffee_shop", "coffeehouse", "cafe"] {
+            let result = try await service(fixture).nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+                limit: 20, kinds: [query], zim: nil)
+            XCTAssertEqual(Set(result.results.map { $0.place.name }), ["Coffee Shop", "Bakery Cafe"])
+            XCTAssertEqual(result.totalInRadius, 2)
+        }
+        let bakeries = try await service(fixture).nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+            limit: 20, kinds: ["bakery"], zim: nil)
+        XCTAssertTrue(bakeries.results.contains { $0.place.name == "Plain Bakery" })
+    }
+
+    func testBarsDoNotIncludeRetailAlcoholCoffeeBarsOrBreweries() async throws {
+        var fixture = newZimWithChips()
+        fixture["category-index/manifest.json"] = #"{"total":9,"categories":{},"chips":{"bars":{"count":9}}}"#
+        fixture["category-index/chip-bars.json"] = #"[{"n":"The Pit Bar","t":"poi","s":"bar","a":37.442,"o":-122.155},{"n":"Local Pub","t":"poi","s":"pub","a":37.442,"o":-122.155},{"n":"Cocktails","t":"poi","s":"cocktail_bar","a":37.442,"o":-122.155},{"n":"Bar Liquor Shop","t":"poi","s":"alcohol_shop","a":37.442,"o":-122.155},{"n":"Wine Store","t":"poi","s":"liquor_store","a":37.442,"o":-122.155},{"n":"Coffee Bar","t":"poi","s":"coffee_bar","a":37.442,"o":-122.155},{"n":"Barbecue","t":"poi","s":"amenity","a":37.442,"o":-122.155},{"n":"Production Brewery","t":"poi","s":"brewery","a":37.442,"o":-122.155},{"n":"Dance Club","t":"poi","s":"nightclub","a":37.442,"o":-122.155}]"#
+        for query in [["bar"], ["tavern"], ["bar", "pub"]] {
+            let result = try await service(fixture).nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+                limit: 20, kinds: query, zim: nil)
+            XCTAssertEqual(Set(result.results.map { $0.place.name }), ["The Pit Bar", "Local Pub", "Cocktails"])
+            XCTAssertEqual(result.totalInRadius, 3)
+        }
+        let pubs = try await service(fixture).nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+            limit: 20, kinds: ["pub"], zim: nil)
+        XCTAssertEqual(pubs.results.map { $0.place.name }, ["Local Pub"])
+        let clubs = try await service(fixture).nearPlaces(lat: lat, lon: lon, radiusKm: 5,
+            limit: 20, kinds: ["nightclub"], zim: nil)
+        XCTAssertEqual(clubs.results.map { $0.place.name }, ["Dance Club"])
+    }
+
     func testCarmelValleyWiderSearchReturnsActualArchiveCafeRecords() async throws {
         var fixture = newZimWithChips()
         fixture["category-index/chip-cafes.json"] = #"[{"n": "Carmel Valley Creamery Co.", "t": "poi", "s": "coffee_shop", "a": 36.473565, "o": -121.728071}, {"n": "Wild Goose Bakery Cafe", "t": "poi", "s": "cafe", "a": 36.47836579786404, "o": -121.72914862632751}, {"n": "Fro N Joe", "t": "poi", "s": "coffee_shop", "a": 36.479633, "o": -121.731155}, {"n": "Corkscrew Cafe", "t": "poi", "s": "cafe", "a": 36.48036, "o": -121.734718}]"#
