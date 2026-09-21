@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!requirements.lock
+!upstream_check.py
+!verify_sources.py
+!tests/
+!tests/**
+!.context/
+!.context/sources/
+!.context/sources/**
+!.context/application/
+!.context/application/**
+!.context/prism/
+!.context/prism/**

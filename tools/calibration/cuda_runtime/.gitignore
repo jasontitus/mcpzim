@@ -1,0 +1,6 @@
+.context/
+reports/
+__pycache__/
+.pytest_cache/
+build*.log
+push*.log

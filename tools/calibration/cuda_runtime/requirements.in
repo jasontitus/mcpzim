@@ -1,0 +1,18 @@
+# Minimal upstream optimization imports. Torch/CUDA are supplied by the pinned
+# base image. No vLLM, flash-attention, inference server, or benchmark downloads.
+numpy==2.3.5
+transformers==5.7.0
+accelerate==1.13.0
+datasets==4.8.5
+safetensors==0.7.0
+compressed-tensors==0.15.0.1
+lion-pytorch==0.2.4
+wandb==0.26.1
+tqdm==4.67.3
+pyyaml==6.0.3
+pytest==8.4.2
+torch==2.11.0
+# Official base's spin development utility requires click<8.4.
+click==8.3.1
+google-cloud-storage==3.4.1
+sentencepiece==0.2.2
