@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "purpose": "EXPORT_RUNTIME_COMPATIBILITY_ONLY_NOT_GSQ",
+  "architecture": "qwen35",
+  "model": "Qwen/Qwen3.8-27B",
+  "baseline_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "prism_revision": "62061f91088281e65071cc38c5f69ee95c39f14e",
+  "gguf_bytes": 3803453760,
+  "gguf_sha256": "ae7da605df45a57c18ee422c0f4b04469d626c21e7f90145c5a09d438ef533a1",
+  "runtime_tensor_count": 851,
+  "q1_tensors": 498,
+  "protected_f32_tensors": 353,
+  "prefill_tokens": 3,
+  "finite_logits": 248320,
+  "device": "CPU",
+  "threads": 8,
+  "gpu_offload": false,
+  "rtn_elapsed_seconds": 98.35965179203777,
+  "export_elapsed_seconds": 103.46,
+  "packing_error": {
+    "changed_groups": 171,
+    "max_scale_error": 2.9802322387695312e-08,
+    "sum_squared_weight_error": 1.7990942069445737e-11
+  },
+  "logs": {
+    "rtn.log": "82830ae2063234fdbd63f96a3c2338bae52d13a76412617a3ff655b472790f06",
+    "export.log": "7e890678ebc94525cca3cc391cb84aa789456a2837ea642c770fdd7e2385cefa",
+    "runtime.log": "40d48294b65aeee719e121f52bc0a94fd2da2c5139d350559fcb0085c48347e9"
+  },
+  "limitations": [
+    "RTN initialization only; noGSQ optimization orqualityclaim",
+    "CPU runtimecompatibility only; Metal/phone andcrossbackendnumericalparity stillrequired",
+    "time wrappercouldnotreadkern.clockrate under sandbox; actualexportcompleted andartifactpassedruntimevalidation"
+  ]
+}

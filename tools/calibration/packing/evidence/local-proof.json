@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "scope": "CPU binarycodec/container compatibility; not fullQwen export or quality",
+  "prism_revision": "62061f91088281e65071cc38c5f69ee95c39f14e",
+  "fixture": {
+    "architecture": "llama",
+    "layers": 1,
+    "q1_tensors": 9,
+    "f32_tensors": 3,
+    "bytes": 20736,
+    "sha256": "04ab5fec48497385ca71b67f200e153e04b07a6ab405111dfdcf23073687420f",
+    "prefill_tokens": 3,
+    "finite_output_logits": 32
+  },
+  "gsq_candidate_roundtrip": "actual GumbelQuantizer1Bit.get_hard_weights BF16, exactzeroaddederror",
+  "shipped_dequantizer": "ctypes dequantize_row_q1_0 equalsPython for7rows512columns",
+  "qwen_layout": "five recurrentprojectionfamilies plusprotectednorm/A transforms matchedpinnedconverter",
+  "full_qwen_export": "adapterimplemented; pending optimizedcandidatepackage/fullruntimetest"
+}
