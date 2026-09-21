@@ -1,0 +1,619 @@
+{
+  "schema_version": 1,
+  "name": "Zimfo quantization calibration development v1",
+  "description": "Public synthetic app-usage calibration scenarios. Not a quality benchmark. Separate from the four frozen held-out QA suites. Turns are not model invocations; record exact inputs and audit source leakage and coverage after execution. StreetZIM cases are optional and require verified local archive coverage.",
+  "conversations": [
+    {
+      "id": "cal_coral_reef",
+      "description": "Calibration development only: Coral reef. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "ecology"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Coral reef"
+        },
+        {
+          "user": "Explain how a reef is built by living organisms."
+        },
+        {
+          "user": "What makes reef ecosystems support so many different species?"
+        },
+        {
+          "user": "Explain bleaching and how it differs from a dead reef."
+        }
+      ]
+    },
+    {
+      "id": "cal_photosynthesis",
+      "description": "Calibration development only: Photosynthesis. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "biology"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Photosynthesis"
+        },
+        {
+          "user": "Walk me through the process without assuming I know chemistry."
+        },
+        {
+          "user": "What is the difference between the light-dependent reactions and carbon fixation?"
+        },
+        {
+          "user": "Which parts of that explanation are specific to plants?"
+        }
+      ]
+    },
+    {
+      "id": "cal_ceramic",
+      "description": "Calibration development only: Ceramic. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "materials"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Ceramic"
+        },
+        {
+          "user": "What makes something a ceramic rather than a metal or a plastic?"
+        },
+        {
+          "user": "How does firing change the material?"
+        },
+        {
+          "user": "Compare traditional pottery with the advanced ceramics described in the article."
+        }
+      ]
+    },
+    {
+      "id": "cal_violin",
+      "description": "Calibration development only: Violin. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "music"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Violin"
+        },
+        {
+          "user": "How do the strings and the body work together to make sound?"
+        },
+        {
+          "user": "What does the article say about how its design developed?"
+        },
+        {
+          "user": "Explain the difference between bowing and plucking it."
+        }
+      ]
+    },
+    {
+      "id": "cal_honey_bee",
+      "description": "Calibration development only: Honey bee. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "animals"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Honey bee"
+        },
+        {
+          "user": "Explain the different jobs in a colony."
+        },
+        {
+          "user": "How do they communicate about food?"
+        },
+        {
+          "user": "What are the main threats discussed in the article?"
+        }
+      ]
+    },
+    {
+      "id": "cal_volcano",
+      "description": "Calibration development only: Volcano. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "article",
+        "wikipedia",
+        "prepared_discussion",
+        "earth_science"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Volcano"
+        },
+        {
+          "user": "Why do volcanoes form in some places but not others?"
+        },
+        {
+          "user": "Explain the main differences between the types described here."
+        },
+        {
+          "user": "How do the hazards differ between an eruption and its aftermath?"
+        }
+      ]
+    },
+    {
+      "id": "cal_ada_lovelace",
+      "description": "Calibration development only: Ada Lovelace. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "followup",
+        "wikipedia",
+        "prepared_discussion",
+        "pronoun",
+        "correction"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Ada Lovelace"
+        },
+        {
+          "user": "What was she trying to explain in her notes?"
+        },
+        {
+          "user": "And what was his machine supposed to do?"
+        },
+        {
+          "user": "Sorry, by his I mean Charles Babbage. Explain how their work was connected."
+        }
+      ]
+    },
+    {
+      "id": "cal_hokusai",
+      "description": "Calibration development only: Hokusai. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "followup",
+        "wikipedia",
+        "prepared_discussion",
+        "pronoun",
+        "art"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Hokusai"
+        },
+        {
+          "user": "What kinds of art did he make?"
+        },
+        {
+          "user": "How did his work change during his life?"
+        },
+        {
+          "user": "And how did it influence artists outside Japan?"
+        }
+      ]
+    },
+    {
+      "id": "cal_mary_anning",
+      "description": "Calibration development only: Mary Anning. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "followup",
+        "wikipedia",
+        "prepared_discussion",
+        "pronoun",
+        "biography"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Mary Anning"
+        },
+        {
+          "user": "What discoveries is she known for?"
+        },
+        {
+          "user": "How did she find them?"
+        },
+        {
+          "user": "What made it difficult for her to get recognition?"
+        }
+      ]
+    },
+    {
+      "id": "cal_ibn_battuta",
+      "description": "Calibration development only: Ibn Battuta. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "followup",
+        "wikipedia",
+        "prepared_discussion",
+        "pronoun",
+        "source_uncertainty"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Ibn Battuta"
+        },
+        {
+          "user": "Why did he first set out on his travels?"
+        },
+        {
+          "user": "How do we know about those journeys?"
+        },
+        {
+          "user": "Does the article describe any uncertainty about that account?"
+        }
+      ]
+    },
+    {
+      "id": "cal_axolotl",
+      "description": "Calibration development only: Axolotl. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "retrieval",
+        "wikipedia",
+        "prepared_discussion",
+        "section_retrieval"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Axolotl"
+        },
+        {
+          "user": "What does it mean that it keeps juvenile features as an adult?"
+        },
+        {
+          "user": "Find what the article says about its natural habitat and explain why it is threatened."
+        }
+      ]
+    },
+    {
+      "id": "cal_dendrochronology",
+      "description": "Calibration development only: Dendrochronology. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "retrieval",
+        "wikipedia",
+        "prepared_discussion",
+        "section_retrieval"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Dendrochronology"
+        },
+        {
+          "user": "Explain how overlapping tree-ring sequences can date older wood."
+        },
+        {
+          "user": "What limitations and sources of error does the article mention?"
+        }
+      ]
+    },
+    {
+      "id": "cal_tidal_power",
+      "description": "Calibration development only: Tidal power. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "retrieval",
+        "wikipedia",
+        "prepared_discussion",
+        "section_retrieval"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Tidal power"
+        },
+        {
+          "user": "Compare tidal stream generators with tidal barrages using the article."
+        },
+        {
+          "user": "Look for the environmental concerns and explain the tradeoffs."
+        }
+      ]
+    },
+    {
+      "id": "cal_palimpsest",
+      "description": "Calibration development only: Palimpsest. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "retrieval",
+        "wikipedia",
+        "prepared_discussion",
+        "section_retrieval"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Palimpsest"
+        },
+        {
+          "user": "How can writing that was erased still be recovered?"
+        },
+        {
+          "user": "Find an example in the article and explain why it matters."
+        }
+      ]
+    },
+    {
+      "id": "cal_mercury_correction",
+      "description": "Calibration development only: Mercury planet versus element. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "recovery",
+        "wikipedia",
+        "ambiguity",
+        "source_correction"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Mercury"
+        },
+        {
+          "user": "I mean Mercury the planet, not the chemical element."
+        },
+        {
+          "user": "Explain why its temperatures vary so much between day and night."
+        }
+      ]
+    },
+    {
+      "id": "cal_jaguar_correction",
+      "description": "Calibration development only: Jaguar animal versus vehicle. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "recovery",
+        "wikipedia",
+        "ambiguity",
+        "source_correction"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Jaguar"
+        },
+        {
+          "user": "The animal, not the car company."
+        },
+        {
+          "user": "Explain how its hunting behavior relates to where it lives."
+        }
+      ]
+    },
+    {
+      "id": "cal_crane_correction",
+      "description": "Calibration development only: Crane bird versus machine. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "recovery",
+        "wikipedia",
+        "ambiguity",
+        "source_correction"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Crane"
+        },
+        {
+          "user": "Use the Wikipedia article about the birds, not the lifting machine."
+        },
+        {
+          "user": "What does that article say about their migration and social behavior?"
+        }
+      ]
+    },
+    {
+      "id": "cal_unknown_title_recovery",
+      "description": "Calibration development only: Nonexistent title then valid source. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "recovery",
+        "wikipedia",
+        "missing_evidence",
+        "source_correction"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Explain the Wikipedia article on the Clockwork Shoebill Republic of Neptune."
+        },
+        {
+          "user": "That was a made-up title. Please use the article on the shoebill bird instead."
+        },
+        {
+          "user": "What does it say about feeding behavior?"
+        }
+      ]
+    },
+    {
+      "id": "cal_origami_voice",
+      "description": "Calibration development only: Origami with spoken repair. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "robustness",
+        "wikipedia",
+        "prepared_discussion",
+        "speech_phrasing",
+        "rephrase"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Origami"
+        },
+        {
+          "user": "Um, how does a flat sheet become, I mean, what are the basic folds people combine?"
+        },
+        {
+          "user": "Could you explain that again more simply, in two or three sentences?"
+        }
+      ]
+    },
+    {
+      "id": "cal_echolocation_limits",
+      "description": "Calibration development only: Echolocation with unsupported specifics. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "robustness",
+        "wikipedia",
+        "prepared_discussion",
+        "unsupported_specifics"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Animal echolocation"
+        },
+        {
+          "user": "Explain how an animal can tell distance from an echo."
+        },
+        {
+          "user": "Does this offline article give the exact number of bats flying over my house tonight? If not, explain what it can actually tell us."
+        }
+      ]
+    },
+    {
+      "id": "cal_chichen_itza_source",
+      "description": "Calibration development only: Explicit article selection and evidence request. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "tool",
+        "wikipedia",
+        "tool_selection",
+        "source_control"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Find the Wikipedia article on Chichen Itza and use it for our discussion."
+        },
+        {
+          "user": "Explain the different kinds of buildings described there."
+        },
+        {
+          "user": "Which part of the article supports that explanation?"
+        }
+      ]
+    },
+    {
+      "id": "cal_alexandria_library_source",
+      "description": "Calibration development only: Library of Alexandria evidence and uncertainty. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "tool",
+        "wikipedia",
+        "tool_selection",
+        "source_control"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Please open the Wikipedia article on the Library of Alexandria."
+        },
+        {
+          "user": "Explain what is known about how it declined, and separate that from popular stories."
+        },
+        {
+          "user": "Look for what the article says about uncertainty in the historical evidence."
+        }
+      ]
+    },
+    {
+      "id": "cal_glass_topic_switch",
+      "description": "Calibration development only: Glass to borosilicate topic transition. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "tool",
+        "wikipedia",
+        "tool_selection",
+        "topic_switch"
+      ],
+      "requires_streetzim": false,
+      "turns": [
+        {
+          "user": "Let's talk about Glass"
+        },
+        {
+          "user": "Explain why glass can break when its temperature changes quickly."
+        },
+        {
+          "user": "Now use the article on borosilicate glass to explain what is different about it."
+        }
+      ]
+    },
+    {
+      "id": "cal_sacramento_pharmacy",
+      "description": "Calibration development only: Optional public map query in Sacramento. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "tool",
+        "streetzim",
+        "tool_selection",
+        "ordinal",
+        "freshness"
+      ],
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Find pharmacies in Sacramento, California."
+        },
+        {
+          "user": "Show the first result on the map."
+        },
+        {
+          "user": "Can this offline data tell me whether that pharmacy is open right now?"
+        }
+      ]
+    },
+    {
+      "id": "cal_fresno_toilets",
+      "description": "Calibration development only: Optional public map query in Fresno. Public synthetic scenario; inspect actual sources and model-call capture before inclusion.",
+      "tags": [
+        "calibration_development",
+        "tool",
+        "streetzim",
+        "tool_selection",
+        "ordinal",
+        "missing_evidence"
+      ],
+      "requires_streetzim": true,
+      "turns": [
+        {
+          "user": "Find public toilets in Fresno, California."
+        },
+        {
+          "user": "Show the second result on the map."
+        },
+        {
+          "user": "If that result is missing an accessibility field, tell me that instead of assuming it is accessible."
+        }
+      ]
+    }
+  ]
+}
