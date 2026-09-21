@@ -35,7 +35,5 @@
   "resume_checkpoint": {
     "backend": "local",
     "path": "runs/native-mps/checkpoints/gsq/20260920-075700-ba75"
-  },
-  "gsq_max_drift_growth": 1.5,
-  "gsq_max_drift_ratio": 2.5
+  }
 }

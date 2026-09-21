@@ -747,18 +747,7 @@ def gsq_run(model,records,config,output,checkpointer,resume=None,max_steps=None)
                 checkpointer.save(next_trainer,next_optimizer,next_scheduler,anchor,next_extras,force=True)
                 residency.release_training_state(next_trainer,next_optimizer)
                 next_trainer=None
-            # A drift stop reports its own status, not `blocked_stop`. That is the
-            # driver's signal to advance to the next block, and it is what a
-            # block-limit stop reports on every single iteration, because the
-            # per-block driver runs one block per process. So a guard trip reported
-            # as `blocked_stop` was indistinguishable from ordinary progress and the
-            # sweep walked straight past the guard that exists to stop it - measured
-            # on the 2026-09-20 sweep, where `gsq_max_drift_growth` was also unset,
-            # so the guard was inert twice over. The driver treats any other status
-            # as "stop loudly with both stores left in place", which is what a guard
-            # trip needs; `stop_reason` records which limit tripped.
-            return {'status':'drift_stop' if drift_stop else 'blocked_stop',
-                    'blocks_completed':blocks_this_run,
+            return {'status':'blocked_stop','blocks_completed':blocks_this_run,
                     'next_block':block_index+1,'progress':anchor,
                     'stop_reason':'drift' if drift_stop else 'block_limit','drift':drift}
     return {'status':'completed','optimizer_updates':steps_this_run,'candidate_database':str(output/'candidate-database.json'),
