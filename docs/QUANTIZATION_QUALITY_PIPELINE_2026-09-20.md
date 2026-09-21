@@ -562,6 +562,29 @@ six layers), and the equivalent for us is already installed:
   and the exporter cannot detect it, which makes this a footgun worth a guard. It also
   means that 15.7e6 measures the embedding swap, not the head it was meant to isolate -
   the head question needs `--embedding q1 --head bf16`.
+- **Promoting the head or the embedding to bf16 is catastrophic, which complicates the
+  allocation premise.** The head-only arm - `--embedding q1 --head bf16`, one tensor moved
+  off q1 - scored a final **66528603.50 +/- 2111999.74**, worse than the arm that moved
+  *both* (15.7e6). So the ranking on this text is unambiguous:
+
+  | embedding | head | perplexity |
+  |---|---|---|
+  | q1 | q1 | **50275.38** |
+  | bf16 | bf16 | 15744877.69 |
+  | q1 | bf16 | **66528603.50** |
+
+  Every arm that moves either tensor off q1 is 10^3-10^4 worse. The trained blocks and the
+  RTN fallback were all established with quantised I/O, so a bf16 head or embedding is out
+  of distribution for them - the same mechanism as the bullet above, now confirmed in the
+  opposite direction from what the allocation premise assumes. **This matters for RCO.**
+  Its whole job is to promote per-tensor q1 choices to bf16 inside a byte budget, and here
+  promotion is not a refinement but a 10^3 regression at least for the two tensors with the
+  largest reach. *[INFERENCE: measured only for the head and embedding, on a chain that has
+  not run their stages and has not run RCO. It does not prove promotion is harmful
+  everywhere - but it does mean the premise "promote the sensitive tensors" needs to be
+  demonstrated rather than assumed, and that the byte arithmetic (under 1% of tensors are
+  promotable within the 4.2 GB budget) plus this result leaves little room for RCO to
+  recover the gap.]*
 - **One model resident at a time, measured the hard way.** Two concurrent 52 GiB loads -
   an RCO pricing run started while another was already loading - drove swap to
   **88.6 of 89 GiB** and blocked *both* processes: the survivor sat at 647 MB RSS with the
