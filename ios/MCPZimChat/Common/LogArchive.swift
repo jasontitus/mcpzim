@@ -15,6 +15,8 @@
 // keep the total footprint bounded.
 
 import Foundation
+import Observation
+import OSLog
 
 public final class LogArchive: @unchecked Sendable {
     public static let shared = LogArchive()
@@ -23,8 +25,10 @@ public final class LogArchive: @unchecked Sendable {
     private var currentURL: URL?
     private var handle: FileHandle?
     private let maxFiles = 20
+    private let directoryOverride: URL?
 
-    private init() {
+    init(directory: URL? = nil) {
+        directoryOverride = directory
         startNewSession()
     }
 
@@ -35,7 +39,7 @@ public final class LogArchive: @unchecked Sendable {
             try? handle?.close()
             handle = nil
 
-            guard let dir = Self.logsDirectory() else { return }
+            guard let dir = logsDirectory() else { return }
             try? FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
             )
@@ -44,7 +48,8 @@ public final class LogArchive: @unchecked Sendable {
             df.locale = Locale(identifier: "en_US_POSIX")
             df.timeZone = TimeZone.current
             df.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-            let name = df.string(from: Date()) + ".log"
+            // Rapid cold launches must not truncate the previous session.
+            let name = df.string(from: Date()) + "_" + UUID().uuidString.prefix(8) + ".log"
             let url = dir.appendingPathComponent(name)
 
             FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -157,7 +162,7 @@ public final class LogArchive: @unchecked Sendable {
     /// `resourceValues` reads below are served from the enumeration's
     /// prefetched cache — one stat pass for the whole directory.
     public func allFileInfos() -> [LogFileInfo] {
-        guard let dir = Self.logsDirectory(),
+        guard let dir = logsDirectory(),
               let entries = try? FileManager.default.contentsOfDirectory(
                 at: dir,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
@@ -203,7 +208,7 @@ public final class LogArchive: @unchecked Sendable {
         queue.sync {
             try? handle?.close()
             handle = nil
-            guard let dir = Self.logsDirectory() else { return }
+            guard let dir = logsDirectory() else { return }
             try? FileManager.default.removeItem(at: dir)
         }
         startNewSession()
@@ -211,7 +216,8 @@ public final class LogArchive: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private static func logsDirectory() -> URL? {
+    private func logsDirectory() -> URL? {
+        if let directoryOverride { return directoryOverride }
         guard let docs = try? FileManager.default.url(
             for: .documentDirectory,
             in: .userDomainMask,
@@ -221,7 +227,7 @@ public final class LogArchive: @unchecked Sendable {
     }
 
     private func pruneOldFilesLocked(keeping cap: Int) {
-        guard let dir = Self.logsDirectory(),
+        guard let dir = logsDirectory(),
               let entries = try? FileManager.default.contentsOfDirectory(
                 at: dir,
                 includingPropertiesForKeys: [.contentModificationDateKey],
@@ -239,5 +245,70 @@ public final class LogArchive: @unchecked Sendable {
         for stale in logs.suffix(from: cap) {
             try? FileManager.default.removeItem(at: stale)
         }
+    }
+}
+
+/// App Intents execute without ChatSession. Keep their diagnostics durable
+/// and independently observable, including when the app starts in background.
+/// Only lifecycle metadata belongs here: never question/title/location text.
+@MainActor @Observable
+final class SiriDiagnostics {
+    static let shared = SiriDiagnostics()
+    private static let logger = Logger(subsystem: "org.mcpzim.MCPZimChat", category: "Siri")
+    private(set) var entries: [ChatSession.DebugEntry] = []
+    @ObservationIgnored private let sink: (String) -> Void
+
+    init(sink: @escaping (String) -> Void = { LogArchive.shared.appendSync($0) }) {
+        self.sink = sink
+    }
+
+    func clear() { entries.removeAll() }
+
+    func record(_ message: String) {
+        let now = Date()
+        entries.append(.init(timestamp: now, category: "Siri", message: message))
+        if entries.count > 200 { entries.removeFirst(entries.count - 200) }
+        sink("\(now.ISO8601Format()) [Siri] \(message)")
+        Self.logger.notice("\(message, privacy: .public)")
+    }
+}
+
+@MainActor
+final class SiriInvocation {
+    let id = UUID().uuidString
+    private let action: String
+    private let diagnostics: SiriDiagnostics
+    private var awaitingParameter = false
+    private var outcome = "returned"
+    private let started = ProcessInfo.processInfo.systemUptime
+
+    init(_ action: String, diagnostics: SiriDiagnostics? = nil) {
+        self.action = action
+        self.diagnostics = diagnostics ?? .shared
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        emit("begin build=\(build) os=\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")
+    }
+
+    func stage(_ name: String, count: Int? = nil) {
+        awaitingParameter = name.hasPrefix("awaiting_")
+        emit(name + (count.map { " count=\($0)" } ?? ""))
+    }
+
+    func failed(_ error: Error) {
+        // Parameter requests may throw control-flow errors to resume in Siri.
+        // Do not label those as retrieval failures or log localized input.
+        outcome = error is CancellationError ? "cancelled" : (awaitingParameter ? "parameter_exit" : "failed")
+        let typeName = String(String(reflecting: type(of: error)).prefix(120))
+        emit("\(outcome) error_type=\(typeName) code=\((error as NSError).code)")
+    }
+
+    func end() {
+        let ms = Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1000)
+        emit("end outcome=\(outcome) elapsed_ms=\(ms)")
+    }
+
+    private func emit(_ event: String) {
+        diagnostics.record("id=\(id) action=\(action) \(event)")
     }
 }

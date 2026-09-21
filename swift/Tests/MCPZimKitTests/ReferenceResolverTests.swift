@@ -10,6 +10,17 @@ import XCTest
 @testable import MCPZimKit
 
 final class ReferenceResolverTests: XCTestCase {
+    func testCorrectedTitleEscapesUnrelatedClarificationList() {
+        let f = focusWithList(["List of wars involving Lithuania",
+                               "List of wars involving the Polish–Lithuanian Commonwealth"])
+        for text in ["The grand Duchy of Lithuania",
+                     "Tell me about the grand Duchy of Lithuania"] {
+            XCTAssertNil(ReferenceResolver.clarificationPick(text, candidates: f.lastList))
+            XCTAssertEqual(ReferenceResolver.resolve(text, focus: f).binding, .none)
+        }
+        let places = focusWithList(["Barrow pit", "Barbados"])
+        XCTAssertEqual(ReferenceResolver.resolve("the bar", focus: places).binding, .none)
+    }
 
     private func focusWithPrimary(
         _ name: String, kind: FocusEntity.Kind = .topic,

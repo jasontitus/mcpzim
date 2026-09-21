@@ -25,7 +25,9 @@ final class ZimfoAppDelegate: NSObject, UIApplicationDelegate {
 
 @main
 struct MCPZimChatApp: App {
-    @State private var session = ChatSession()
+    // In-app intents can cold-launch the process in the background. Model
+    // downloads/prewarming begin only when RootView first becomes active.
+    @State private var session = ChatSession(autoLoadOnInit: false)
     @StateObject private var swarm = ZimSwarmController()
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
@@ -42,6 +44,7 @@ struct MCPZimChatApp: App {
                 .environment(session)
                 .environmentObject(swarm)
                 .task {
+                    guard scenePhase == .active else { return }
                     // Ship any session that finished before this launch (incl.
                     // the one before a crash). Opt-in + no-op otherwise.
                     DiagnosticsUploader.uploadFinishedLogs(archive: .shared)

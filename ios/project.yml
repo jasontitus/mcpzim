@@ -112,6 +112,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         CFBundleDisplayName: Zimfo
+        NSUserActivityTypes:
+          - com.tiltastech.zimfo.current-article
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSSupportsOpeningDocumentsInPlace: true
@@ -263,6 +265,9 @@ targets:
           - "Views/**"   # no UI in a CLI
           - "Voice/**"   # no AVFoundation / Kokoro pulls
           - "Sharing/**" # no LocalSwarmEngine / nearby-share machinery
+      # LlamaCppProvider shares the production resumable model downloader.
+      - path: MCPZimChat/Sharing/ZimDownloadManager.swift
+      - path: MCPZimChat/Sharing/ZimCatalog.swift
       - path: MCPZimEval
     dependencies:
       - package: MCPZimKit
@@ -351,6 +356,8 @@ targets:
       path: MCPZimChat/Info-Mac.plist
       properties:
         CFBundleDisplayName: Zimfo
+        NSUserActivityTypes:
+          - com.tiltastech.zimfo.current-article
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:
           - CFBundleTypeName: ZIM Offline Archive

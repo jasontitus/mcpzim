@@ -55,6 +55,8 @@ This repo has three layers, smallest-dependency first:
 - **The app — [`ios/`](ios/)**: the SwiftUI Zimfo app (on-device Gemma 4 /
   fine-tuned LFM2.5 via MLX + llama.cpp). Architecture and the pieces that
   took the most iteration are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+  Siri integration is covered by the [research and implementation guide](docs/SIRI_OFFLINE_DESIGN_2026-09-13.md)
+  and [iOS 27 phone acceptance checklist](docs/SIRI_PHONE_ACCEPTANCE.md).
 - **The reusable kernel — the `mcpzim` MCP server (Python)**: the original
   backend, documented below. It exposes the same ZIM tools to *any* agent
   host over [MCP](https://modelcontextprotocol.io), so the engine isn't

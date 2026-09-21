@@ -1,0 +1,1141 @@
+{
+  "schemaVersion": 2,
+  "modelDisplayName": "Bonsai 27B (1-bit · Metal)",
+  "contextTokens": 16384,
+  "kvCacheType": "Q4_0",
+  "passedTurns": 36,
+  "failedTurns": 18,
+  "turns": [
+    {
+      "answer": "The Grand Duchy of Lithuania was a sovereign state in northeastern Europe that existed from the 13th century, succeeding the Kingdom of Lithuania, to the late 18th century, when the territory was suppressed during the 1795 partitions of Poland–Lithuania.\n\nThe state was founded by Lithuanians, who were at the time a polytheistic nation of several united Baltic tribes from Aukštaitija.\n\nBy 1440 the grand duchy had become the largest European state, controlling an area from the Baltic Sea in the north to the Black Sea in the south.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 0.20155298709869385,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Grand Duchy of Lithuania"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nOn 26 November 2022, a Lublin Triangle format meeting between the Prime Ministers of Poland, Lithuania and Ukraine was held in Kyiv. In a joint statement the leaders stressed the role of the Lublin Triangle in \"consolidating international support for Ukraine in countering Russia's armed aggression \", \"confirmed their readiness to continue active cooperation in restoring the territorial integrity and sovereignty of Ukraine within its internationally recognized borders\", \"condemned systemic war crimes committed by Russia's forces in regions of Ukraine\" and \"confirmed the further importance of trilateral cooperation in such areas as: military and defense cooperation using NATO and the EU potential\".\n\nThe Polish PM stated that \"This is a further step towards closer economic, commercial, business and investment ties\" between Poland and Lithuania which is very important considering the current geopolitical challenges faced by the two nations. The talks also covered such key areas as energy, climate, culture, science and education.\n\nBoth countries are members of the Council of the Baltic Sea States, Council of Europe and NATO. Both countries share a common border of 103 km.\n\nYou can say “Tell me about Lithuania–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 21.618970036506653,
+      "failures": [],
+      "groundingSections": [
+        "Modern times",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Lithuania–Poland relations"
+      ],
+      "turn": 2,
+      "user": "How does it relate to modern geopolitics?"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nSome other lands in Ukraine were vassalized by Lithuania later. The subjugation of Eastern Slavs by two powers created substantial differences between them that persist to this day.\n\nWhile there were certainly substantial regional differences in Kievan Rus', it was the Lithuanian annexation of much of southern and western Ruthenia that led to the permanent division between Ukrainians, Belarusians, and Russians, and even four Grand Dukes of Lithuania are appeared on the Millennium of Russia monument. In the 19th century, the romantic references to the times of the Grand Duchy of Lithuania were an inspiration and a substantial part of both the Lithuanian and Belarusian national revival movements and Romanticism in Poland.\n\nYou can say “Tell me about Eastern Ukraine War,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 28.497694969177246,
+      "failures": [],
+      "groundingSections": [
+        "Legacy"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Eastern Ukraine War"
+      ],
+      "turn": 3,
+      "user": "How is it relevant to the war in Ukraine?"
+    },
+    {
+      "answer": "I can’t establish public opinion now from this offline archive. Government policy and historical ties don’t tell us how people feel.\n\nI couldn’t find a passage that answers that connection in the articles I searched.\n\nYou can say “Tell me about Lithuania–Ukraine relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "modern-geopolitics",
+      "elapsedSeconds": 9.791661977767944,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "suggestions": [
+        "Lithuania–Ukraine relations",
+        "History of the Ukrainians in Lithuania",
+        "History of Lithuania-Ukraine relations"
+      ],
+      "turn": 4,
+      "user": "How do Ukrainians feel about Lithuania now?"
+    },
+    {
+      "answer": "Bulgaria, officially the Republic of Bulgaria, is a country in Southeast Europe.\n\nIt is situated on the eastern portion of the Balkans directly south of the Danube river and west of the Black Sea.\n\nBulgaria is bordered by Greece and Turkey to the south, Serbia and North Macedonia to the west, and Romania across the Danube river to the north.\n\nYou can say “What about geography?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 0.30836308002471924,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Bulgaria"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What about geography?",
+        "What about culture?",
+        "What about economy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Bulgaria"
+    },
+    {
+      "answer": "Poland joined NATO and the EU in 1999, and 2004, respectively. Poland supported Bulgaria's aspiration to join NATO, and ratified Bulgaria's accession in 2003.\n\nBulgaria joined NATO in 2004 and the EU in 2007.\n\nYou can say “Tell me about Bulgaria–Poland relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 15.064433932304382,
+      "failures": [],
+      "groundingSections": [
+        "NATO and European Union"
+      ],
+      "groundingTitles": [
+        "Bulgaria–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Bulgaria–Poland relations"
+      ],
+      "turn": 2,
+      "user": "When did Bulgaria join NATO?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nLithuania became a full member of NATO in March 2004. Fighter jets of NATO members are deployed in Šiauliai Air Base and provide security for the Baltic airspace.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 30.45078408718109,
+      "failures": [],
+      "groundingSections": [
+        "Military",
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania",
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Lithuania",
+        "Lithuania–Poland relations"
+      ],
+      "turn": 3,
+      "user": "How about Lithuania?"
+    },
+    {
+      "answer": "Lithuania joined NATO in 2004.\n\nYou can say “tell me about Southeast Europe,” “more topics,” or ask your own follow-up.",
+      "conversationID": "country-facet-transfer",
+      "elapsedSeconds": 15.466735005378723,
+      "failures": [],
+      "groundingSections": [
+        "The European Union and NATO"
+      ],
+      "groundingTitles": [
+        "Lithuania–Poland relations"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Southeast Europe",
+        "European Union",
+        "Balkans",
+        "Europe"
+      ],
+      "turn": 4,
+      "user": "What year?"
+    },
+    {
+      "answer": "9 to 5 (song)\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "work-medium-transfer",
+      "elapsedSeconds": 0.20562899112701416,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "9 to 5 (song)"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about 9 to 5 (song)"
+    },
+    {
+      "answer": "9 to 5 (titled Nine to Five in the opening credits) is a 1980 American comedy film directed by Colin Higgins, who wrote the screenplay with Patricia Resnick, and starring Jane Fonda, Lily Tomlin, Dolly Parton, Dabney Coleman, Elizabeth Wilson, and Sterling Hayden.\n\nIt tells the story of three working women (played by Fonda, Tomlin, and Parton) who live out their fantasies of getting even with and overthrowing their company's autocratic, \"sexist, egotistical, lying, hypocritical bigot\" vice president (played by Coleman).\n\nThe film grossed over $103.3 million.",
+      "conversationID": "work-medium-transfer",
+      "elapsedSeconds": 0.1072150468826294,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "9 to 5 (film)"
+      ],
+      "passed": true,
+      "suggestions": [],
+      "turn": 2,
+      "user": "And the movie?"
+    },
+    {
+      "answer": "The Grand Duchy of Lithuania was a sovereign state in northeastern Europe that existed from the 13th century, succeeding the Kingdom of Lithuania, to the late 18th century, when the territory was suppressed during the 1795 partitions of Poland–Lithuania.\n\nThe state was founded by Lithuanians, who were at the time a polytheistic nation of several united Baltic tribes from Aukštaitija.\n\nBy 1440 the grand duchy had become the largest European state, controlling an area from the Baltic Sea in the north to the Black Sea in the south.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "unsupported-specifics",
+      "elapsedSeconds": 0.20398390293121338,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Grand Duchy Of Lithuania"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Grand Duchy of Lithuania"
+    },
+    {
+      "answer": "I couldn't find an article for “the secret password for lithuania's government servers now” in the offline Wikipedia. Try saying the name a different way.",
+      "conversationID": "unsupported-specifics",
+      "elapsedSeconds": 0.20186090469360352,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [],
+      "turn": 2,
+      "user": "What is the secret password for Lithuania's government servers now?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Russia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 2.3588470220565796,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Russia"
+    },
+    {
+      "answer": "During his long reign, Ivan nearly doubled the already large Russian territory by annexing the three Tatar khanates: Kazan and Astrakhan along the Volga, and the Khanate of Sibir in southwestern Siberia. Ultimately, by the end of the 16th century, Russia expanded east of the Ural Mountains.\n\nYou can say “Tell me about Siberian fur trade,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 15.138203024864197,
+      "failures": [],
+      "groundingSections": [
+        "Tsardom of Russia"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Siberian fur trade"
+      ],
+      "turn": 2,
+      "user": "When did it expand into Siberia?"
+    },
+    {
+      "answer": "I found related background, but these passages don’t establish the specific connection you asked about.\n\nThe Russian Civil War was a multi-party civil war in the former Russian Empire, lasting from 1917 to 1922, sparked by the overthrowing of the Russian Provisional Government in the October Revolution, as many factions vied to determine Russia's political future. It resulted in the formation of the Russian Socialist Federative Soviet Republic and later the Soviet Union in most of its territory.\n\nThe rule of the new authorities only aggravated the crisis in the country instead of resolving it, and eventually, the October Revolution, led by Bolshevik leader Vladimir Lenin, overthrew the Provisional Government and gave full governing power to the soviets, leading to the creation of the world's first socialist state. The Russian Civil War broke out between the anti-communist White movement and the Bolsheviks with its Red Army.\n\nYou can say “Tell me about Russian Civil War,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 20.132800936698914,
+      "failures": [],
+      "groundingSections": [
+        "Revolution and civil war",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Russia",
+        "Russian Civil War"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Russian Civil War"
+      ],
+      "turn": 3,
+      "user": "What were the sides in the civil war?"
+    },
+    {
+      "answer": "With a population of over 140 million, Russia is the most populous country in Europe and the ninth-most populous in the world.\n\nThe majority population of Russia consists of ethnic Russians, an East Slavic people.\n\nAncient North Eurasian populations from Siberia genetically similar to Mal'ta–Buret' culture and Afontova Gora were an important genetic contributor to Ancient Native Americans and Eastern Hunter-Gatherers.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 0.37749290466308594,
+      "failures": [],
+      "groundingSections": [
+        "Early history",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "What is the population?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 1.7545698881149292,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In 1206, he took the title Genghis Khan, and waged a series of military campaigns – renowned for their brutality and ferocity – sweeping through much of Asia, and forming the Mongol Empire, the largest contiguous land empire in world history.\n\nAs a result of the Russian Civil War, the White Russian Lieutenant General Baron Ungern led his troops into Mongolia in October 1920, defeating the Chinese forces in Niislel Khüree (now Ulaanbaatar) in early February 1921 with Mongol support.\n\nThe early leaders of the Mongolian People's Republic (1921–1952) included many with Pan-Mongolist ideals.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 0.1052330732345581,
+      "failures": [],
+      "groundingSections": [
+        "Modern history",
+        "Mongol empire to early 20th century"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "What about geography?",
+        "What about government and politics?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about its early history"
+    },
+    {
+      "answer": "I found related background, but these passages don’t establish the specific connection you asked about.\n\nShortly thereafter, the country became a satellite state of the Soviet Union. In 1924, the Mongolian People's Republic was founded as a socialist state.\n\nMongolia declared its independence again on 11 July 1921. As a result, Mongolia was closely aligned with the Soviet Union over the next seven decades.\n\nIn 1930, the Soviet Union stopped Buryat migration to the Mongolian People's Republic to prevent Mongolian reunification. All leaders of Mongolia who did not fulfill Stalin's demands to perform Red Terror against Mongolians were executed, including Peljidiin Genden and Anandyn Amar.\n\nYou can say “Tell me about Mongolia–Soviet Union relations,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 17.765601992607117,
+      "failures": [],
+      "groundingSections": [
+        "Modern history",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Mongolia–Soviet Union relations",
+        "Soviet Union–Mongolia relations"
+      ],
+      "turn": 3,
+      "user": "How did it become a Soviet-aligned socialist state?"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nSince then, it has not been majorly renovated, although it gets a little painting and touch up once a year. Even though the stadium was built for multi-use such as football and festivals, the only mandatory event is the Naadam festival held on July 11 of each year which commemorates Mongolian State Flag Day and the People's Revolution of 1921.\n\nThe main national festival is Naadam, which has been organized for centuries and takes place over three days in the summer, consisting of three Mongolian traditional sports, archery, cross-country horse-racing, and wrestling, traditionally recognized as the Three Manly Games of Naadam. In modern-day Mongolia, Naadam is held from 11 to 13 July in the honor of the anniversaries of the National Democratic Revolution and foundation of the Great Mongol State.\n\nYou can say “Tell me about Naadam,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 14.599688053131104,
+      "failures": [],
+      "groundingSections": [
+        "History",
+        "Sports and festivals"
+      ],
+      "groundingTitles": [
+        "Mongolia",
+        "National Sports Stadium (Mongolia)"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Naadam",
+        "National Sports Stadium (Mongolia)"
+      ],
+      "turn": 4,
+      "user": "What happens at Naadam?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.20529496669769287,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.10135197639465332,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about Buddhism there"
+    },
+    {
+      "answer": "Buryatia was the only republic that was permitted to practice Buddhism in Soviet times.: 94 The end of the 1980s marked the beginning of the cultural, ethnic and religious revitalization for the Kalmyk people. Since then, Buddhism has become the focus of ethnic identity for most Kalmyks, according to Gazizova, even for those who do not consider themselves Buddhists.: 91\n\nYou can say “Tell me about Buddhism in Kalmykia,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 22.50855302810669,
+      "failures": [
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Religion | Modern history]"
+      ],
+      "groundingSections": [
+        "In the Soviet Union"
+      ],
+      "groundingTitles": [
+        "Buddhism in Kalmykia"
+      ],
+      "passed": false,
+      "suggestions": [
+        "Buddhism in Kalmykia"
+      ],
+      "turn": 3,
+      "user": "Then what happened in Soviet times"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10112500190734863,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10240006446838379,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "How about Buddhism"
+    },
+    {
+      "answer": "Here is related background from the loaded offline archive. It does not establish the specific connection or conditions today.\n\nLivestock breeds are increasingly challenged by land degradation and climate change. Populations suffer from more frequent and intense extreme weather events, especially brutal winter seasons called zuds that destroy forage and can decrease temperatures to around −50 °C. While zuds used to occur about once every ten years, there have now been six in the past decade, with over six million animals (9% of total livestock) killed by these conditions in the winter of 2024.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 21.031363010406494,
+      "failures": [
+        "missing any grounded section [Geography and climate | Climate]"
+      ],
+      "groundingSections": [
+        "Agriculture"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [],
+      "turn": 3,
+      "user": "What about geography and climate?"
+    },
+    {
+      "answer": "In the chaos of the late 12th century, a chieftain named Temüjin finally succeeded in uniting the Mongol tribes between Manchuria and the Altai Mountains.\n\nIn 1206, he took the title Genghis Khan, and waged a series of military campaigns – renowned for their brutality and ferocity – sweeping through much of Asia, and forming the Mongol Empire, the largest contiguous land empire in world history.\n\nUnder his successors it stretched from present-day Poland in the west to Korea in the east, and from parts of Siberia in the north to the Gulf of Oman and Vietnam in the south, covering some 33,000,000 square kilometers (13,000,000 sq mi), (22% of Earth's total land area) and had a population of over 100 million people (about a quarter of Earth's total population at the time).\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10090100765228271,
+      "failures": [],
+      "groundingSections": [
+        "Mongol empire to early 20th century"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "How about the Mongols?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Lithuania.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 2.1609820127487183,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Lithuania"
+    },
+    {
+      "answer": "The first attempt to codify the Lithuanian laws was in 1468 when the Casimir's Code was compiled and adopted by Grand Duke Casimir IV Jagiellon.\n\nItalian artists organized the first opera in Lithuania in 1636 at the Palace of the Grand Dukes by the order of Władysław IV Vasa.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 0.15480804443359375,
+      "failures": [
+        "missing one of [Mindaugas]",
+        "missing one of [1253 | 13th century]",
+        "missing any grounded section [Kingdom of Lithuania, Grand Duchy of Lithuania and Polish–Lithuanian Commonwealth]"
+      ],
+      "groundingSections": [
+        "Law and law enforcement",
+        "Music"
+      ],
+      "groundingTitles": [
+        "Lithuania"
+      ],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "The first grand Duke"
+    },
+    {
+      "answer": "Rulers' bodies were cremated up until the conversion to Christianity.\n\nHis poem Carmen de statura, feritate ac venatione bisontis ( A Song about the Appearance, Savagery and Hunting of the Bison ), published in 1523, describes the Lithuanian landscape, way of life and customs, touches on some actual political problems, and reflects the clash of paganism and Christianity.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 0.15552198886871338,
+      "failures": [
+        "missing any grounded section [Religion | Christianization and dynastic unions with Poland | Early contacts with Christianity]"
+      ],
+      "groundingSections": [
+        "Early history and Baltic tribes",
+        "Literature"
+      ],
+      "groundingTitles": [
+        "Lithuania"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "And how about Christianity?"
+    },
+    {
+      "answer": "Vladimir Vladimirovich Putin (born 7 October 1952) is a Russian politician and former intelligence officer who has served as President of Russia since 2012, having previously served from 2000 to 2008.\n\nPutin also served as Prime Minister of Russia from 1999 to 2000 and again from 2008 to 2012.\n\nHe has been described as the de facto leader of Russia since 1999.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.33339595794677734,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "How did Vladimir Putin's career develop?",
+        "How has Vladimir Putin dealt with the West and NATO?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Vladimir Putin"
+    },
+    {
+      "answer": "Putin's mother was a factory worker, and his father was a conscript in the Soviet Navy, serving in the submarine fleet in the early 1930s.\n\nHis mother was a devout Christian who attended the Russian Orthodox Church; his father was an atheist.\n\nYou can say “Where did Vladimir Putin go to school?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.20614802837371826,
+      "failures": [
+        "missing one of [Vladimir Spiridonovich]",
+        "missing one of [Maria Ivanovna]"
+      ],
+      "groundingSections": [
+        "Early life and education",
+        "Religion"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Where did Vladimir Putin go to school?",
+        "How did Vladimir Putin's career develop?",
+        "What about Vladimir Putin's foreign policy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "What about his parents?"
+    },
+    {
+      "answer": "On 1 September 1960, Putin started at School No. 193 at Baskov Lane, near his home.\n\nPutin attended Saint Petersburg High School 281 with a German language immersion program.\n\nPutin studied law at the Leningrad State University named after Andrei Zhdanov (now Saint Petersburg State University ) in 1970 and graduated in 1975.\n\nYou can say “How did Vladimir Putin's career develop?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.12744200229644775,
+      "failures": [],
+      "groundingSections": [
+        "Education"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How did Vladimir Putin's career develop?",
+        "What about Vladimir Putin's family?",
+        "What about Vladimir Putin's foreign policy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Where did he go to school?"
+    },
+    {
+      "answer": "Putin studied law at the Leningrad State University named after Andrei Zhdanov (now Saint Petersburg State University ) in 1970 and graduated in 1975.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.14284801483154297,
+      "failures": [
+        "missing one of [KGB]",
+        "missing any grounded section [Intelligence career]"
+      ],
+      "groundingSections": [
+        "Education"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "Where did Vladimir Putin go to school?",
+        "How did Vladimir Putin's career develop?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "What did he do after graduating?"
+    },
+    {
+      "answer": "George Washington (February 22, 1732 [ O.S.\n\nFebruary 11, 1731] – December 14, 1799) was a Founding Father and the first president of the United States, serving from 1789 to 1797.\n\nAs commander of the Continental Army, Washington led Patriot forces to victory in the American Revolutionary War against the British Empire.\n\n(\"George Washington\" has other meanings too — say the word if you meant Bibliography of George Washington.)\n\nYou can say “What was George Washington's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.22524797916412354,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was George Washington's early life like?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about George Washington"
+    },
+    {
+      "answer": "His father was a justice of the peace and a prominent public figure who had four additional children from his first marriage to Jane Butler.\n\nYou can say “How did George Washington's career develop?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.19199800491333008,
+      "failures": [
+        "missing one of [Augustine Washington | Augustine and Mary Ball Washington]",
+        "missing one of [Mary Ball Washington | Mary Ball]"
+      ],
+      "groundingSections": [
+        "Early life (1732–1752)"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How did George Washington's career develop?",
+        "What about commander in chief of the army (1775–1783)?",
+        "What is George Washington's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Who were his parents?"
+    },
+    {
+      "answer": "Washington was unanimously elected the first U.S. president by the Electoral College in 1788 and 1792.\n\nBecause of his father's death, Washington did not have the formal education his elder half-brothers had received at Appleby Grammar School in England; he instead attended the Lower Church School in Hartfield.\n\nA number of secondary schools and universities are named in honor of Washington, including George Washington University and Washington University in St. Louis.\n\nYou can say “What was George Washington's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.1376640796661377,
+      "failures": [],
+      "groundingSections": [
+        "Early life (1732–1752)",
+        "Namesakes, monuments and commemorations",
+        "lead"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was George Washington's early life like?",
+        "How did George Washington's career develop?",
+        "What about commander in chief of the army (1775–1783)?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Did he go to college?"
+    },
+    {
+      "answer": "The Battle of the Alamo (February 23 – March 6, 1836) was a pivotal event and military engagement in the Texas Revolution.\n\nFollowing a 13-day siege, Mexican troops under President General Antonio López de Santa Anna reclaimed the Alamo Mission near San Antonio de Béxar (now San Antonio ).\n\nAbout one hundred Texians had been garrisoned at the mission, and they were supplemented by around one hundred subsequent reinforcements, led by eventual Alamo co-commanders James Bowie and William B. Travis.\n\n(\"The Battle of the Alamo\" has other meanings too — say the word if you meant Alamo Mission.)\n\nYou can say “What led up to it?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.20281803607940674,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "When was the Battle of the Alamo?"
+    },
+    {
+      "answer": "Other estimates of the number of Mexican soldiers killed ranged from 60 to 200, with an additional 250–300 wounded.\n\nSome people, historians, and survivors such as Susanna Dickinson have estimated that over 1,000-1,600 Mexican soldiers were killed and wounded, but it is most likely that total casualties were less than 600.\n\nMost eyewitnesses counted between 182 and 257 Texians killed.\n\nYou can say “Who were the combatants?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.20720207691192627,
+      "failures": [],
+      "groundingSections": [
+        "Casualties"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Who were the combatants?",
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "How many people died there?"
+    },
+    {
+      "answer": "At the end of the first day of the siege, Santa Anna's troops were reinforced by 600 men under General Joaquin Ramirez y Sesma, bringing the Mexican army up to more than 2,000 men.\n\nThe Mexican army celebrated loudly throughout the afternoon, both in honor of their reinforcements and at the news that troops under General José de Urrea had soundly defeated Texian Colonel Frank W. Johnson at the Battle of San Patricio Most of the Texians in the Alamo believed that Sesma had been leading the Mexican forces during the siege, and they mistakenly attributed the celebration to the arrival of Santa Anna.\n\nYou can say “How many people died?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.10427892208099365,
+      "failures": [],
+      "groundingSections": [
+        "Reinforcements"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How many people died?",
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Who were the combatants?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 18.744462966918945,
+      "failures": [
+        "missing one of [spacetime]",
+        "missing one of [accelerat | orbit]",
+        "missing one of [mass | massive]",
+        "missing grounded source [Gravitational wave]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 1,
+      "user": "How are gravitational waves created?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 27.476390957832336,
+      "failures": [
+        "missing one of [black hole]",
+        "missing one of [neutron star | compact object]",
+        "missing one of [merger | binary | collision]",
+        "missing grounded source [Gravitational wave]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 2,
+      "user": "What kinds of events make the strongest ones?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 5.022611021995544,
+      "failures": [
+        "missing one of [laser]",
+        "missing one of [interferometer | interference]",
+        "missing one of [arm | distance | length | separation | separated]",
+        "missing grounded source [Gravitational wave]",
+        "missing grounded source [LIGO]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 3,
+      "user": "How does LIGO detect them?"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.10209798812866211,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "It was admitted to the Union as the 42nd state in 1889. That was about 137 years ago.\n\nYou can say “tell me about state,” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.3108329772949219,
+      "failures": [
+        "missing grounded source [Washington (state)]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "state",
+        "Pacific Northwest",
+        "United States",
+        "national capital"
+      ],
+      "turn": 2,
+      "user": "The second one"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.10366392135620117,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "The Residence Act, adopted on July 16, 1790, approved the creation of the capital district along the Potomac River, and is considered the city's founding date. That was about 236 years ago.\n\nYou can say “tell me about capital city,” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.3041321039199829,
+      "failures": [
+        "missing grounded source [Washington, D.C.]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "capital city",
+        "federal district",
+        "United States",
+        "Potomac River"
+      ],
+      "turn": 2,
+      "user": "The third one"
+    },
+    {
+      "answer": "Arthur A. Denny and his group of travelers, subsequently known as the Denny Party, arrived from Illinois via Portland, Oregon, on the schooner Exact at Alki Point on November 13, 1851. The settlement was moved to the eastern shore of Elliott Bay in 1852 and named \"Seattle\" in honor of Chief Seattle, a prominent 19th-century leader of the local Duwamish and Suquamish tribes. That was about 175 years ago.\n\nYou can say “tell me about most populous city,” “more topics,” or ask your own follow-up.",
+      "conversationID": "seattle_qualified_age",
+      "elapsedSeconds": 0.3050919771194458,
+      "failures": [
+        "missing grounded source [Seattle]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "most populous city",
+        "Washington",
+        "Pacific Northwest",
+        "North America"
+      ],
+      "turn": 1,
+      "user": "How old is Seattle, Washington?"
+    },
+    {
+      "answer": "On June 29, 1776, settlers from New Spain established the Presidio of San Francisco at the Golden Gate, and the Mission San Francisco de Asís a few miles away, both named for Francis of Assisi. That was about 250 years ago.\n\nYou can say “tell me about fourth-most populous,” “more topics,” or ask your own follow-up.",
+      "conversationID": "san_francisco_age_fast_path",
+      "elapsedSeconds": 0.3091709613800049,
+      "failures": [
+        "missing grounded source [San Francisco]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "fourth-most populous",
+        "California",
+        "17th-most populous",
+        "United States"
+      ],
+      "turn": 1,
+      "user": "How old is San Francisco?"
+    },
+    {
+      "answer": "Founded in 1976 as Apple Computer Company by Steve Jobs, Steve Wozniak and Ronald Wayne, the company was incorporated by Jobs and Wozniak as Apple Computer, Inc. the following year.\n\nYou can say “tell me about Cupertino, California,” “more topics,” or ask your own follow-up.",
+      "conversationID": "apple_truncated_voice_factoid",
+      "elapsedSeconds": 0.4091939926147461,
+      "failures": [
+        "missing grounded source [Apple Inc.]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "Cupertino, California",
+        "Silicon Valley",
+        "Steve Jobs",
+        "Steve Wozniak"
+      ],
+      "turn": 1,
+      "user": "When was Apple"
+    },
+    {
+      "answer": "Vladimir Vladimirovich Putin (born 7 October 1952) is a Russian politician and former intelligence officer who has served as President of Russia since 2012, having previously served from 2000 to 2008.\n\nPutin also served as Prime Minister of Russia from 1999 to 2000 and again from 2008 to 2012.\n\nHe has been described as the de facto leader of Russia since 1999.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "topic_switch_putin_to_alamo",
+      "elapsedSeconds": 0.331152081489563,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "How did Vladimir Putin's career develop?",
+        "How has Vladimir Putin dealt with the West and NATO?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Vladimir Putin"
+    },
+    {
+      "answer": "The Battle of the Alamo (February 23 – March 6, 1836) was a pivotal event and military engagement in the Texas Revolution.\n\nFollowing a 13-day siege, Mexican troops under President General Antonio López de Santa Anna reclaimed the Alamo Mission near San Antonio de Béxar (now San Antonio ).\n\nAbout one hundred Texians had been garrisoned at the mission, and they were supplemented by around one hundred subsequent reinforcements, led by eventual Alamo co-commanders James Bowie and William B. Travis.\n\n(\"The Battle of the Alamo\" has other meanings too — say the word if you meant Alamo Mission.)\n\nYou can say “What led up to it?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "topic_switch_putin_to_alamo",
+      "elapsedSeconds": 0.20860493183135986,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "When was the Battle of the Alamo?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Santa Rosa.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "explicit_wikipedia_source_correction",
+      "elapsedSeconds": 0.9315060377120972,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Santa Rosa"
+    },
+    {
+      "answer": "I couldn't find an article for “Santa Rosa California” in the offline Wikipedia. Did you mean: Santa Rosa, California, Santa Rosa, California metropolitan area, Vista Santa Rosa, California?",
+      "conversationID": "explicit_wikipedia_source_correction",
+      "elapsedSeconds": 0.10246694087982178,
+      "failures": [
+        "missing one of [1906]",
+        "missing one of [earthquake]",
+        "missing one of [downtown | destroyed]",
+        "missing one of [population | did not greatly suffer]",
+        "missing grounded source [Santa Rosa, California]",
+        "missing any grounded section [20th century]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "discuss_article",
+      "suggestions": [],
+      "turn": 2,
+      "user": "I want you to look up the Wikipedia article on Santa Rosa California. I then want you to read what it says about the 1906 earthquake."
+    }
+  ],
+  "environment": "Signed Mac CLI; Bonsai Q1 with phone context settings; June 2026 Wikipedia. Run precedes the final chronological anchor guard, which has a separate focused replay. Timings include development-machine activity and are not phone benchmarks."
+}

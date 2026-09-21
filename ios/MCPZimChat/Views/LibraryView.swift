@@ -123,6 +123,13 @@ struct LibraryView: View {
                     }
                 }
             }
+            Section("Siri") {
+                Text("Say “Ask an offline question with Zimfo”.")
+                Text("Wait for Siri to ask what you want to know, then say your question—for example, “Tell me about Albert Einstein”.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("You can also run Ask an offline question under Zimfo in Shortcuts. Downloaded answers do not need a model; offline Siri voice availability depends on your device.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             // MARK: Behavior — everything that changes HOW the model
             // answers. Reply length, routing shortcut, article budget,
             // voice output, provider surface. Kept together so a
@@ -313,11 +320,13 @@ struct LibraryView: View {
             isPresented: Binding(
                 get: { session.libraryError != nil },
                 set: { if !$0 { session.libraryError = nil } }
-            )
-        ) {
+            ),
+            presenting: session.libraryError
+        ) { message in
+            Button("Copy error") { copyMessage(message) }
             Button("OK", role: .cancel) { session.libraryError = nil }
-        } message: {
-            Text(session.libraryError ?? "Unknown error")
+        } message: { message in
+            Text(message)
         }
         .confirmationDialog(
             pendingDelete.map {
@@ -464,7 +473,7 @@ private struct VoiceModelSection: View {
 
     var body: some View {
         Section {
-            Picker("Engine", selection: $selectedBackend) {
+            Picker("Preferred engine", selection: $selectedBackend) {
                 ForEach(TTSBackendPreference.allCases, id: \.self) { backend in
                     Text(backend.displayName).tag(backend)
                 }
@@ -476,7 +485,7 @@ private struct VoiceModelSection: View {
         } header: {
             Text("Voice chat")
         } footer: {
-            Text("Engine and voice changes apply the next time voice chat starts.")
+            Text("Changes apply next time voice chat starts. The active engine may differ when memory is low; it is shown in voice chat.")
         }
         .task(id: selectedBackend) {
             await refreshDiskUsage()

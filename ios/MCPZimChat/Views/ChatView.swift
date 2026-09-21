@@ -10,8 +10,10 @@ import UIKit
 #endif
 
 struct ChatView: View {
+    var siriContextVisible = true
     @Environment(ChatSession.self) private var session
     @State private var draft = ""
+    @State private var siriDraft: SiriQuestionHandoff.Draft?
     @State private var showVoiceChat = false
     @FocusState private var inputFocused: Bool
 
@@ -62,7 +64,41 @@ struct ChatView: View {
     }
 
     var body: some View {
+        let currentArticle = session.siriDiscussionArticle
         VStack(spacing: 0) {
+            if let pending = SiriQuestionHandoff.shared.pending {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Question from Siri").font(.headline)
+                    if let title = pending.articleTitle { Text(title).font(.subheadline) }
+                    Text(pending.question).lineLimit(3)
+                    HStack {
+                        Button("Use in message") {
+                            draft = pending.question
+                            siriDraft = pending
+                            SiriQuestionHandoff.shared.pending = nil
+                            showVoiceChat = false
+                            inputFocused = true
+                        }
+                        .disabled(!draft.isEmpty || session.isGenerating)
+                        Button("Dismiss") { SiriQuestionHandoff.shared.pending = nil }
+                    }
+                    if !draft.isEmpty { Text("Send or clear your current draft first.").font(.caption) }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial)
+            }
+            if let source = siriDraft?.source {
+                HStack {
+                    Text("Source: \(source.title) · \(source.zim)").font(.caption).lineLimit(2)
+                    Button("Clear source") { siriDraft = nil }
+                }.padding(.horizontal)
+            }
+            if let source = session.siriDiscussionArticle {
+                Text("Discussing: \(source.article.title)")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
+            }
             // Only show the status banner when there's something to
             // report (loading, error, not-yet-loaded). Once the model
             // is ready the chat gets the full vertical space.
@@ -147,16 +183,27 @@ struct ChatView: View {
             if !showVoiceChat { composer }
             DebugPaneView()
         }
+        .siriCurrentArticle(session.isGenerating ? nil : currentArticle,
+                            visible: siriContextVisible && !showVoiceChat && session.articleSheetIntent == nil,
+                            eligible: { !session.isGenerating && session.siriDiscussionArticle == currentArticle })
         .alert(
             "Error",
             isPresented: .init(
                 get: { session.lastError != nil },
                 set: { if !$0 { session.lastError = nil } }
-            )
-        ) {
+            ),
+            presenting: session.lastError
+        ) { message in
+            Button("Copy error") { copyMessage(message) }
             Button("OK", role: .cancel) { }
-        } message: {
-            Text(session.lastError ?? "")
+        } message: { message in
+            Text(message)
+        }
+        .onChange(of: SiriQuestionHandoff.shared.pending?.id) { _, id in
+            if id != nil { showVoiceChat = false }
+        }
+        .onChange(of: draft) { _, text in
+            if text.isEmpty { siriDraft = nil }
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceChatView()
@@ -466,7 +513,10 @@ struct ChatView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !session.isGenerating else { return }
+        guard !text.isEmpty, !session.isGenerating, !session.isSwitchingModel,
+              session.setupState == .ready else { return }
+        let source = siriDraft
+        siriDraft = nil
         draft = ""
         // Retract the keyboard after send — the reply often includes a
         // route map / hero image that covers the top 2/3 of the screen,
@@ -474,7 +524,7 @@ struct ChatView: View {
         // `.scrollDismissesKeyboard(.immediately)` on the outer ScrollView
         // can fire. User can tap the composer to bring it back.
         inputFocused = false
-        session.send(text)
+        session.send(text, offlineSource: source?.source, offlineLibraryVersion: source?.libraryVersion)
     }
 }
 
@@ -1021,7 +1071,7 @@ enum AssistantMarkupStripper {
     }
 }
 
-private func copyMessage(_ text: String) {
+func copyMessage(_ text: String) {
     #if canImport(AppKit)
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)

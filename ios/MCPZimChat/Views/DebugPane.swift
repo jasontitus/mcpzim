@@ -28,6 +28,9 @@ struct DebugPaneView: View {
         return df
     }()
     private var dateFormatter: DateFormatter { Self.dateFormatter }
+    private var visibleEntries: [ChatSession.DebugEntry] {
+        (session.debugEntries + SiriDiagnostics.shared.entries).sorted { $0.timestamp < $1.timestamp }
+    }
 
     var body: some View {
         // When the master toggle is off we want the chat to reach all
@@ -48,7 +51,7 @@ struct DebugPaneView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(session.debugEntries) { entry in
+                            ForEach(visibleEntries) { entry in
                                 HStack(alignment: .top, spacing: 6) {
                                     Text(dateFormatter.string(from: entry.timestamp))
                                         .font(.caption2.monospaced())
@@ -69,8 +72,8 @@ struct DebugPaneView: View {
                     }
                     .frame(height: 180)
                     .background(Color.black.opacity(0.04))
-                    .onChange(of: session.debugEntries.count) { _, _ in
-                        if let last = session.debugEntries.last {
+                    .onChange(of: visibleEntries.count) { _, _ in
+                        if let last = visibleEntries.last {
                             withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                         }
                     }
@@ -80,7 +83,7 @@ struct DebugPaneView: View {
     }
 
     private func copyAll() {
-        let text = session.debugEntries
+        let text = visibleEntries
             .map { "\(dateFormatter.string(from: $0.timestamp)) [\($0.category)] \($0.message)" }
             .joined(separator: "\n")
         #if canImport(AppKit)
@@ -104,11 +107,11 @@ struct DebugPaneView: View {
                 .font(.caption.weight(.semibold))
             }
             .buttonStyle(.plain)
-            Text("\(session.debugEntries.count) entries")
+            Text("\(visibleEntries.count) entries")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            if !session.debugEntries.isEmpty {
+            if !visibleEntries.isEmpty {
                 Button {
                     copyAll()
                     withAnimation(.easeOut(duration: 0.15)) {
@@ -160,7 +163,7 @@ struct DebugPaneView: View {
                 .help("Send a debug report over syslog. Reassemble on Mac with "
                       + "ios/scripts/mcp-report.sh latest.")
                 #endif
-                Button("Clear") { session.debugEntries.removeAll() }
+                Button("Clear") { session.debugEntries.removeAll(); SiriDiagnostics.shared.clear() }
                     .font(.caption)
                     .buttonStyle(.plain)
             }

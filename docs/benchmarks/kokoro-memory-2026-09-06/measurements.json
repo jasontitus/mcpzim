@@ -1,0 +1,146 @@
+[
+  {
+    "case": "british-baseline",
+    "phase": "first-synthesis",
+    "elapsed": 1.149,
+    "audio": 6.6,
+    "peak-mem": 3458.8,
+    "start-mem": 70.5,
+    "end-mem": 3155.0
+  },
+  {
+    "case": "british-baseline",
+    "phase": "warm-synthesis",
+    "elapsed": 0.314,
+    "audio": 6.6,
+    "peak-mem": 3605.4,
+    "start-mem": 2910.2,
+    "end-mem": 3370.6
+  },
+  {
+    "case": "british-candidate",
+    "phase": "first-synthesis",
+    "elapsed": 1.262,
+    "audio": 6.6,
+    "peak-mem": 1517.4,
+    "start-mem": 69.7,
+    "end-mem": 1372.8
+  },
+  {
+    "case": "british-candidate",
+    "phase": "warm-synthesis",
+    "elapsed": 0.331,
+    "audio": 6.6,
+    "peak-mem": 1382.0,
+    "start-mem": 944.8,
+    "end-mem": 1317.4
+  },
+  {
+    "case": "long-baseline",
+    "phase": "first-synthesis",
+    "elapsed": 1.779,
+    "audio": 20.75,
+    "peak-mem": 5841.0,
+    "start-mem": 71.1,
+    "end-mem": 5341.3
+  },
+  {
+    "case": "long-baseline",
+    "phase": "warm-synthesis",
+    "elapsed": 0.906,
+    "audio": 20.75,
+    "peak-mem": 6033.3,
+    "start-mem": 2647.7,
+    "end-mem": 5816.2
+  },
+  {
+    "case": "long-candidate",
+    "phase": "first-synthesis",
+    "elapsed": 1.673,
+    "audio": 20.75,
+    "peak-mem": 2842.5,
+    "start-mem": 68.5,
+    "end-mem": 2642.2
+  },
+  {
+    "case": "long-candidate",
+    "phase": "warm-synthesis",
+    "elapsed": 0.92,
+    "audio": 20.75,
+    "peak-mem": 3119.8,
+    "start-mem": 1409.8,
+    "end-mem": 2743.6
+  },
+  {
+    "case": "names-baseline",
+    "phase": "first-synthesis",
+    "elapsed": 1.49,
+    "audio": 9.125,
+    "peak-mem": 3792.4,
+    "start-mem": 68.5,
+    "end-mem": 3540.1
+  },
+  {
+    "case": "names-baseline",
+    "phase": "warm-synthesis",
+    "elapsed": 0.694,
+    "audio": 9.125,
+    "peak-mem": 4239.8,
+    "start-mem": 2792.4,
+    "end-mem": 3979.0
+  },
+  {
+    "case": "names-candidate",
+    "phase": "first-synthesis",
+    "elapsed": 1.358,
+    "audio": 9.125,
+    "peak-mem": 1679.2,
+    "start-mem": 70.5,
+    "end-mem": 1020.0
+  },
+  {
+    "case": "names-candidate",
+    "phase": "warm-synthesis",
+    "elapsed": 0.491,
+    "audio": 9.125,
+    "peak-mem": 1624.6,
+    "start-mem": 989.1,
+    "end-mem": 1469.7
+  },
+  {
+    "case": "punctuation-baseline",
+    "phase": "first-synthesis",
+    "elapsed": 3.256,
+    "audio": 8.425,
+    "peak-mem": 3647.7,
+    "start-mem": 68.5,
+    "end-mem": 2611.5
+  },
+  {
+    "case": "punctuation-baseline",
+    "phase": "warm-synthesis",
+    "elapsed": 1.041,
+    "audio": 8.425,
+    "peak-mem": 4097.5,
+    "start-mem": 2157.6,
+    "end-mem": 3797.6
+  },
+  {
+    "case": "punctuation-candidate",
+    "phase": "first-synthesis",
+    "elapsed": 1.727,
+    "audio": 8.425,
+    "peak-mem": 1628.9,
+    "start-mem": 70.2,
+    "end-mem": 996.6
+  },
+  {
+    "case": "punctuation-candidate",
+    "phase": "warm-synthesis",
+    "elapsed": 0.753,
+    "audio": 8.425,
+    "peak-mem": 1566.7,
+    "start-mem": 968.0,
+    "end-mem": 970.8
+  }
+]

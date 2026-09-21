@@ -1,0 +1,935 @@
+{
+  "schemaVersion": 2,
+  "modelDisplayName": "Bonsai 27B (1-bit · Metal)",
+  "contextTokens": 16384,
+  "kvCacheType": "Q4_0",
+  "passedTurns": 20,
+  "failedTurns": 22,
+  "turns": [
+    {
+      "answer": "Great — I’m preparing for our chat about Russia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 2.557732939720154,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Russia"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found on Russia. Try a more specific question or another article.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 2.4792360067367554,
+      "failures": [
+        "missing one of [Siberia]",
+        "missing one of [Ivan IV | Yermak | Khanate of Sibir | 1580]",
+        "missing grounded source [Russia]",
+        "missing any grounded section [Tsardom of Russia | lead]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "When did it expand into Siberia?"
+    },
+    {
+      "answer": "In early 1917, Nicholas II was forced to abdicate; he and his family were imprisoned and later executed during the Russian Civil War.\n\nThe Allied powers launched an unsuccessful military intervention in support of anti-communist forces.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 0.2141779661178589,
+      "failures": [
+        "missing one of [Red Army | Bolshevik]",
+        "missing one of [White Army | White movement | Whites]"
+      ],
+      "groundingSections": [
+        "Revolution and civil war"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "What were the sides in the civil war?"
+    },
+    {
+      "answer": "With a population of over 140 million, Russia is the most populous country in Europe and the ninth-most populous in the world.\n\nThe majority population of Russia consists of ethnic Russians, an East Slavic people.\n\nAncient North Eurasian populations from Siberia genetically similar to Mal'ta–Buret' culture and Afontova Gora were an important genetic contributor to Ancient Native Americans and Eastern Hunter-Gatherers.\n\nYou can say “What is education like in Russia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_russia_history_followups",
+      "elapsedSeconds": 0.19929790496826172,
+      "failures": [],
+      "groundingSections": [
+        "Early history",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Russia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Russia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "What is the population?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 2.4750289916992188,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In 1206, he took the title Genghis Khan, and waged a series of military campaigns – renowned for their brutality and ferocity – sweeping through much of Asia, and forming the Mongol Empire, the largest contiguous land empire in world history.\n\nAs a result of the Russian Civil War, the White Russian Lieutenant General Baron Ungern led his troops into Mongolia in October 1920, defeating the Chinese forces in Niislel Khüree (now Ulaanbaatar) in early February 1921 with Mongol support.\n\nThe early leaders of the Mongolian People's Republic (1921–1952) included many with Pan-Mongolist ideals.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 0.12383401393890381,
+      "failures": [],
+      "groundingSections": [
+        "Modern history",
+        "Mongol empire to early 20th century"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "What about geography?",
+        "What about government and politics?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about its early history"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found on Mongolia. Try a more specific question or another article.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 1.8557109832763672,
+      "failures": [
+        "missing one of [1921 | 1924]",
+        "missing one of [Soviet | Bolshevik]",
+        "missing one of [Mongolian People's Republic | socialist]",
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Modern history]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "How did it become a Soviet-aligned socialist state?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found on Mongolia. Try a more specific question or another article.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_topic_chat",
+      "elapsedSeconds": 1.1410681009292603,
+      "failures": [
+        "missing one of [wrestling]",
+        "missing one of [horse | horse-racing]",
+        "missing one of [archery]",
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Sports and festivals]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "What happens at Naadam?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.9203660488128662,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.10558593273162842,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about Buddhism there"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found on Mongolia. Try a more specific question or another article.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 1.153367042541504,
+      "failures": [
+        "missing one of [Soviet | socialist | communist]",
+        "missing one of [Buddhism | Buddhist | monasteries | religion | clergy | purge]",
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Religion | Modern history]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Then what happened in Soviet times"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10106003284454346,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10798799991607666,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "How about Buddhism"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found on Mongolia. Try a more specific question or another article.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 1.0353569984436035,
+      "failures": [
+        "missing one of [Gobi | desert | mountain | plateau | grassland | climate | sunny | summer | winter]",
+        "missing grounded source [Mongolia]",
+        "missing any grounded section [Geography and climate | Climate]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about government and politics?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "What about geography and climate?"
+    },
+    {
+      "answer": "In the chaos of the late 12th century, a chieftain named Temüjin finally succeeded in uniting the Mongol tribes between Manchuria and the Altai Mountains.\n\nIn 1206, he took the title Genghis Khan, and waged a series of military campaigns – renowned for their brutality and ferocity – sweeping through much of Asia, and forming the Mongol Empire, the largest contiguous land empire in world history.\n\nUnder his successors it stretched from present-day Poland in the west to Korea in the east, and from parts of Siberia in the north to the Gulf of Oman and Vietnam in the south, covering some 33,000,000 square kilometers (13,000,000 sq mi), (22% of Earth's total land area) and had a population of over 100 million people (about a quarter of Earth's total population at the time).\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_mongols_continuity",
+      "elapsedSeconds": 0.10875892639160156,
+      "failures": [],
+      "groundingSections": [
+        "Mongol empire to early 20th century"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "How about the Mongols?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Lithuania.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 2.050157070159912,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Lithuania"
+    },
+    {
+      "answer": "The first attempt to codify the Lithuanian laws was in 1468 when the Casimir's Code was compiled and adopted by Grand Duke Casimir IV Jagiellon.\n\nItalian artists organized the first opera in Lithuania in 1636 at the Palace of the Grand Dukes by the order of Władysław IV Vasa.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 0.15289902687072754,
+      "failures": [
+        "missing one of [Mindaugas]",
+        "missing one of [1253 | 13th century]",
+        "missing any grounded section [Kingdom of Lithuania, Grand Duchy of Lithuania and Polish–Lithuanian Commonwealth]"
+      ],
+      "groundingSections": [
+        "Law and law enforcement",
+        "Music"
+      ],
+      "groundingTitles": [
+        "Lithuania"
+      ],
+      "passed": false,
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "The first grand Duke"
+    },
+    {
+      "answer": "Rulers' bodies were cremated up until the conversion to Christianity.\n\nHis poem Carmen de statura, feritate ac venatione bisontis ( A Song about the Appearance, Savagery and Hunting of the Bison ), published in 1523, describes the Lithuanian landscape, way of life and customs, touches on some actual political problems, and reflects the clash of paganism and Christianity.\n\nYou can say “What is education like in Lithuania?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_lithuania_christianity_continuity",
+      "elapsedSeconds": 0.15600299835205078,
+      "failures": [
+        "missing any grounded section [Religion | Christianization and dynastic unions with Poland | Early contacts with Christianity]"
+      ],
+      "groundingSections": [
+        "Early history and Baltic tribes",
+        "Literature"
+      ],
+      "groundingTitles": [
+        "Lithuania"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Lithuania?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "And how about Christianity?"
+    },
+    {
+      "answer": "Vladimir Vladimirovich Putin (born 7 October 1952) is a Russian politician and former intelligence officer who has served as President of Russia since 2012, having previously served from 2000 to 2008.\n\nPutin also served as Prime Minister of Russia from 1999 to 2000 and again from 2008 to 2012.\n\nHe has been described as the de facto leader of Russia since 1999.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.3283120393753052,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "How did Vladimir Putin's career develop?",
+        "How has Vladimir Putin dealt with the West and NATO?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Vladimir Putin"
+    },
+    {
+      "answer": "Putin's mother was a factory worker, and his father was a conscript in the Soviet Navy, serving in the submarine fleet in the early 1930s.\n\nHis mother was a devout Christian who attended the Russian Orthodox Church; his father was an atheist.\n\nYou can say “Where did Vladimir Putin go to school?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.2125720977783203,
+      "failures": [
+        "missing one of [Vladimir Spiridonovich]",
+        "missing one of [Maria Ivanovna]"
+      ],
+      "groundingSections": [
+        "Early life and education",
+        "Religion"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "Where did Vladimir Putin go to school?",
+        "How did Vladimir Putin's career develop?",
+        "What about Vladimir Putin's foreign policy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "What about his parents?"
+    },
+    {
+      "answer": "On 1 September 1960, Putin started at School No. 193 at Baskov Lane, near his home.\n\nPutin attended Saint Petersburg High School 281 with a German language immersion program.\n\nPutin studied law at the Leningrad State University named after Andrei Zhdanov (now Saint Petersburg State University ) in 1970 and graduated in 1975.\n\nYou can say “How did Vladimir Putin's career develop?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.13134288787841797,
+      "failures": [],
+      "groundingSections": [
+        "Education"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How did Vladimir Putin's career develop?",
+        "What about Vladimir Putin's family?",
+        "What about Vladimir Putin's foreign policy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Where did he go to school?"
+    },
+    {
+      "answer": "Putin studied law at the Leningrad State University named after Andrei Zhdanov (now Saint Petersburg State University ) in 1970 and graduated in 1975.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "putin_biography_followups",
+      "elapsedSeconds": 0.14539504051208496,
+      "failures": [
+        "missing one of [KGB]",
+        "missing any grounded section [Intelligence career]"
+      ],
+      "groundingSections": [
+        "Education"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "Where did Vladimir Putin go to school?",
+        "How did Vladimir Putin's career develop?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 4,
+      "user": "What did he do after graduating?"
+    },
+    {
+      "answer": "George Washington (February 22, 1732 [ O.S.\n\nFebruary 11, 1731] – December 14, 1799) was a Founding Father and the first president of the United States, serving from 1789 to 1797.\n\nAs commander of the Continental Army, Washington led Patriot forces to victory in the American Revolutionary War against the British Empire.\n\n(\"George Washington\" has other meanings too — say the word if you meant Bibliography of George Washington.)\n\nYou can say “What was George Washington's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.23292303085327148,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was George Washington's early life like?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about George Washington"
+    },
+    {
+      "answer": "His father was a justice of the peace and a prominent public figure who had four additional children from his first marriage to Jane Butler.\n\nYou can say “How did George Washington's career develop?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.19980406761169434,
+      "failures": [
+        "missing one of [Augustine Washington | Augustine and Mary Ball Washington]",
+        "missing one of [Mary Ball Washington | Mary Ball]"
+      ],
+      "groundingSections": [
+        "Early life (1732–1752)"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How did George Washington's career develop?",
+        "What about commander in chief of the army (1775–1783)?",
+        "What is George Washington's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Who were his parents?"
+    },
+    {
+      "answer": "Washington was unanimously elected the first U.S. president by the Electoral College in 1788 and 1792.\n\nBecause of his father's death, Washington did not have the formal education his elder half-brothers had received at Appleby Grammar School in England; he instead attended the Lower Church School in Hartfield.\n\nA number of secondary schools and universities are named in honor of Washington, including George Washington University and Washington University in St. Louis.\n\nYou can say “What was George Washington's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "george_washington_followups",
+      "elapsedSeconds": 0.13468408584594727,
+      "failures": [],
+      "groundingSections": [
+        "Early life (1732–1752)",
+        "Namesakes, monuments and commemorations",
+        "lead"
+      ],
+      "groundingTitles": [
+        "George Washington"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was George Washington's early life like?",
+        "How did George Washington's career develop?",
+        "What about commander in chief of the army (1775–1783)?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Did he go to college?"
+    },
+    {
+      "answer": "The Battle of the Alamo (February 23 – March 6, 1836) was a pivotal event and military engagement in the Texas Revolution.\n\nFollowing a 13-day siege, Mexican troops under President General Antonio López de Santa Anna reclaimed the Alamo Mission near San Antonio de Béxar (now San Antonio ).\n\nAbout one hundred Texians had been garrisoned at the mission, and they were supplemented by around one hundred subsequent reinforcements, led by eventual Alamo co-commanders James Bowie and William B. Travis.\n\n(\"The Battle of the Alamo\" has other meanings too — say the word if you meant Alamo Mission.)\n\nYou can say “What led up to it?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.20201706886291504,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "When was the Battle of the Alamo?"
+    },
+    {
+      "answer": "Other estimates of the number of Mexican soldiers killed ranged from 60 to 200, with an additional 250–300 wounded.\n\nSome people, historians, and survivors such as Susanna Dickinson have estimated that over 1,000-1,600 Mexican soldiers were killed and wounded, but it is most likely that total casualties were less than 600.\n\nMost eyewitnesses counted between 182 and 257 Texians killed.\n\nYou can say “Who were the combatants?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.20487892627716064,
+      "failures": [],
+      "groundingSections": [
+        "Casualties"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "suggestions": [
+        "Who were the combatants?",
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "How many people died there?"
+    },
+    {
+      "answer": "At the end of the first day of the siege, Santa Anna's troops were reinforced by 600 men under General Joaquin Ramirez y Sesma, bringing the Mexican army up to more than 2,000 men.\n\nThe Mexican army celebrated loudly throughout the afternoon, both in honor of their reinforcements and at the news that troops under General José de Urrea had soundly defeated Texian Colonel Frank W. Johnson at the Battle of San Patricio Most of the Texians in the Alamo believed that Sesma had been leading the Mexican forces during the siege, and they mistakenly attributed the celebration to the arrival of Santa Anna.\n\nYou can say “How many people died?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "alamo_event_followups",
+      "elapsedSeconds": 0.10099494457244873,
+      "failures": [],
+      "groundingSections": [
+        "Reinforcements"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "How many people died?",
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 3,
+      "user": "Who were the combatants?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 31.038911938667297,
+      "failures": [
+        "missing one of [spacetime]",
+        "missing one of [accelerat | orbit]",
+        "missing one of [mass | massive]",
+        "missing grounded source [Gravitational wave]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 1,
+      "user": "How are gravitational waves created?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 17.63155698776245,
+      "failures": [
+        "missing one of [black hole]",
+        "missing one of [neutron star | compact object]",
+        "missing one of [merger | binary | collision]",
+        "missing grounded source [Gravitational wave]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 2,
+      "user": "What kinds of events make the strongest ones?"
+    },
+    {
+      "answer": "I don't see an answer to that in the ZIM passages I found. Try a more specific question or another article.",
+      "conversationID": "gravitational_wave_followups",
+      "elapsedSeconds": 9.766039967536926,
+      "failures": [
+        "missing one of [laser]",
+        "missing one of [interferometer | interference]",
+        "missing one of [arm | distance | length | separation | separated]",
+        "missing grounded source [Gravitational wave]",
+        "missing grounded source [LIGO]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "suggestions": [],
+      "turn": 3,
+      "user": "How does LIGO detect them?"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.10210192203521729,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "It was admitted to the Union as the 42nd state in 1889. That was about 137 years ago.\n\nYou can say “tell me about state,” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_state",
+      "elapsedSeconds": 0.30389702320098877,
+      "failures": [
+        "missing grounded source [Washington (state)]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "state",
+        "Pacific Northwest",
+        "United States",
+        "national capital"
+      ],
+      "turn": 2,
+      "user": "The second one"
+    },
+    {
+      "answer": "Which “Washington” did you mean — George Washington, Washington (state), or Washington, D.C.?",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.10181105136871338,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "George Washington",
+        "Washington (state)",
+        "Washington, D.C.",
+        "federal government of the United States",
+        "Washington metropolitan area",
+        "Washington Old Hall"
+      ],
+      "turn": 1,
+      "user": "How old is Washington?"
+    },
+    {
+      "answer": "The Residence Act, adopted on July 16, 1790, approved the creation of the capital district along the Potomac River, and is considered the city's founding date. That was about 236 years ago.\n\nYou can say “tell me about capital city,” “more topics,” or ask your own follow-up.",
+      "conversationID": "washington_age_disambiguation_dc",
+      "elapsedSeconds": 0.3048170804977417,
+      "failures": [
+        "missing grounded source [Washington, D.C.]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "capital city",
+        "federal district",
+        "United States",
+        "Potomac River"
+      ],
+      "turn": 2,
+      "user": "The third one"
+    },
+    {
+      "answer": "Arthur A. Denny and his group of travelers, subsequently known as the Denny Party, arrived from Illinois via Portland, Oregon, on the schooner Exact at Alki Point on November 13, 1851. The settlement was moved to the eastern shore of Elliott Bay in 1852 and named \"Seattle\" in honor of Chief Seattle, a prominent 19th-century leader of the local Duwamish and Suquamish tribes. That was about 175 years ago.\n\nYou can say “tell me about most populous city,” “more topics,” or ask your own follow-up.",
+      "conversationID": "seattle_qualified_age",
+      "elapsedSeconds": 0.31160497665405273,
+      "failures": [
+        "missing grounded source [Seattle]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "most populous city",
+        "Washington",
+        "Pacific Northwest",
+        "North America"
+      ],
+      "turn": 1,
+      "user": "How old is Seattle, Washington?"
+    },
+    {
+      "answer": "On June 29, 1776, settlers from New Spain established the Presidio of San Francisco at the Golden Gate, and the Mission San Francisco de Asís a few miles away, both named for Francis of Assisi. That was about 250 years ago.\n\nYou can say “tell me about fourth-most populous,” “more topics,” or ask your own follow-up.",
+      "conversationID": "san_francisco_age_fast_path",
+      "elapsedSeconds": 0.3065580129623413,
+      "failures": [
+        "missing grounded source [San Francisco]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "fourth-most populous",
+        "California",
+        "17th-most populous",
+        "United States"
+      ],
+      "turn": 1,
+      "user": "How old is San Francisco?"
+    },
+    {
+      "answer": "Founded in 1976 as Apple Computer Company by Steve Jobs, Steve Wozniak and Ronald Wayne, the company was incorporated by Jobs and Wozniak as Apple Computer, Inc. the following year.\n\nYou can say “tell me about Cupertino, California,” “more topics,” or ask your own follow-up.",
+      "conversationID": "apple_truncated_voice_factoid",
+      "elapsedSeconds": 0.41516590118408203,
+      "failures": [
+        "missing grounded source [Apple Inc.]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "Cupertino, California",
+        "Silicon Valley",
+        "Steve Jobs",
+        "Steve Wozniak"
+      ],
+      "turn": 1,
+      "user": "When was Apple"
+    },
+    {
+      "answer": "Vladimir Vladimirovich Putin (born 7 October 1952) is a Russian politician and former intelligence officer who has served as President of Russia since 2012, having previously served from 2000 to 2008.\n\nPutin also served as Prime Minister of Russia from 1999 to 2000 and again from 2008 to 2012.\n\nHe has been described as the de facto leader of Russia since 1999.\n\nYou can say “What was Vladimir Putin's early life like?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "topic_switch_putin_to_alamo",
+      "elapsedSeconds": 0.3222670555114746,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "Vladimir Putin"
+      ],
+      "passed": true,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What was Vladimir Putin's early life like?",
+        "How did Vladimir Putin's career develop?",
+        "How has Vladimir Putin dealt with the West and NATO?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Tell me about Vladimir Putin"
+    },
+    {
+      "answer": "The Battle of the Alamo (February 23 – March 6, 1836) was a pivotal event and military engagement in the Texas Revolution.\n\nFollowing a 13-day siege, Mexican troops under President General Antonio López de Santa Anna reclaimed the Alamo Mission near San Antonio de Béxar (now San Antonio ).\n\nAbout one hundred Texians had been garrisoned at the mission, and they were supplemented by around one hundred subsequent reinforcements, led by eventual Alamo co-commanders James Bowie and William B. Travis.\n\n(\"The Battle of the Alamo\" has other meanings too — say the word if you meant Alamo Mission.)\n\nYou can say “What led up to it?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "topic_switch_putin_to_alamo",
+      "elapsedSeconds": 0.21070504188537598,
+      "failures": [],
+      "groundingSections": [
+        "lead"
+      ],
+      "groundingTitles": [
+        "The Battle of the Alamo"
+      ],
+      "passed": true,
+      "routedTool": "article_factoid",
+      "suggestions": [
+        "What led up to it?",
+        "What is The Battle of the Alamo's legacy?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "When was the Battle of the Alamo?"
+    },
+    {
+      "answer": "Great — I’m preparing for our chat about Santa Rosa.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “Show me another topic,” “more topics,” or ask your own follow-up.",
+      "conversationID": "explicit_wikipedia_source_correction",
+      "elapsedSeconds": 0.9173069000244141,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Santa Rosa"
+    },
+    {
+      "answer": "I couldn't find an article for “Santa Rosa California” in the offline Wikipedia. Did you mean: Santa Rosa, California, Santa Rosa, California metropolitan area, Vista Santa Rosa, California?",
+      "conversationID": "explicit_wikipedia_source_correction",
+      "elapsedSeconds": 0.10134196281433105,
+      "failures": [
+        "missing one of [1906]",
+        "missing one of [earthquake]",
+        "missing one of [downtown | destroyed]",
+        "missing one of [population | did not greatly suffer]",
+        "missing grounded source [Santa Rosa, California]",
+        "missing any grounded section [20th century]"
+      ],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": false,
+      "routedTool": "discuss_article",
+      "suggestions": [],
+      "turn": 2,
+      "user": "I want you to look up the Wikipedia article on Santa Rosa California. I then want you to read what it says about the 1906 earthquake."
+    }
+  ],
+  "environment": "Signed headless Mac replay; Bonsai Q1 with phone context settings; June 2026 English no-picture Wikipedia ZIM. Not a physical phone benchmark."
+}

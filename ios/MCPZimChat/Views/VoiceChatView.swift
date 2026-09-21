@@ -20,11 +20,24 @@ struct VoiceChatView: View {
               Text(previewText)
                 .font(.footnote)
                 .lineLimit(2)
+                .textSelection(.enabled)
                 .foregroundStyle(.primary)
-              Text(controller?.activeVoiceName ?? TTSBackendPreference.current.displayName)
+              Text(controller?.activeVoiceName ?? "Selecting voice…")
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+              if let reason = controller?.voiceFallbackReason {
+                  Text(reason).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+              }
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if case .error(let message) = state {
+                // Keep the action in the row: the compact sheet is only
+                // 72 points tall, so another text row can be clipped.
+                Button { copyMessage(message) } label: {
+                    Label("Copy error", systemImage: "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+            }
             if canInterrupt {
                 Button("Interrupt") {
                     controller?.interruptAndListen()
@@ -80,6 +93,7 @@ struct VoiceChatView: View {
     // MARK: - Derived state
 
     private var state: VoiceChatController.State { controller?.state ?? .idle }
+
 
     private var isListening: Bool {
         if case .listening = state { return true } else { return false }

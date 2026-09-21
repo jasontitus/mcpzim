@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "name": "Exploration transitions",
+  "description": "Derived from reported conversations. Automated checks supplement manual evidence review.",
+  "conversations": [
+    {
+      "id": "modern-geopolitics",
+      "description": "Reported historical-to-modern exploration; inspect relevance as well as provenance.",
+      "turns": [
+        {
+          "user": "Tell me about Grand Duchy of Lithuania",
+          "expectedSourceTitles": [
+            "Grand Duchy of Lithuania"
+          ]
+        },
+        {
+          "user": "How does it relate to modern geopolitics?",
+          "mustNotContain": [
+            "I don't see an answer"
+          ],
+          "anchorGroups": [
+            [
+              "background",
+              "connection"
+            ]
+          ]
+        },
+        {
+          "user": "How is it relevant to the war in Ukraine?",
+          "mustNotContain": [
+            "I don't see an answer"
+          ],
+          "anchorGroups": [
+            [
+              "background",
+              "connection"
+            ]
+          ]
+        },
+        {
+          "user": "How do Ukrainians feel about Lithuania now?",
+          "anchorGroups": [
+            [
+              "public opinion now"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "country-facet-transfer",
+      "turns": [
+        {
+          "user": "Tell me about Bulgaria"
+        },
+        {
+          "user": "When did Bulgaria join NATO?"
+        },
+        {
+          "user": "How about Lithuania?",
+          "anchorGroups": [
+            [
+              "2004"
+            ]
+          ]
+        },
+        {
+          "user": "What year?",
+          "anchorGroups": [
+            [
+              "2004"
+            ]
+          ]
+        },
+        {
+          "user": "What year?",
+          "anchorGroups": [
+            [
+              "2004"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "work-medium-transfer",
+      "turns": [
+        {
+          "user": "Tell me about 9 to 5 (song)"
+        },
+        {
+          "user": "And the movie?",
+          "anchorGroups": [
+            [
+              "film",
+              "movie"
+            ]
+          ],
+          "mustNotContain": [
+            "Number Nine",
+            "James Sloyan"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unsupported-specifics",
+      "turns": [
+        {
+          "user": "Tell me about Grand Duchy of Lithuania"
+        },
+        {
+          "user": "What is the secret password for Lithuania's government servers now?",
+          "mustNotContain": [
+            "password is",
+            "password was"
+          ]
+        }
+      ]
+    }
+  ]
+}

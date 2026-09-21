@@ -712,6 +712,14 @@ public final class Gemma4Provider: ModelProvider, @unchecked Sendable {
 
                     let genParams = configuredParams
 
+                    try ModelInputCapture.shared.record(
+                        modelID: self.id, runtime: "mlx", prompt: prompt,
+                        tokenIDs: tokens32,
+                        sampler: ["temperature": temperature, "topP": topP,
+                                  "topK": Double(topK), "presencePenalty": presencePenalty,
+                                  "maxTokens": Double(parameters.maxTokens)],
+                        stopSequences: parameters.stopSequences)
+
                     // Cheapest place to honour a Stop: nothing has been
                     // prefilled or published yet, so throwing here leaves
                     // the previous turn's cache exactly as it was.

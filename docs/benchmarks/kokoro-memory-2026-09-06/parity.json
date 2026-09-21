@@ -1,0 +1,74 @@
+[
+  {
+    "case": "punctuation",
+    "phase": "first",
+    "voice": "af_heart",
+    "samples": 202200,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "punctuation",
+    "phase": "warm",
+    "voice": "af_heart",
+    "samples": 202200,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "names",
+    "phase": "first",
+    "voice": "af_heart",
+    "samples": 219000,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "names",
+    "phase": "warm",
+    "voice": "af_heart",
+    "samples": 219000,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "british",
+    "phase": "first",
+    "voice": "bf_emma",
+    "samples": 158400,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "british",
+    "phase": "warm",
+    "voice": "bf_emma",
+    "samples": 158400,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "long",
+    "phase": "first",
+    "voice": "af_heart",
+    "samples": 498000,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  },
+  {
+    "case": "long",
+    "phase": "warm",
+    "voice": "af_heart",
+    "samples": 498000,
+    "bit_exact": true,
+    "max_error": 0.0,
+    "rms_error": 0.0
+  }
+]

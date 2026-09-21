@@ -425,12 +425,16 @@ public enum ReferenceResolver {
         guard let theIdx = words.firstIndex(of: "the") else { return [] }
         var toks = Array(words[(theIdx + 1)...])
         if toks.last == "one" || toks.last == "ones" { toks.removeLast() }
-        let content = toks.filter { !stopwords.contains($0) }
+        let content = toks.filter { !stopwords.contains($0) && $0.count >= 3 }
         guard !content.isEmpty else { return [] }
         let matches = focus.lastList.filter { item in
-            let label = item.name.lowercased()
-            return content.contains { tok in
-                tok.count >= 3 && label.contains(tok)
+            let label = Set(item.name.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted))
+            // A shared country/name token must not hijack a corrected title.
+            // "the grand duchy of Lithuania" is not a selector for either
+            // "List of wars involving Lithuania" or its Commonwealth list.
+            return content.allSatisfy { tok in
+                label.contains(tok) || label.contains(tok + "s") || label.contains(tok + "es")
             }
         }
         return matches

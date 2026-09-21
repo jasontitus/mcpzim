@@ -5,6 +5,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MCPZimKit
 
 /// Supertonic 3 playback adapter for conversational voice chat.
 ///
@@ -31,6 +32,10 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     private let player = AVAudioPlayerNode()
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 1, interleaved: false)!
     private let stateLock = NSLock()
+    private var configurationObserver: NSObjectProtocol?
+    private var playbackGate: PlaybackCompletionGate?
+    private var playbackError: String?
+    public var playbackFailure: String? { stateLock.withLock { playbackError } }
     private var speaking = false
     private var stopRequested = false
     private var hasQueuedAudio = false
@@ -44,27 +49,46 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     public init(voice: String = "F1") {
         let selectedVoice = Supertonic3Voice(name: voice) ?? .f1
         voiceName = selectedVoice.rawValue
-        runtime = Supertonic3Runtime(
-            directory: Supertonic3Assets.modelDirectory,
-            voice: selectedVoice)
+        runtime = .shared
         super.init()
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
         player.volume = 1.0
         engine.mainMixerNode.outputVolume = 1.0
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            // Engine operations can post notifications synchronously. Defer
+            // handling so their callback cannot re-enter the state lock.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let gate = self.stateLock.withLock {
+                    guard self.hasQueuedAudio else { return self.playbackGate }
+                    self.playbackError = "The audio output changed during playback. Check the Bluetooth output, then restart voice mode."
+                    self.stopRequested = true
+                    return self.playbackGate
+                }
+                gate?.finish(.interrupted)
+            }
+        }
+    }
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
     }
 
     public func prepareForConversation() async throws {
-        // Load assets, but let the first real chunk compile only the bucket
-        // it needs. Synthesizing three dummy utterances delayed that chunk.
-        try await runtime.prepare()
+        // Reuse the model-only runtime warmed after setup. If that warm-up
+        // was skipped, load assets here without adding multiple probe chunks.
+        stateLock.withLock { if !hasQueuedAudio { playbackError = nil } }
+        try await runtime.prepare(voice: voiceName)
     }
 
     #if DEBUG
     /// Exercise the production synthesizer without starting an audio engine
     /// or scheduling any buffer. Used by the opt-in silent device probe.
     func synthesizeWithoutPlayback(_ text: String) async throws -> (sampleCount: Int, audioSeconds: Double) {
-        let result = try await runtime.synthesize(text: text)
+        let result = try await runtime.synthesize(text: text, voice: voiceName)
         return (result.samples.count, Double(result.samples.count) / format.sampleRate)
     }
     #endif
@@ -82,9 +106,10 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
 
+        if let failure = playbackFailure { throw TTSError.synthesisFailed(failure) }
         stateLock.withLock { stopRequested = false }
         try Task.checkCancellation()
-        let result = try await runtime.synthesize(text: raw)
+        let result = try await runtime.synthesize(text: raw, voice: voiceName)
         try Task.checkCancellation()
         let joiningQueuedAudio = stateLock.withLock { hasQueuedAudio }
         let trimmedSamples = Self.trimGeneratedSilence(
@@ -99,6 +124,7 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
         // Allocation-free level API (DS4 pass): fold the gain into the
         // single PCM-buffer copy below instead of a normalized copy here.
         let playbackGain = TTSPlaybackLevel.gain(for: samples)
+        if let failure = playbackFailure { throw TTSError.synthesisFailed(failure) }
         guard !stateLock.withLock({ stopRequested }) else { return }
 
         guard let buffer = AVAudioPCMBuffer(
@@ -119,6 +145,10 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
                     }
                 }
             }
+            // Silence trimming may cut between zero crossings. Taper only
+            // the copied buffer edges, with no extra PCM allocation or gap.
+            SpeechPCMEdges.taper(UnsafeMutableBufferPointer(start: destination, count: samples.count),
+                                 sampleRate: Int(format.sampleRate))
         }
 
         if !engine.isRunning { try engine.start() }
@@ -220,76 +250,132 @@ public final class Supertonic3TTSService: NSObject, TTSService, @unchecked Senda
     }
 
     public func awaitPlayback() async {
-        let shouldWait = stateLock.withLock { hasQueuedAudio && !stopRequested }
-        guard shouldWait else {
-            stateLock.withLock { speaking = false }
+        let gate = PlaybackCompletionGate()
+        let timeout: TimeInterval? = stateLock.withLock {
+            guard hasQueuedAudio, !stopRequested else { return nil }
+            playbackGate = gate
+            // Queue duration is an estimate, not evidence that sound played.
+            // Allow Bluetooth output latency after the expected final sample.
+            return max(0, queueDrainsAt?.timeIntervalSinceNow ?? 0) + 8
+        }
+        guard let timeout else { return }
+        guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else {
+            gate.finish(.timedOut)
+            _ = await gate.wait(timeout: 0)
+            finishPlayback(gate: gate, outcome: .timedOut)
             return
         }
-
-        guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else { return }
         marker.frameLength = 1
         marker.floatChannelData?[0][0] = 0
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // The default callback means consumed, which can precede audible
-            // output. Wait through device latency before rearming capture.
+        stateLock.withLock {
+            guard !stopRequested, playbackGate === gate else {
+                gate.finish(.cancelled)
+                return
+            }
             player.scheduleBuffer(marker, at: nil, options: [],
                                   completionCallbackType: .dataPlayedBack) { _ in
-                continuation.resume()
+                gate.finish(.played)
             }
             if !player.isPlaying { player.play() }
         }
+        let outcome = await gate.wait(timeout: timeout)
+        finishPlayback(gate: gate, outcome: outcome)
+    }
+
+    private func finishPlayback(gate: PlaybackCompletionGate, outcome: PlaybackCompletionGate.Outcome) {
         stateLock.withLock {
+            // A cancelled older turn cannot tear down a newer turn's graph.
+            guard playbackGate === gate else { return }
+            playbackGate = nil
             speaking = false
             hasQueuedAudio = false
             queueDrainsAt = nil
+            if outcome == .timedOut {
+                playbackError = "Audio playback did not finish. Check the Bluetooth output, then restart voice mode."
+            }
+            player.stop()
+            engine.stop()
         }
     }
 
     public func stop() {
-        stateLock.withLock {
+        let gate = stateLock.withLock {
             stopRequested = true
             speaking = false
             hasQueuedAudio = false
             queueDrainsAt = nil
             lastChunkMetrics = nil
+            let gate = playbackGate
+            playbackGate = nil
+            player.stop()
+            engine.stop()
+            return gate
         }
-        player.stop()
+        gate?.finish(.cancelled)
     }
+
 }
 
 private actor Supertonic3Runtime {
-    private let directory: URL
-    private let voice: Supertonic3Voice
-    private let manager: Supertonic3Manager
-    private var style: Supertonic3VoiceStyle?
+    static let shared = Supertonic3Runtime()
+    private let directory = Supertonic3Assets.modelDirectory
+    private let manager = Supertonic3Manager(
+        directory: Supertonic3Assets.modelDirectory, vectorEstimator: .aneBucketed(.int8))
+    private var styles: [String: Supertonic3VoiceStyle] = [:]
+    private var tail: Task<Void, Never>?
+    private var warmup: Task<Void, Error>?
+    private var warmed = false
 
-    init(directory: URL, voice: Supertonic3Voice) {
-        self.directory = directory
-        self.voice = voice
-        manager = Supertonic3Manager(
-            directory: directory,
-            vectorEstimator: .aneBucketed(.int8))
+    func prepare(voice: String) async throws { _ = try await enqueue(text: nil, voice: voice) }
+    func synthesize(text: String, voice: String) async throws -> (samples: [Float], duration: Float) {
+        try await enqueue(text: text, voice: voice)
     }
 
-    func prepare() async throws {
+    func warm(voice: String) async throws {
+        if warmed { return }
+        if let warmup { return try await warmup.value }
+        let task = Task {
+            _ = try await self.enqueue(
+                text: "Welcome. You can explore nearby places, read an article, or ask a follow-up question.",
+                voice: voice)
+        }
+        warmup = task
+        do { try await task.value; warmed = true; warmup = nil }
+        catch { warmup = nil; throw error }
+    }
+
+    // Actors are reentrant across await: explicitly serialize preparation,
+    // warm-up and real synthesis so shared Core ML state cannot overlap.
+    private func enqueue(text: String?, voice: String) async throws -> (samples: [Float], duration: Float) {
+        let previous = tail
+        let task = Task {
+            await previous?.value
+            try Task.checkCancellation()
+            return try await self.perform(text: text, voice: voice)
+        }
+        tail = Task { _ = try? await task.value }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: { task.cancel() }
+    }
+
+    private func perform(text: String?, voice: String) async throws -> (samples: [Float], duration: Float) {
         try await manager.initialize()
-        if style == nil {
-            style = try await Supertonic3ResourceDownloader.loadVoiceStyle(
-                voice,
-                directory: directory)
+        if styles[voice] == nil {
+            styles[voice] = try await Supertonic3ResourceDownloader.loadVoiceStyle(
+                Supertonic3Voice(name: voice) ?? .f1, directory: directory)
         }
+        try Task.checkCancellation()
+        guard let text else { return ([], 0) }
+        guard let style = styles[voice] else { throw TTSError.synthesisFailed("Supertonic voice style was not loaded.") }
+        return try await manager.synthesize(text: text, language: "en", style: style, silenceDuration: 0)
     }
+}
 
-    func synthesize(text: String) async throws -> (samples: [Float], duration: Float) {
-        try await prepare()
-        guard let style else {
-            throw TTSError.synthesisFailed("Supertonic voice style was not loaded.")
-        }
-        return try await manager.synthesize(
-            text: text,
-            language: "en",
-            style: style,
-            silenceDuration: 0)
+extension Supertonic3TTSService {
+    /// Model-only warm-up: no playback graph, microphone or audio session.
+    static func prewarmRuntime() async throws {
+        try await Supertonic3Runtime.shared.warm(voice: SupertonicVoicePreference.current)
     }
 }
 
@@ -306,6 +392,9 @@ public enum SupertonicVoicePreference {
 public enum Supertonic3Assets {
     /// Root passed to FluidAudio; its downloader creates `supertonic-3/` below it.
     public static var modelDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["MCPZIM_SUPERTONIC_MODEL_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
         let fileManager = FileManager.default
         let base = (try? fileManager.url(
             for: .applicationSupportDirectory,
@@ -319,6 +408,15 @@ public enum Supertonic3Assets {
             .appendingPathComponent("supertonic_3", isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    static var readyForSilentWarmup: Bool {
+        let root = modelDirectory.appendingPathComponent(Repo.supertonic3.folderName)
+        let voice = Supertonic3Voice(name: SupertonicVoicePreference.current) ?? .f1
+        return ModelNames.Supertonic3.requiredFiles(veVariant: "ane-int8")
+            .union([voice.fileName]).allSatisfy {
+                FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+            }
     }
 
     public static var currentBytesOnDisk: Int64 {

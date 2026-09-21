@@ -182,6 +182,11 @@ class Generator {
         }
       }
       newX = xs! / numKernels
+      MLX.eval(newX)
+      // Release reusable allocator buffers between the two upsampling stages.
+      // Live tensors and weights are untouched; do not alter the process-wide
+      // cache limit because the host may also be running an MLX language model.
+      Memory.clearCache()
     }
     
     newX = LeakyReLU(negativeSlope: 0.01)(newX)

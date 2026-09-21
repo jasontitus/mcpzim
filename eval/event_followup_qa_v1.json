@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "Subject-aware event follow-ups",
+  "description": "Phone regression: the end of a state must not become the end of Mongol rule, a court, or an attempted restoration. Inspect selected evidence manually as well.",
+  "conversations": [
+    {"id":"lithuania-dissolution","turns":[
+      {"user":"Tell me about the grand duchy of Lithuania","anchorGroups":[["Grand Duchy of Lithuania"]]},
+      {"user":"How did it end?","anchorGroups":[["1795"],["partition"]],"mustNotContain":["Battle of Kulikovo","Casimir's assumption","Famous magnate families","little kings","all plans for the recreation","I don't see an answer"]},
+      {"user":"What year?","anchorGroups":[["1795"]],"mustNotContain":["1447","1380","I don't see an answer"]}
+    ]}
+  ]
+}

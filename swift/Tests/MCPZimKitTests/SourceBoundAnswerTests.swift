@@ -2,6 +2,54 @@ import XCTest
 @testable import MCPZimKit
 
 final class SourceBoundAnswerTests: XCTestCase {
+    func testModernEffectFollowupsKeepAffectedCountryAndSourceQualifications() {
+        let ukraine = "Lithuanian annexation led to the permanent division between Ukrainians, Belarusians, and Russians, and even four Grand Dukes of Lithuania appear on a monument."
+        let lithuania = "In the 19th century, references to the Grand Duchy were an inspiration for Lithuanian national revival movements."
+        let passages: [SourceBoundAnswer.Passage] = [
+            .init(article: "Grand Duchy of Lithuania", section: "Legacy",
+                text: "The rapid expansion of the influence of Moscow put it into a comparable position to the Grand Duchy of Lithuania in 1478. The state expanded eastward. " + ukraine + " " + lithuania),
+            .init(article: "Grand Duchy of Lithuania", section: "Modern Ukraine",
+                text: "The tribes fought a war. The memory of the conflict inspired Lithuanian artists.")]
+        XCTAssertEqual(SourceBoundAnswer.answer(question: "What about how it affects modern Ukraine?",
+            topic: "Grand Duchy of Lithuania", passages: passages).text, ukraine)
+        let reply = SourceBoundAnswer.answer(question: "How does it affect modern Lithuania?",
+            topic: "Grand Duchy of Lithuania", passages: Array(passages.prefix(1)))
+        XCTAssertEqual(reply.text, lithuania)
+        XCTAssertFalse(SourceBoundAnswer.answer(question: "How does it affect modern Japan?",
+            topic: "Grand Duchy of Lithuania", passages: passages).hasEvidence)
+        XCTAssertFalse(SourceBoundAnswer.answer(question: "How does it affect modern Ukraine's secret password?",
+            topic: "Grand Duchy of Lithuania", passages: passages).hasEvidence)
+        XCTAssertNil(SourceBoundAnswer.modernEffectTarget("Tell me about modern Ukraine"))
+        XCTAssertNil(SourceBoundAnswer.modernEffectTarget("How does it affect modern Ukraine in 2026?"))
+    }
+
+    func testLegacySkipsHistoricalPrefaceForSuggestedAndTypedQuestions() {
+        let background = "Prussian tribes were the subject of Polish expansion. The fighting gave the Lithuanian tribes time to unite. The newly formed state concentrated its efforts on expansion eastward."
+        let legacy = "The subjugation of Eastern Slavs by two powers created substantial differences between them that persist to this day. In the 19th century, references to the Grand Duchy were an inspiration for national revival movements."
+        for suggested in [false, true] {
+            let reply = SourceBoundAnswer.answer(
+                question: "What is Grand Duchy of Lithuania's legacy?",
+                topic: "Grand Duchy of Lithuania",
+                passages: [.init(article: "Grand Duchy of Lithuania", section: "Legacy", text: background + " " + legacy)],
+                sectionOverview: suggested)
+            XCTAssertEqual(reply.text, SourceBoundAnswer.sentences(legacy).joined(separator: "\n\n"))
+            XCTAssertTrue(reply.hasEvidence)
+            XCTAssertFalse(SourceBoundAnswer.answer(question: "What is Mira's legacy?", topic: "Mira",
+                passages: [.init(article: "Mira", section: "Legacy", text: background)],
+                sectionOverview: suggested).hasEvidence)
+        }
+    }
+
+    func testLegacyPreservesQualifiedReceptionAndDoesNotChangeOtherSections() {
+        let text = "Lenin's influence was global. A controversial figure, Lenin remains both reviled and revered, a figure who has been both idolised and demonised."
+        XCTAssertEqual(SourceBoundAnswer.answer(question: "What is Lenin's legacy?", topic: "Lenin",
+            passages: [.init(article: "Lenin", section: "Legacy", text: text)], sectionOverview: true).text,
+            SourceBoundAnswer.sentences(text).joined(separator: "\n\n"))
+        let history = "The tribes united in the thirteenth century."
+        XCTAssertEqual(SourceBoundAnswer.answer(question: "Tell me about early history", topic: "Lithuania",
+            passages: [.init(article: "Lithuania", section: "Early history", text: history)], sectionOverview: true).text, history)
+    }
+
     func testReportedConversationalQuestionsUseTheirSectionContext() {
         // Synthetic prose deliberately omits the question's wording, as the
         // real phone session did. Other sections have distracting word hits.

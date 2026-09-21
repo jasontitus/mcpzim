@@ -178,7 +178,7 @@ extension ChatSession {
                     finishedAt: m.finishedAt
                 )
             },
-            debugEntries: debugEntries.map { e in
+            debugEntries: (debugEntries + SiriDiagnostics.shared.entries).sorted { $0.timestamp < $1.timestamp }.map { e in
                 SerializedDebugReport.LogEntry(
                     timestamp: e.timestamp,
                     category: e.category,
@@ -189,6 +189,7 @@ extension ChatSession {
         // Clear the captured entries before suspending so any new log rows
         // produced while encoding become part of the next report.
         debugEntries.removeAll()
+        SiriDiagnostics.shared.clear()
         let (json, hash) = await Task.detached(priority: .utility) {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601

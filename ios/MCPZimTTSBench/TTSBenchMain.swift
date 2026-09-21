@@ -7,6 +7,8 @@
 
 import Darwin
 import Foundation
+import MLX
+import MLXRandom
 
 private actor PeakMemoryProbe {
     private var peakMB: Double
@@ -37,6 +39,12 @@ struct TTSBenchMain {
 
     @MainActor
     private static func run(args: [String]) async -> Int32 {
+        // Benchmark-only controls. Never change the app's shared MLX allocator
+        // or random stream to make an isolated measurement look better.
+        if let value = ProcessInfo.processInfo.environment["KOKORO_BENCH_CACHE_MB"],
+           let mb = Int(value), mb >= 0 {
+            Memory.cacheLimit = mb * 1_048_576
+        }
         var prewarm = false
         var voice = "af_heart"
         var text = defaultText
@@ -102,7 +110,8 @@ struct TTSBenchMain {
                 let first = try await measureRender {
                     try kokoro.renderForBenchmark(renderText)
                 }
-                reportRender("first-synthesis", first, outputURL: nil)
+                reportRender("first-synthesis", first,
+                             outputURL: outputURL.appendingPathExtension("first.wav"))
                 let warm = try await measureRender {
                     try kokoro.renderForBenchmark(renderText)
                 }
@@ -173,6 +182,8 @@ struct TTSBenchMain {
     private static func measureRender(
         _ operation: @escaping @Sendable () throws -> (samples: [Float], sampleRate: Int)
     ) async throws -> RenderMeasurement {
+        MLXRandom.seed(42)
+        Memory.peakMemory = 0
         let started = ProcessInfo.processInfo.systemUptime
         let startMemory = physFootprintMB()
         let probe = PeakMemoryProbe(startMB: startMemory)
@@ -186,9 +197,14 @@ struct TTSBenchMain {
             let rendered = try await Task.detached(priority: .userInitiated) {
                 try operation()
             }.value
+            guard !rendered.samples.isEmpty, rendered.samples.allSatisfy({ $0.isFinite }) else {
+                throw NSError(domain: "TTSBench", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Empty or non-finite PCM"])
+            }
             sampler.cancel()
             _ = await sampler.result
             let endMemory = physFootprintMB()
+            log("[TTSBench] MLX active=\(Memory.activeMemory) cache=\(Memory.cacheMemory) peak-active=\(Memory.peakMemory)")
             await probe.sample(endMemory)
             return RenderMeasurement(
                 samples: rendered.samples,
@@ -216,6 +232,10 @@ struct TTSBenchMain {
                 try wavData(
                     samples: measurement.samples,
                     sampleRate: measurement.sampleRate).write(to: outputURL, options: .atomic)
+                // Preserve unquantized PCM for exact regression comparison;
+                // a 16-bit WAV alone can hide numerical differences.
+                try measurement.samples.withUnsafeBytes { Data($0) }.write(
+                    to: outputURL.appendingPathExtension("f32"), options: .atomic)
             } catch {
                 Self.error("[TTSBench] could not write \(outputURL.path): \(error)")
             }

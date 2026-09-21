@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "modelDisplayName": "Bonsai 27B (1-bit · Metal)",
+  "contextTokens": 16384,
+  "kvCacheType": "Q4_0",
+  "passedTurns": 2,
+  "failedTurns": 1,
+  "turns": [
+    {
+      "answer": "Great — I’m preparing for our chat about Mongolia.\n\nReady. Pick a question below, or ask your own.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 2.0518540143966675,
+      "failures": [],
+      "groundingSections": [],
+      "groundingTitles": [],
+      "passed": true,
+      "routedTool": "discuss_article",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 1,
+      "user": "Let's talk about Mongolia"
+    },
+    {
+      "answer": "In the 16th century, Tibetan Buddhism spread to Mongolia, being further led by the Manchu -founded Qing dynasty, which absorbed the country in the 17th century.\n\nMahayana Buddhism is the majority religion (51.7%), with the irreligious being the second-largest group (40.6%).\n\nAfter he met with the Dalai Lama in 1578, he ordered the introduction of Tibetan Buddhism to Mongolia. (It was the second time this had occurred.) Abtai Khan of the Khalkha converted to Buddhism and founded the Erdene Zuu monastery in 1585.\n\nYou can say “What is education like in Mongolia?,” “more topics,” or ask your own follow-up.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 0.10316300392150879,
+      "failures": [
+        "missing any grounded section [Religion]"
+      ],
+      "groundingSections": [
+        "Mongol empire to early 20th century",
+        "lead"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": false,
+      "routedTool": "article_overview",
+      "suggestions": [
+        "What is education like in Mongolia?",
+        "How did its history unfold?",
+        "What about geography?",
+        "Another topic",
+        "Read full article"
+      ],
+      "turn": 2,
+      "user": "Tell me about Buddhism there"
+    },
+    {
+      "answer": "However, changing global politics and increased Soviet pressure led to the decline of Pan-Mongol aspirations in the following period. Khorloogiin Choibalsan instituted collectivization of livestock, began the destruction of the Buddhist monasteries, and carried out Stalinist purges, which resulted in the murders of numerous monks and other leaders.",
+      "conversationID": "prepared_mongolia_religion_continuity",
+      "elapsedSeconds": 22.832737922668457,
+      "failures": [],
+      "groundingSections": [
+        "Modern history"
+      ],
+      "groundingTitles": [
+        "Mongolia"
+      ],
+      "passed": true,
+      "suggestions": [],
+      "turn": 3,
+      "user": "Then what happened in Soviet times"
+    }
+  ],
+  "environment": "Signed Mac CLI; Bonsai Q1 with phone context settings; June 2026 Wikipedia. Final inherited subject-and-facet guard. Not a physical phone benchmark."
+}
