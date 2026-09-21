@@ -524,17 +524,20 @@ six layers), and the equivalent for us is already installed:
   | arm | perplexity |
   |---|---|
   | Bonsai Q1_0, 3.80 GB (the bar) | **13.4604 +/- 0.176** |
-  | this sweep at 18 blocks, all q1, 3.803 GB | **~4.1e4** |
+  | this sweep at 18 blocks, all q1, 3.803 GB | **50275.38 +/- 870.41** |
   | RTN-only, from `initial-database.json` | **69784.03 +/- 715.77** |
 
-  Two things follow. The trained prefix is doing real work: 18 blocks roughly halve
-  perplexity against the all-RTN floor, so the objective and drift fixes are moving the
-  model toward its teacher and the chain is not inert. And the arm is nevertheless ~3e3
-  from the bar, with 46 of its 64 layers still on the RTN fallback - the trained prefix
-  improved a number that the fallback dominates, which is why a mid-sweep export cannot
-  decide whether the chain is worth finishing. Isolating the prefix needs exactly the
-  RTN control above; without it the candidate's number cannot separate "training is not
-  working" from "the fallback dominates", and here it would have hidden a 1.7x gain.
+  Two things follow. The trained prefix is doing real work: 18 blocks cut perplexity by
+  28% against the all-RTN floor (1.39x), so the objective and drift fixes are moving the
+  model toward its teacher and the chain is not inert. Read against the bar, though, that
+  is a long way short: closing 3e3 by compounding 1.39x per 18 blocks does not reach the
+  teens in 64, which is the shape of the problem rather than a defect in the sweep.
+  Note that 46 of the 64 layers in that artifact are still on the RTN fallback, so the
+  trained prefix improved a number that the fallback dominates - which is why a mid-sweep
+  export cannot decide whether the chain is worth finishing. Isolating the prefix needs
+  exactly the RTN control above; without it the candidate's number cannot separate
+  "training is not working" from "the fallback dominates", and here it would have hidden
+  a 1.39x gain.
   Note also that the RTN floor (69784) sits in the same region as the pre-fix all-Q1
   measurement (73786) - different text, so not comparable, but consistent with the
   pre-fix objective having produced nothing beyond its RTN initialisation.
